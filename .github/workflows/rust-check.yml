@@ -1,0 +1,27 @@
+name: Rust Build Check
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Check Rust installation
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Compile simulator
+        run: cargo build
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Run simulator
+        run: cargo run
