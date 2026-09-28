@@ -1,0 +1,5208 @@
+[
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10000,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 3,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Zada, Hedron Grinder",
+      "oracle_text": "Whenever you cast an instant or sorcery spell that targets only Zada, copy that spell for each other creature you control that the spell could target. Each copy targets a different one of those creatures.",
+      "overload_cost": null,
+      "power": 3,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Ally"
+      ],
+      "supertypes": [
+        "Legendary"
+      ],
+      "toughness": 3,
+      "triggered_abilities": [
+        {
+          "description": "Whenever you cast an instant or sorcery spell that targets only Zada, copy that spell for each other creature you control that the spell could target. Each copy targets a different one of those creatures.",
+          "effect": {
+            "Unimplemented": "that targets only zada, copy that spell for each other creature you control that the spell could target. each copy targets a different one of those creatures."
+          },
+          "trigger": "YouCastSpell"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Create X 1/1 red Goblin creature tokens, where X is the number of Goblins you control.",
+          "effect": {
+            "Unimplemented": "Create X 1/1 red Goblin creature tokens, where X is the number of Goblins you control."
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10002,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 2,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Krenko, Mob Boss",
+      "oracle_text": "{T}: Create X 1/1 red Goblin creature tokens, where X is the number of Goblins you control.",
+      "overload_cost": null,
+      "power": 3,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Warrior"
+      ],
+      "supertypes": [
+        "Legendary"
+      ],
+      "toughness": 3,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 3,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 1,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{3}{R}, Sacrifice a Goblin: Create two 1/1 red Goblin creature tokens.",
+          "effect": {
+            "Unimplemented": "Create two 1/1 red Goblin creature tokens."
+          },
+          "life_cost": 0,
+          "requires_tap": false,
+          "sacrifice_cost": "SelfSacrifice"
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10004,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Pashalik Mons",
+      "oracle_text": "Whenever Pashalik Mons or another Goblin you control dies, Pashalik Mons deals 1 damage to any target.\n{3}{R}, Sacrifice a Goblin: Create two 1/1 red Goblin creature tokens.",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Warrior"
+      ],
+      "supertypes": [
+        "Legendary"
+      ],
+      "toughness": 2,
+      "triggered_abilities": [
+        {
+          "description": "Whenever Pashalik Mons or another Goblin you control dies, Pashalik Mons deals 1 damage to any target.",
+          "effect": {
+            "DealDamage": {
+              "amount": 1,
+              "target": "CreatureOrPlayer"
+            }
+          },
+          "trigger": "Dies"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Instant"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10006,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Brightstone Ritual",
+      "oracle_text": "Add {R} for each Goblin on the battlefield.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "AddMana": {
+          "amount": 1,
+          "color": null
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10008,
+      "keywords": [
+        "Haste",
+        "Menace"
+      ],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Broadside Bombardiers",
+      "oracle_text": "Menace, haste\nBoast — Sacrifice another creature or artifact: This creature deals damage equal to 2 plus the sacrificed permanent's mana value to any target. (Activate only if this creature attacked this turn and only once each turn.)",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Pirate"
+      ],
+      "supertypes": [],
+      "toughness": 2,
+      "triggered_abilities": [
+        {
+          "description": "Boast — Sacrifice another creature or artifact: This creature deals damage equal to 2 plus the sacrificed permanent's mana value to any target. (Activate only if this creature attacked this turn and only once each turn.)",
+          "effect": {
+            "Unimplemented": "equal to 2 plus the sacrificed permanent's mana value to any target. (activate only if this creature attacked this turn and only once each turn.)"
+          },
+          "trigger": "DealsDamage"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10010,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 2,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Conspicuous Snoop",
+      "oracle_text": "Play with the top card of your library revealed.\nYou may cast Goblin spells from the top of your library.\nAs long as the top card of your library is a Goblin card, this creature has all activated abilities of that card.",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Rogue"
+      ],
+      "supertypes": [],
+      "toughness": 2,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10012,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 3,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Empty the Warrens",
+      "oracle_text": "Create two 1/1 red Goblin creature tokens.\nStorm (When you cast this spell, copy it for each spell cast before it this turn.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Unimplemented": "Create two 1/1 red Goblin creature tokens.\nStorm (When you cast this spell, copy it for each spell cast before it this turn.)"
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10014,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Grapeshot",
+      "oracle_text": "Grapeshot deals 1 damage to any target.\nStorm (When you cast this spell, copy it for each spell cast before it this turn. You may choose new targets for the copies.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "DealDamage": {
+          "amount": 1,
+          "target": "CreatureOrPlayer"
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10016,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Skirk Prospector",
+      "oracle_text": "Sacrifice a Goblin: Add {R}.",
+      "overload_cost": null,
+      "power": 1,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin"
+      ],
+      "supertypes": [],
+      "toughness": 1,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Artifact",
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 928,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 4,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 0,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Roaming Throne",
+      "oracle_text": "Changeling. As Roaming Throne enters the battlefield, choose a creature type. If a triggered ability of a creature you control with the chosen type triggers, it triggers an additional time.",
+      "overload_cost": null,
+      "power": 4,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Golem",
+        "Rat"
+      ],
+      "supertypes": [],
+      "toughness": 4,
+      "triggered_abilities": []
+    },
+    "source": "sample"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Artifact"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 0,
+        "white": 0,
+        "x_count": 0
+      },
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 960,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 0,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Skullclamp",
+      "oracle_text": "Equipped creature gets +1/-1. Whenever equipped creature dies, draw two cards. Equip {1}.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [
+        {
+          "Anthem": {
+            "affected": "AttachedTo",
+            "power": 1,
+            "toughness": -1
+          }
+        }
+      ],
+      "subtypes": [
+        "Equipment"
+      ],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": [
+        {
+          "description": "Whenever equipped creature dies, draw two cards.",
+          "effect": {
+            "DrawCards": {
+              "count": 2
+            }
+          },
+          "trigger": "ACreatureYouControlDies"
+        }
+      ]
+    },
+    "source": "sample"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Artifact"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 400,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColorlessAmount": 2
+        }
+      ],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 0,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Sol Ring",
+      "oracle_text": "{T}: Add {C}{C}.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "sample"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": {
+        "applies_to": "AllSpells",
+        "generic_reduction": 1
+      },
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10018,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 8,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Blasphemous Act",
+      "oracle_text": "This spell costs {1} less to cast for each creature on the battlefield.\nBlasphemous Act deals 13 damage to each creature.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "DealDamage": {
+          "amount": 13,
+          "target": "EachCreature"
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Instant"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10020,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Chaos Warp",
+      "oracle_text": "The owner of target permanent shuffles it into their library, then reveals the top card of their library. If it's a permanent card, they put it onto the battlefield.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Unimplemented": "The owner of target permanent shuffles it into their library, then reveals the top card of their library. If it's a permanent card, they put it onto the battlefield."
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Enchantment"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10022,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Frontline Heroism",
+      "oracle_text": "When this enchantment enters, create a 1/1 red Soldier creature token with haste.\nWhenever you cast a spell that targets only a single creature you control, create a 1/1 red Soldier creature token with haste, then copy that spell. The copy targets that token.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": [
+        {
+          "description": "When this enchantment enters, create a 1/1 red Soldier creature token with haste.",
+          "effect": {
+            "Unimplemented": "create a 1/1 red soldier creature token with haste."
+          },
+          "trigger": "EntersBattlefield"
+        },
+        {
+          "description": "Whenever you cast a spell that targets only a single creature you control, create a 1/1 red Soldier creature token with haste, then copy that spell. The copy targets that token.",
+          "effect": {
+            "Unimplemented": "that targets only a single creature you control, create a 1/1 red soldier creature token with haste, then copy that spell. the copy targets that token."
+          },
+          "trigger": "YouCastSpell"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Enchantment"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10024,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Goblin Bombardment",
+      "oracle_text": "Sacrifice a creature: This enchantment deals 1 damage to any target.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10026,
+      "keywords": [
+        "Haste"
+      ],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 2,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Goblin Chieftain",
+      "oracle_text": "Haste (This creature can attack and {T} as soon as it comes under your control.)\nOther Goblin creatures you control get +1/+1 and have haste.",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [
+        {
+          "Anthem": {
+            "affected": {
+              "CreaturesControlledBy": 0
+            },
+            "power": 1,
+            "toughness": 1
+          }
+        },
+        {
+          "GrantKeyword": {
+            "affected": {
+              "CreaturesControlledBy": 0
+            },
+            "keyword": "Haste"
+          }
+        }
+      ],
+      "subtypes": [
+        "Goblin"
+      ],
+      "supertypes": [],
+      "toughness": 2,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10028,
+      "keywords": [
+        "Menace"
+      ],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 3,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 2,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Goblin Dark-Dwellers",
+      "oracle_text": "Menace (This creature can't be blocked except by two or more creatures.)\nWhen this creature enters, you may cast target instant or sorcery card with mana value 3 or less from your graveyard without paying its mana cost. If that spell would be put into your graveyard, exile it instead.",
+      "overload_cost": null,
+      "power": 4,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin"
+      ],
+      "supertypes": [],
+      "toughness": 4,
+      "triggered_abilities": [
+        {
+          "description": "When this creature enters, you may cast target instant or sorcery card with mana value 3 or less from your graveyard without paying its mana cost. If that spell would be put into your graveyard, exile it instead.",
+          "effect": {
+            "Unimplemented": "you may cast target instant or sorcery card with mana value 3 or less from your graveyard without paying its mana cost. if that spell would be put into your graveyard, exile it instead."
+          },
+          "trigger": "EntersBattlefield"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10030,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Goblin Lackey",
+      "oracle_text": "Whenever this creature deals damage to a player, you may put a Goblin permanent card from your hand onto the battlefield.",
+      "overload_cost": null,
+      "power": 1,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin"
+      ],
+      "supertypes": [],
+      "toughness": 1,
+      "triggered_abilities": [
+        {
+          "description": "Whenever this creature deals damage to a player, you may put a Goblin permanent card from your hand onto the battlefield.",
+          "effect": {
+            "Unimplemented": "to a player, you may put a goblin permanent card from your hand onto the battlefield."
+          },
+          "trigger": "DealsDamage"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10032,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 2,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Goblin Trashmaster",
+      "oracle_text": "Other Goblins you control get +1/+1.\nSacrifice a Goblin: Destroy target artifact.",
+      "overload_cost": null,
+      "power": 3,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Warrior"
+      ],
+      "supertypes": [],
+      "toughness": 3,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Instant"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10034,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Great Train Heist",
+      "oracle_text": "Spree (Choose one or more additional costs.)\n+ {2}{R} — Untap all creatures you control. If it's your combat phase, there is an additional combat phase after this phase.\n+ {2} — Creatures you control get +1/+0 and gain first strike until end of turn.\n+ {R} — Choose target opponent. Whenever a creature you control deals combat damage to that player this turn, create a tapped Treasure token.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Buff": {
+          "power": 1,
+          "toughness": 0,
+          "until_eot": true
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [
+        {
+          "Anthem": {
+            "affected": {
+              "CreaturesControlledBy": 0
+            },
+            "power": 1,
+            "toughness": 0
+          }
+        }
+      ],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": [
+        {
+          "description": "+ {R} — Choose target opponent. Whenever a creature you control deals combat damage to that player this turn, create a tapped Treasure token.",
+          "effect": {
+            "CreatePredefinedToken": {
+              "count": 1,
+              "token_type": "Treasure"
+            }
+          },
+          "trigger": "DealsCombatDamage"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10036,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 2,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Grenzo, Havoc Raiser",
+      "oracle_text": "Whenever a creature you control deals combat damage to a player, choose one —\n• Goad target creature that player controls.\n• Exile the top card of that player's library. Until end of turn, you may cast that card and you may spend mana as though it were mana of any color to cast that spell.",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Rogue"
+      ],
+      "supertypes": [
+        "Legendary"
+      ],
+      "toughness": 2,
+      "triggered_abilities": [
+        {
+          "description": "Whenever a creature you control deals combat damage to a player, choose one —",
+          "effect": {
+            "Unimplemented": "choose one —"
+          },
+          "trigger": "DealsCombatDamageToPlayer"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "Max speed — {T}: Add {R} for each Goblin you control.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10038,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColor": "Red"
+        }
+      ],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Howlsquad Heavy",
+      "oracle_text": "Start your engines!\nOther Goblins you control have haste.\nAt the beginning of combat on your turn, create a 1/1 red Goblin creature token. That token attacks this combat if able.\nMax speed — {T}: Add {R} for each Goblin you control.",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Mercenary"
+      ],
+      "supertypes": [],
+      "toughness": 3,
+      "triggered_abilities": [
+        {
+          "description": "At the beginning of combat on your turn, create a 1/1 red Goblin creature token. That token attacks this combat if able.",
+          "effect": {
+            "Unimplemented": "on your turn, create a 1/1 red goblin creature token. that token attacks this combat if able."
+          },
+          "trigger": "BeginningOfCombat"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10040,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 3,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Past in Flames",
+      "oracle_text": "Each instant and sorcery card in your graveyard gains flashback until end of turn. The flashback cost is equal to its mana cost.\nFlashback {4}{R} (You may cast this card from your graveyard for its flashback cost. Then exile it.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Unimplemented": "Each instant and sorcery card in your graveyard gains flashback until end of turn. The flashback cost is equal to its mana cost.\nFlashback {4}{R} (You may cast this card from your graveyard for its flashback cost. Then exile it.)"
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10042,
+      "keywords": [
+        "Menace"
+      ],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 2,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Redcap Gutter-Dweller",
+      "oracle_text": "Menace\nWhen this creature enters, create two 1/1 black Rat creature tokens with \"This token can't block.\"\nAt the beginning of your upkeep, you may sacrifice another creature. If you do, put a +1/+1 counter on this creature and exile the top card of your library. You may play that card this turn.",
+      "overload_cost": null,
+      "power": 3,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Warrior"
+      ],
+      "supertypes": [],
+      "toughness": 3,
+      "triggered_abilities": [
+        {
+          "description": "When this creature enters, create two 1/1 black Rat creature tokens with \"This token can't block.\"",
+          "effect": {
+            "Unimplemented": "create two 1/1 black rat creature tokens with \"this token can't block.\""
+          },
+          "trigger": "EntersBattlefield"
+        },
+        {
+          "description": "At the beginning of your upkeep, you may sacrifice another creature. If you do, put a +1/+1 counter on this creature and exile the top card of your library. You may play that card this turn.",
+          "effect": {
+            "Buff": {
+              "power": 1,
+              "toughness": 1,
+              "until_eot": false
+            }
+          },
+          "trigger": "BeginningOfUpkeep"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10044,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Rundvelt Hordemaster",
+      "oracle_text": "Other Goblins you control get +1/+1.\nWhenever this creature or another Goblin you control dies, exile the top card of your library. If it's a Goblin creature card, you may cast that card until the end of your next turn.",
+      "overload_cost": null,
+      "power": 1,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Warrior"
+      ],
+      "supertypes": [],
+      "toughness": 1,
+      "triggered_abilities": [
+        {
+          "description": "Whenever this creature or another Goblin you control dies, exile the top card of your library. If it's a Goblin creature card, you may cast that card until the end of your next turn.",
+          "effect": {
+            "Unimplemented": "exile the top card of your library. if it's a goblin creature card, you may cast that card until the end of your next turn."
+          },
+          "trigger": "Dies"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10046,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Searslicer Goblin",
+      "oracle_text": "Raid — At the beginning of your end step, if you attacked this turn, create a 1/1 red Goblin creature token.",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Warrior"
+      ],
+      "supertypes": [],
+      "toughness": 1,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 122,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 3,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 2,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Siege-Gang Commander",
+      "oracle_text": "When Siege-Gang Commander enters the battlefield, create three 1/1 red Goblin creature tokens.",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin"
+      ],
+      "supertypes": [],
+      "toughness": 2,
+      "triggered_abilities": [
+        {
+          "description": "When Siege-Gang Commander enters the battlefield, create three 1/1 red Goblin creature tokens.",
+          "effect": {
+            "Multiple": [
+              {
+                "CreateToken": {
+                  "colors": [
+                    "Red"
+                  ],
+                  "keywords": [],
+                  "name": "Goblin",
+                  "power": 1,
+                  "subtypes": [
+                    "Goblin"
+                  ],
+                  "toughness": 1
+                }
+              },
+              {
+                "CreateToken": {
+                  "colors": [
+                    "Red"
+                  ],
+                  "keywords": [],
+                  "name": "Goblin",
+                  "power": 1,
+                  "subtypes": [
+                    "Goblin"
+                  ],
+                  "toughness": 1
+                }
+              },
+              {
+                "CreateToken": {
+                  "colors": [
+                    "Red"
+                  ],
+                  "keywords": [],
+                  "name": "Goblin",
+                  "power": 1,
+                  "subtypes": [
+                    "Goblin"
+                  ],
+                  "toughness": 1
+                }
+              }
+            ]
+          },
+          "trigger": "EntersBattlefield"
+        }
+      ]
+    },
+    "source": "sample"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 2,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{2}, Sacrifice a Goblin: This creature deals 1 damage to any target.",
+          "effect": {
+            "DealDamage": {
+              "amount": 1,
+              "target": "CreatureOrPlayer"
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": false,
+          "sacrifice_cost": "SelfSacrifice"
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10048,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 3,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Siege-Gang Lieutenant",
+      "oracle_text": "Lieutenant — At the beginning of combat on your turn, if you control your commander, create two 1/1 red Goblin creature tokens. Those tokens gain haste until end of turn.\n{2}, Sacrifice a Goblin: This creature deals 1 damage to any target.",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin"
+      ],
+      "supertypes": [],
+      "toughness": 2,
+      "triggered_abilities": [
+        {
+          "description": "Lieutenant — At the beginning of combat on your turn, if you control your commander, create two 1/1 red Goblin creature tokens. Those tokens gain haste until end of turn.",
+          "effect": {
+            "Unimplemented": "on your turn, if you control your commander, create two 1/1 red goblin creature tokens. those tokens gain haste until end of turn."
+          },
+          "trigger": "BeginningOfCombat"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Draw a card. Activate only if you created a token this turn.",
+          "effect": {
+            "DrawCards": {
+              "count": 1
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 8,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{8}, {T}, Sacrifice this artifact: Create a 10/10 colorless Eldrazi creature token.",
+          "effect": {
+            "Unimplemented": "Create a 10/10 colorless Eldrazi creature token."
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": "SelfSacrifice"
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Artifact"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10050,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 0,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Idol of Oblivion",
+      "oracle_text": "{T}: Draw a card. Activate only if you created a token this turn.\n{8}, {T}, Sacrifice this artifact: Create a 10/10 colorless Eldrazi creature token.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Artifact"
+      ],
+      "cost_increase": null,
+      "cost_reduction": {
+        "applies_to": "AllSpells",
+        "generic_reduction": 1
+      },
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10052,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 0,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Ruby Medallion",
+      "oracle_text": "Red spells you cast cost {1} less to cast.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add four mana of the chosen color. Spend this mana only to cast monocolored spells of that color.",
+          "effect": {
+            "Unimplemented": "Add four mana of the chosen color. Spend this mana only to cast monocolored spells of that color."
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 3,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{3}, {T}: Draw two cards. Spend only mana of the chosen color to activate this ability.",
+          "effect": {
+            "DrawCards": {
+              "count": 2
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Artifact"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10054,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 5,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 0,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Throne of Eldraine",
+      "oracle_text": "As Throne of Eldraine enters, choose a color.\n{T}: Add four mana of the chosen color. Spend this mana only to cast monocolored spells of that color.\n{3}, {T}: Draw two cards. Spend only mana of the chosen color to activate this ability.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [
+        "Legendary"
+      ],
+      "toughness": null,
+      "triggered_abilities": [
+        {
+          "description": "As Throne of Eldraine enters, choose a color.\n{T}: Add four mana of the chosen color. Spend this mana only to cast monocolored spells of that color.\n{3}, {T}: Draw two cards. Spend only mana of the chosen color to activate this ability.",
+          "effect": {
+            "DrawCards": {
+              "count": 2
+            }
+          },
+          "trigger": "EntersBattlefield"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {R}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 1,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{R}, {T}, Exert this land: Add {R}{R}. If any of that mana is spent on a creature spell, it gains haste until end of turn. (An exerted permanent won't untap during your next untap step.)",
+          "effect": {
+            "AddMana": {
+              "amount": 2,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": true,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10056,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColor": "Red"
+        }
+      ],
+      "mana_cost": null,
+      "name": "Arena of Glory",
+      "oracle_text": "This land enters tapped unless you control a Mountain.\n{T}: Add {R}.\n{R}, {T}, Exert this land: Add {R}{R}. If any of that mana is spent on a creature spell, it gains haste until end of turn. (An exerted permanent won't untap during your next untap step.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {R}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 1,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 2,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{1}{R}{R}, {T}: Creatures you control get +1/+0 until end of turn.",
+          "effect": {
+            "Buff": {
+              "power": 1,
+              "toughness": 0,
+              "until_eot": true
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": true,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10058,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColor": "Red"
+        }
+      ],
+      "mana_cost": null,
+      "name": "Castle Embereth",
+      "oracle_text": "This land enters tapped unless you control a Mountain.\n{T}: Add {R}.\n{1}{R}{R}, {T}: Creatures you control get +1/+0 until end of turn.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {R}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 3,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 1,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{3}{R}: Until end of turn, this land becomes a 3/2 red Goblin creature with \"Whenever this creature attacks, create a 1/1 red Goblin creature token that's tapped and attacking.\" It's still a land.",
+          "effect": {
+            "Unimplemented": "Until end of turn, this land becomes a 3/2 red Goblin creature with \"Whenever this creature attacks, create a 1/1 red Goblin creature token that's tapped and attacking.\" It's still a land."
+          },
+          "life_cost": 0,
+          "requires_tap": false,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": true,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10060,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColor": "Red"
+        }
+      ],
+      "mana_cost": null,
+      "name": "Den of the Bugbear",
+      "oracle_text": "If you control two or more other lands, this land enters tapped.\n{T}: Add {R}.\n{3}{R}: Until end of turn, this land becomes a 3/2 red Goblin creature with \"Whenever this creature attacks, create a 1/1 red Goblin creature token that's tapped and attacking.\" It's still a land.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {C}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 2,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{2}, {T}, Sacrifice a token: Draw a card.",
+          "effect": {
+            "DrawCards": {
+              "count": 1
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": "SelfSacrifice"
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 3,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{3}, {T}, Pay 1 life: Create a 1/1 blue Fish creature token.",
+          "effect": {
+            "Unimplemented": "Create a 1/1 blue Fish creature token."
+          },
+          "life_cost": 1,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 4,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{4}, {T}: Create a Treasure token.",
+          "effect": {
+            "CreatePredefinedToken": {
+              "count": 1,
+              "token_type": "Treasure"
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10062,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        "TapForColorless"
+      ],
+      "mana_cost": null,
+      "name": "Fountainport",
+      "oracle_text": "{T}: Add {C}.\n{2}, {T}, Sacrifice a token: Draw a card.\n{3}, {T}, Pay 1 life: Create a 1/1 blue Fish creature token.\n{4}, {T}: Create a Treasure token.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {C}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 1,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 1,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{1}{R}, {T}: Create a 0/1 red Kobold creature token named Kobolds of Kher Keep.",
+          "effect": {
+            "Unimplemented": "Create a 0/1 red Kobold creature token named Kobolds of Kher Keep."
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10064,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        "TapForColorless"
+      ],
+      "mana_cost": null,
+      "name": "Kher Keep",
+      "oracle_text": "{T}: Add {C}.\n{1}{R}, {T}: Create a 0/1 red Kobold creature token named Kobolds of Kher Keep.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [
+        "Legendary"
+      ],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {R}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 1,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{R}, {T}: You may play the exiled card without paying its mana cost if an opponent was dealt 7 or more damage this turn.",
+          "effect": {
+            "Unimplemented": "You may play the exiled card without paying its mana cost if an opponent was dealt 7 or more damage this turn."
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": true,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10066,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColor": "Red"
+        }
+      ],
+      "mana_cost": null,
+      "name": "Spinerock Knoll",
+      "oracle_text": "Hideaway 4 (When this land enters, look at the top four cards of your library, exile one face down, then put the rest on the bottom in a random order.)\nThis land enters tapped.\n{T}: Add {R}.\n{R}, {T}: You may play the exiled card without paying its mana cost if an opponent was dealt 7 or more damage this turn.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": [
+        {
+          "description": "Hideaway 4 (When this land enters, look at the top four cards of your library, exile one face down, then put the rest on the bottom in a random order.)\nThis land enters tapped.\n{T}: Add {R}.\n{R}, {T}: You may play the exiled card without paying its mana cost if an opponent was dealt 7 or more damage this turn.",
+          "effect": {
+            "Unimplemented": "look at the top four cards of your library, exile one face down, then put the rest on the bottom in a random order.)\nthis land enters tapped.\n{t}: add {r}.\n{r}, {t}: you may play the exiled card without paying its mana cost if an opponent was dealt 7 or more damage this turn."
+          },
+          "trigger": "EntersBattlefield"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {C}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 3,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{3}, {T}, Pay life equal to the number of colors in your commanders' color identity: Draw a card.",
+          "effect": {
+            "DrawCards": {
+              "count": 1
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10068,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        "TapForColorless"
+      ],
+      "mana_cost": null,
+      "name": "War Room",
+      "oracle_text": "{T}: Add {C}.\n{3}, {T}, Pay life equal to the number of colors in your commanders' color identity: Draw a card.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {R}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 1,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{R}, {T}: Target legendary creature gains first strike until end of turn.",
+          "effect": {
+            "Unimplemented": "Target legendary creature gains first strike until end of turn."
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10070,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColor": "Red"
+        }
+      ],
+      "mana_cost": null,
+      "name": "Shinka, the Bloodsoaked Keep",
+      "oracle_text": "{T}: Add {R}.\n{R}, {T}: Target legendary creature gains first strike until end of turn.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [
+        "Legendary"
+      ],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "Create a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")",
+          "effect": {
+            "Unimplemented": "Add one mana of any color.\")"
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": "SelfSacrifice"
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Instant"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10072,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        "TapForAny"
+      ],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Ancestors' Aid",
+      "oracle_text": "Target creature gets +2/+0 and gains first strike until end of turn.\nCreate a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Buff": {
+          "power": 2,
+          "toughness": 0,
+          "until_eot": true
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Instant"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10074,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Battle Hymn",
+      "oracle_text": "Add {R} for each creature you control.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "AddMana": {
+          "amount": 1,
+          "color": null
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Enchantment"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10076,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Boggart Shenanigans",
+      "oracle_text": "Whenever another Goblin you control is put into a graveyard from the battlefield, you may have this enchantment deal 1 damage to target player or planeswalker.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin"
+      ],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Instant"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10078,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Crimson Wisps",
+      "oracle_text": "Target creature becomes red and gains haste until end of turn. (It can attack and {T} this turn.)\nDraw a card.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "DrawCards": {
+          "count": 1
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10080,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 4,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Daring Discovery",
+      "oracle_text": "Up to three target creatures can't block this turn.\nDiscover 4. (Exile cards from the top of your library until you exile a nonland card with mana value 4 or less. Cast it without paying its mana cost or put it into your hand. Put the rest on the bottom in a random order.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Unimplemented": "Up to three target creatures can't block this turn.\nDiscover 4. (Exile cards from the top of your library until you exile a nonland card with mana value 4 or less. Cast it without paying its mana cost or put it into your hand. Put the rest on the bottom in a random order.)"
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10082,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Dragon Fodder",
+      "oracle_text": "Create two 1/1 red Goblin creature tokens.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Unimplemented": "Create two 1/1 red Goblin creature tokens."
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Instant"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10084,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Expedite",
+      "oracle_text": "Target creature gains haste until end of turn.\nDraw a card.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "DrawCards": {
+          "count": 1
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10086,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Faithless Looting",
+      "oracle_text": "Draw two cards, then discard two cards.\nFlashback {2}{R} (You may cast this card from your graveyard for its flashback cost. Then exile it.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "DrawCards": {
+          "count": 2
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Instant"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10088,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Fists of Flame",
+      "oracle_text": "Draw a card. Until end of turn, target creature gains trample and gets +1/+0 for each card you've drawn this turn. (A creature with trample can deal excess combat damage to the player or planeswalker it's attacking.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "DrawCards": {
+          "count": 1
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 2,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 2,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "Cycling {1}{R} ({1}{R}, Discard this card: Draw a card.)",
+          "effect": {
+            "DrawCards": {
+              "count": 1
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": false,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10090,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Gempalm Incinerator",
+      "oracle_text": "Cycling {1}{R} ({1}{R}, Discard this card: Draw a card.)\nWhen you cycle this card, you may have it deal X damage to target creature, where X is the number of Goblins on the battlefield.",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin"
+      ],
+      "supertypes": [],
+      "toughness": 1,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10092,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "General Kreat, the Boltbringer",
+      "oracle_text": "Whenever one or more Goblins you control attack, create a 1/1 red Goblin creature token that's tapped and attacking.\nWhenever another creature you control enters, General Kreat deals 1 damage to each opponent.",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Soldier"
+      ],
+      "supertypes": [
+        "Legendary"
+      ],
+      "toughness": 2,
+      "triggered_abilities": [
+        {
+          "description": "Whenever another creature you control enters, General Kreat deals 1 damage to each opponent.",
+          "effect": {
+            "DealDamage": {
+              "amount": 1,
+              "target": "AnyPlayer"
+            }
+          },
+          "trigger": "EntersBattlefield"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10094,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Glimpse the Impossible",
+      "oracle_text": "Exile the top three cards of your library. You may play those cards this turn. At the beginning of the next end step, if any of those cards remain exiled, put them into your graveyard, then create a 0/1 colorless Eldrazi Spawn creature token for each card put into your graveyard this way. Those tokens have \"Sacrifice this token: Add {C}.\"",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Unimplemented": "Exile the top three cards of your library. You may play those cards this turn. At the beginning of the next end step, if any of those cards remain exiled, put them into your graveyard, then create a 0/1 colorless Eldrazi Spawn creature token for each card put into your graveyard this way. Those tokens have \"Sacrifice this token: Add {C}.\""
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10096,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Goblin Bushwhacker",
+      "oracle_text": "Kicker {R} (You may pay an additional {R} as you cast this spell.)\nWhen this creature enters, if it was kicked, creatures you control get +1/+0 and gain haste until end of turn.",
+      "overload_cost": null,
+      "power": 1,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Warrior"
+      ],
+      "supertypes": [],
+      "toughness": 1,
+      "triggered_abilities": [
+        {
+          "description": "When this creature enters, if it was kicked, creatures you control get +1/+0 and gain haste until end of turn.",
+          "effect": {
+            "Unimplemented": "if it was kicked, creatures you control get +1/+0 and gain haste until end of turn."
+          },
+          "trigger": "EntersBattlefield"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10098,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Goblin Matron",
+      "oracle_text": "When this creature enters, you may search your library for a Goblin card, reveal that card, put it into your hand, then shuffle.",
+      "overload_cost": null,
+      "power": 1,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin"
+      ],
+      "supertypes": [],
+      "toughness": 1,
+      "triggered_abilities": [
+        {
+          "description": "When this creature enters, you may search your library for a Goblin card, reveal that card, put it into your hand, then shuffle.",
+          "effect": {
+            "Unimplemented": "you may search your library for a goblin card, reveal that card, put it into your hand, then shuffle."
+          },
+          "trigger": "EntersBattlefield"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10100,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 2,
+        "white": 0,
+        "x_count": 1
+      },
+      "name": "Goblin Negotiation",
+      "oracle_text": "Goblin Negotiation deals X damage to target creature. Create a number of 1/1 red Goblin creature tokens equal to the amount of excess damage dealt to that creature this way.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Unimplemented": "Goblin Negotiation deals X damage to target creature. Create a number of 1/1 red Goblin creature tokens equal to the amount of excess damage dealt to that creature this way."
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": {
+        "applies_to": "AllSpells",
+        "generic_reduction": 1
+      },
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10102,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 2,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Goblin Warchief",
+      "oracle_text": "Goblin spells you cast cost {1} less to cast.\nGoblins you control have haste.",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Warrior"
+      ],
+      "supertypes": [],
+      "toughness": 2,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10104,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Haze of Rage",
+      "oracle_text": "Buyback {2} (You may pay an additional {2} as you cast this spell. If you do, put this card into your hand as it resolves.)\nCreatures you control get +1/+0 until end of turn.\nStorm (When you cast this spell, copy it for each spell cast before it this turn.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Buff": {
+          "power": 1,
+          "toughness": 0,
+          "until_eot": true
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [
+        {
+          "Anthem": {
+            "affected": {
+              "CreaturesControlledBy": 0
+            },
+            "power": 1,
+            "toughness": 0
+          }
+        }
+      ],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Enchantment"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10106,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Impact Tremors",
+      "oracle_text": "Whenever a creature you control enters, this enchantment deals 1 damage to each opponent.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": [
+        {
+          "description": "Whenever a creature you control enters, this enchantment deals 1 damage to each opponent.",
+          "effect": {
+            "DealDamage": {
+              "amount": 1,
+              "target": "AnyPlayer"
+            }
+          },
+          "trigger": "EntersBattlefield"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 6,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 2,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "Encore {3}{R} ({3}{R}, Exile this card from your graveyard: For each opponent, create a token copy that attacks that opponent this turn if able. They gain haste. Sacrifice them at the beginning of the next end step. Activate only as a sorcery.)",
+          "effect": {
+            "Unimplemented": "For each opponent, create a token copy that attacks that opponent this turn if able. They gain haste. Sacrifice them at the beginning of the next end step. Activate only as a sorcery.)"
+          },
+          "life_cost": 0,
+          "requires_tap": false,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10108,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        "TapForAny"
+      ],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Impulsive Pilferer",
+      "oracle_text": "When this creature dies, create a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")\nEncore {3}{R} ({3}{R}, Exile this card from your graveyard: For each opponent, create a token copy that attacks that opponent this turn if able. They gain haste. Sacrifice them at the beginning of the next end step. Activate only as a sorcery.)",
+      "overload_cost": null,
+      "power": 1,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Pirate"
+      ],
+      "supertypes": [],
+      "toughness": 1,
+      "triggered_abilities": [
+        {
+          "description": "When this creature dies, create a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")",
+          "effect": {
+            "CreatePredefinedToken": {
+              "count": 1,
+              "token_type": "Treasure"
+            }
+          },
+          "trigger": "Dies"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10110,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Krenko's Command",
+      "oracle_text": "Create two 1/1 red Goblin creature tokens.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Unimplemented": "Create two 1/1 red Goblin creature tokens."
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10112,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 3,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 2,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Mana Geyser",
+      "oracle_text": "Add {R} for each tapped land your opponents control.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "AddMana": {
+          "amount": 1,
+          "color": null
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10114,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Mogg War Marshal",
+      "oracle_text": "Echo {1}{R} (At the beginning of your upkeep, if this came under your control since the beginning of your last upkeep, sacrifice it unless you pay its echo cost.)\nWhen this creature enters or dies, create a 1/1 red Goblin creature token.",
+      "overload_cost": null,
+      "power": 1,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Goblin",
+        "Warrior"
+      ],
+      "supertypes": [],
+      "toughness": 1,
+      "triggered_abilities": [
+        {
+          "description": "Echo {1}{R} (At the beginning of your upkeep, if this came under your control since the beginning of your last upkeep, sacrifice it unless you pay its echo cost.)",
+          "effect": {
+            "Unimplemented": "if this came under your control since the beginning of your last upkeep, sacrifice it unless you pay its echo cost.)"
+          },
+          "trigger": "BeginningOfUpkeep"
+        },
+        {
+          "description": "When this creature enters or dies, create a 1/1 red Goblin creature token.",
+          "effect": {
+            "Unimplemented": "create a 1/1 red goblin creature token."
+          },
+          "trigger": "Dies"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Enchantment"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10116,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Quest for the Goblin Lord",
+      "oracle_text": "Whenever a Goblin you control enters, you may put a quest counter on this enchantment.\nAs long as this enchantment has five or more quest counters on it, creatures you control get +2/+0.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [
+        {
+          "Anthem": {
+            "affected": {
+              "CreaturesControlledBy": 0
+            },
+            "power": 2,
+            "toughness": 0
+          }
+        }
+      ],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": [
+        {
+          "description": "Whenever a Goblin you control enters, you may put a quest counter on this enchantment.",
+          "effect": {
+            "Unimplemented": "you may put a quest counter on this enchantment."
+          },
+          "trigger": "EntersBattlefield"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10118,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Renegade Tactics",
+      "oracle_text": "Target creature can't block this turn.\nDraw a card.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "DrawCards": {
+          "count": 1
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Instant"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10120,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Sazacap's Brew",
+      "oracle_text": "Gift a tapped Fish (You may promise an opponent a gift as you cast this spell. If you do, they create a tapped 1/1 blue Fish creature token before its other effects.)\nAs an additional cost to cast this spell, discard a card.\nTarget player draws two cards. If the gift was promised, target creature you control gets +2/+0 until end of turn.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "DrawCards": {
+          "count": 1
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Instant"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10122,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Seething Song",
+      "oracle_text": "Add {R}{R}{R}{R}{R}.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "AddMana": {
+          "amount": 5,
+          "color": null
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10124,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 4,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Spreading Insurrection",
+      "oracle_text": "Gain control of target creature you don't control until end of turn. Untap that creature. It gains haste until end of turn.\nStorm (When you cast this spell, copy it for each spell cast before it this turn. You may choose new targets for the copies.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Unimplemented": "Gain control of target creature you don't control until end of turn. Untap that creature. It gains haste until end of turn.\nStorm (When you cast this spell, copy it for each spell cast before it this turn. You may choose new targets for the copies.)"
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "Magecraft — Whenever you cast or copy an instant or sorcery spell, create a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")",
+          "effect": {
+            "Unimplemented": "Add one mana of any color.\")"
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": "SelfSacrifice"
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Creature"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10126,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        "TapForAny"
+      ],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 3,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Storm-Kiln Artist",
+      "oracle_text": "This creature gets +1/+0 for each artifact you control.\nMagecraft — Whenever you cast or copy an instant or sorcery spell, create a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")",
+      "overload_cost": null,
+      "power": 2,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Dwarf",
+        "Shaman"
+      ],
+      "supertypes": [],
+      "toughness": 2,
+      "triggered_abilities": [
+        {
+          "description": "Magecraft — Whenever you cast or copy an instant or sorcery spell, create a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")",
+          "effect": {
+            "CreatePredefinedToken": {
+              "count": 1,
+              "token_type": "Treasure"
+            }
+          },
+          "trigger": "YouCastSpell"
+        }
+      ]
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10128,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Vandalblast",
+      "oracle_text": "Destroy target artifact you don't control.\nOverload {4}{R} (You may cast this spell for its overload cost. If you do, change \"target\" in its text to \"each.\")",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Unimplemented": "Destroy target artifact you don't control.\nOverload {4}{R} (You may cast this spell for its overload cost. If you do, change \"target\" in its text to \"each.\")"
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10130,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 0,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Wild Ride",
+      "oracle_text": "Target creature gets +3/+0 and gains haste until end of turn.\nHarmonize {4}{R} (You may cast this card from your graveyard for its harmonize cost. You may tap a creature you control to reduce that cost by {X}, where X is its power. Then exile this spell.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "Buff": {
+          "power": 3,
+          "toughness": 0,
+          "until_eot": true
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Sorcery"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10132,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 1,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Witch's Mark",
+      "oracle_text": "You may discard a card. If you do, draw two cards.\nCreate a Wicked Role token attached to up to one target creature you control. (If you control another Role on it, put that one into the graveyard. Enchanted creature gets +1/+1. When this token is put into a graveyard, each opponent loses 1 life.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": {
+        "DrawCards": {
+          "count": 1
+        }
+      },
+      "starting_loyalty": null,
+      "static_abilities": [
+        {
+          "Anthem": {
+            "affected": "AttachedTo",
+            "power": 1,
+            "toughness": 1
+          }
+        }
+      ],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Artifact"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 1,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 0,
+        "white": 0,
+        "x_count": 0
+      },
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 1136,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [],
+      "mana_cost": {
+        "black": 0,
+        "blue": 0,
+        "generic": 2,
+        "green": 0,
+        "hybrid": [],
+        "phyrexian": [],
+        "red": 0,
+        "white": 0,
+        "x_count": 0
+      },
+      "name": "Swiftfoot Boots",
+      "oracle_text": "Equipped creature has hexproof and haste. Equip {1}.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [
+        {
+          "GrantKeyword": {
+            "affected": "AttachedTo",
+            "keyword": "Hexproof"
+          }
+        },
+        {
+          "GrantKeyword": {
+            "affected": "AttachedTo",
+            "keyword": "Haste"
+          }
+        }
+      ],
+      "subtypes": [
+        "Equipment"
+      ],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "sample"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "({T}: Add {R}.)",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": true,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10134,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColor": "Red"
+        }
+      ],
+      "mana_cost": null,
+      "name": "Dwarven Mine",
+      "oracle_text": "({T}: Add {R}.)\nThis land enters tapped unless you control three or more other Mountains.\nWhen this land enters untapped, create a 1/1 red Dwarf creature token.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Mountain"
+      ],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {R}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 2,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "Cycling {R} ({R}, Discard this card: Draw a card.)",
+          "effect": {
+            "DrawCards": {
+              "count": 1
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": false,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": true,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10136,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColor": "Red"
+        }
+      ],
+      "mana_cost": null,
+      "name": "Forgotten Cave",
+      "oracle_text": "This land enters tapped.\n{T}: Add {R}.\nCycling {R} ({R}, Discard this card: Draw a card.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {C}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 1,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 1,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{1}{R}, {T}: Target Goblin creature gets +2/+0 until end of turn.",
+          "effect": {
+            "Buff": {
+              "power": 2,
+              "toughness": 0,
+              "until_eot": true
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10138,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        "TapForColorless"
+      ],
+      "mana_cost": null,
+      "name": "Goblin Burrows",
+      "oracle_text": "{T}: Add {C}.\n{1}{R}, {T}: Target Goblin creature gets +2/+0 until end of turn.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {R}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 4,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 1,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{4}{R}, {T}, Sacrifice this land: Discover 4. Activate only as a sorcery. (Exile cards from the top of your library until you exile a nonland card with mana value 4 or less. Cast it without paying its mana cost or put it into your hand. Put the rest on the bottom in a random order.)",
+          "effect": {
+            "Unimplemented": "Discover 4. Activate only as a sorcery. (Exile cards from the top of your library until you exile a nonland card with mana value 4 or less. Cast it without paying its mana cost or put it into your hand. Put the rest on the bottom in a random order.)"
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": "SelfSacrifice"
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": true,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10140,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColor": "Red"
+        }
+      ],
+      "mana_cost": null,
+      "name": "Hidden Volcano",
+      "oracle_text": "This land enters tapped.\n{T}: Add {R}.\n{4}{R}, {T}, Sacrifice this land: Discover 4. Activate only as a sorcery. (Exile cards from the top of your library until you exile a nonland card with mana value 4 or less. Cast it without paying its mana cost or put it into your hand. Put the rest on the bottom in a random order.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Cave"
+      ],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {C}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10142,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        "TapForColorless"
+      ],
+      "mana_cost": null,
+      "name": "Reliquary Tower",
+      "oracle_text": "You have no maximum hand size.\n{T}: Add {C}.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 0,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "{T}: Add {R}.",
+          "effect": {
+            "AddMana": {
+              "amount": 1,
+              "color": null
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": true,
+          "sacrifice_cost": null
+        },
+        {
+          "cost": {
+            "black": 0,
+            "blue": 0,
+            "generic": 4,
+            "green": 0,
+            "hybrid": [],
+            "phyrexian": [],
+            "red": 0,
+            "white": 0,
+            "x_count": 0
+          },
+          "description": "Cycling {2} ({2}, Discard this card: Draw a card.)",
+          "effect": {
+            "DrawCards": {
+              "count": 1
+            }
+          },
+          "life_cost": 0,
+          "requires_tap": false,
+          "sacrifice_cost": null
+        }
+      ],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": true,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 10144,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColor": "Red"
+        }
+      ],
+      "mana_cost": null,
+      "name": "Smoldering Crater",
+      "oracle_text": "This land enters tapped.\n{T}: Add {R}.\nCycling {2} ({2}, Discard this card: Draw a card.)",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [],
+      "supertypes": [],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "auto"
+  },
+  {
+    "definition": {
+      "activated_abilities": [],
+      "annihilator_count": null,
+      "back_face_id": null,
+      "card_types": [
+        "Land"
+      ],
+      "cost_increase": null,
+      "cost_reduction": null,
+      "dynamic_power": null,
+      "dynamic_toughness": null,
+      "enters_tapped": false,
+      "equip_cost": null,
+      "escape_exile_count": null,
+      "evoke_cost": null,
+      "flashback_cost": null,
+      "front_face_id": null,
+      "id": 1,
+      "keywords": [],
+      "kicker_cost": null,
+      "loyalty_abilities": [],
+      "mana_abilities": [
+        {
+          "TapForColor": "Red"
+        }
+      ],
+      "mana_cost": null,
+      "name": "Mountain",
+      "oracle_text": "{T}: Add {R}.",
+      "overload_cost": null,
+      "power": null,
+      "spell_effect": null,
+      "starting_loyalty": null,
+      "static_abilities": [],
+      "subtypes": [
+        "Mountain"
+      ],
+      "supertypes": [
+        "Basic"
+      ],
+      "toughness": null,
+      "triggered_abilities": []
+    },
+    "source": "sample"
+  }
+]

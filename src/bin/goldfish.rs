@@ -11,7 +11,7 @@
 //!   cargo run --release --bin goldfish -- --preset kinnan --trace
 //!
 //! Options:
-//!   --deck PATH       Load deck from file
+//!   --deck PATH       Load deck from file (enable --features scryfall to fetch missing cards)
 //!   --preset NAME     Use built-in deck: kinnan, brimaz, ashcoat (default: kinnan)
 //!   --games N         Number of simulation games (default: 1000)
 //!   --strategy S      Strategy: greedy, random (default: greedy)
@@ -62,7 +62,7 @@ fn main() {
     println!();
 
     // Card coverage report
-    print_coverage_report(&db, &deck, commander);
+    print_coverage_report(&db, &deck, commander, coverage_only);
 
     if coverage_only {
         return;
@@ -200,13 +200,15 @@ fn load_saved_moxfield_preset(
                 eprintln!(
                     "Warning: no commander section in '{txt_path}'. Using first card."
                 );
-                if decklist.cards.is_empty() {
-                    eprintln!("Error: deck file is empty.");
-                    std::process::exit(1);
+                match decklist.cards.first() {
+                    Some(entry) => entry.card_id,
+                    None => {
+                        eprintln!("Error: deck file is empty.");
+                        std::process::exit(1);
+                    }
                 }
-                decklist.cards[0].card_id
             };
-            let deck = decklist.expand();
+            let deck = commander_deck(&decklist, commander);
             let tutor_targets = decklist.tutor_targets.clone();
             let deck_name = decklist.name.clone();
             (db, deck, commander, tutor_targets, deck_name)
@@ -220,8 +222,31 @@ fn load_saved_moxfield_preset(
 
 
 fn load_deck_from_file(path: &str) -> (CardDatabase, Vec<CardId>, CardId, Vec<CardId>, String) {
+    #[cfg(not(feature = "scryfall"))]
     let db = sample::build_sample_db();
     let path = std::path::Path::new(path);
+
+    #[cfg(feature = "scryfall")]
+    let db = {
+        let imported = std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                mtg_gto::scryfall::ScryfallFetcher::new(".scryfall_cache")
+                    .import_deck(&text)
+                    .map_err(|e| e.to_string())
+            });
+        match imported {
+            Ok(result) if result.errors.is_empty() => result.db,
+            Ok(result) => {
+                eprintln!("Error loading deck:\n{}", result.errors.join("\n"));
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("Error loading deck: {e}");
+                std::process::exit(1);
+            }
+        }
+    };
 
     match mtg_gto::deck_import::import_deck_from_file(path, &db) {
         Ok(decklist) => {
@@ -229,9 +254,15 @@ fn load_deck_from_file(path: &str) -> (CardDatabase, Vec<CardId>, CardId, Vec<Ca
                 decklist.commanders[0].card_id
             } else {
                 eprintln!("Warning: No commander specified in deck file. Using first card.");
-                decklist.cards[0].card_id
+                match decklist.cards.first() {
+                    Some(entry) => entry.card_id,
+                    None => {
+                        eprintln!("Error: deck file is empty.");
+                        std::process::exit(1);
+                    }
+                }
             };
-            let deck = decklist.expand();
+            let deck = commander_deck(&decklist, commander);
             let tutor_targets = decklist.tutor_targets.clone();
             let name = decklist.name.clone();
             (db, deck, commander, tutor_targets, name)
@@ -243,7 +274,15 @@ fn load_deck_from_file(path: &str) -> (CardDatabase, Vec<CardId>, CardId, Vec<Ca
     }
 }
 
-fn print_coverage_report(db: &CardDatabase, deck: &[CardId], commander: CardId) {
+// Game setup expects the commander exactly once and extracts it into the command zone.
+fn commander_deck(decklist: &mtg_gto::card::Decklist, commander: CardId) -> Vec<CardId> {
+    let mut deck = decklist.expand();
+    deck.retain(|&id| id != commander);
+    deck.push(commander);
+    deck
+}
+
+fn print_coverage_report(db: &CardDatabase, deck: &[CardId], commander: CardId, full: bool) {
     println!("Card Coverage");
     println!("-------------");
 
@@ -264,7 +303,8 @@ fn print_coverage_report(db: &CardDatabase, deck: &[CardId], commander: CardId) 
         }
     }
 
-    let coverage = catalog::analyze_deck_coverage(&card_names, db);
+    // Auto-parsing is provenance, not proof that all Oracle text is implemented.
+    let coverage = catalog::analyze_deck_coverage(&card_names, &sample::build_sample_db());
 
     let mut fully = 0;
     let mut stubbed = 0;
@@ -302,6 +342,13 @@ fn print_coverage_report(db: &CardDatabase, deck: &[CardId], commander: CardId) 
         }
     );
     println!("  Stubbed/partial:   {}", stubbed);
+    println!("  Auto-parsed:       {}", coverage.cards.iter().filter(|e| e.level == catalog::CoverageLevel::AutoParsed).count());
+    if full {
+        for entry in &coverage.cards {
+            println!("  {:?}: {}", entry.level, entry.name);
+        }
+        return;
+    }
 
     if !unimpl_cards.is_empty() && unimpl_cards.len() <= 20 {
         println!("\n  Cards with incomplete effects:");
@@ -354,6 +401,51 @@ fn print_results(r: &GoldfishResults) {
                     p_cum * 100.0,
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_deck_places_commander_only_in_command_zone() {
+        let path = std::env::temp_dir().join(format!("goldfish-deck-{}.txt", std::process::id()));
+        // Even an accidental mainboard duplicate must not enter the library.
+        std::fs::write(&path, "~~Commanders~~\n1 Kinnan, Bonder Prodigy\n~~Mainboard~~\n1 Kinnan, Bonder Prodigy\n99 Forest\n~~Tutor Targets~~\n1 Forest\n").unwrap();
+        let (db, deck, commander, targets, _) = load_deck_from_file(path.to_str().unwrap());
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(deck.len(), 100);
+        assert_eq!(deck.iter().filter(|&&id| id == commander).count(), 1);
+        assert_eq!(targets, vec![sample::ids::FOREST]);
+        assert_eq!(commander, sample::ids::KINNAN_BONDER_PRODIGY);
+        let mut state = GameState::new_commander(2);
+        state.card_db = Some(Arc::new(db));
+        rules::setup_commander_game(&mut state, &deck, &deck, commander, commander);
+        let player = &state.players[0];
+        assert_eq!(player.library.len() + player.hand.len(), 99);
+        let object = &state.objects[&player.commander_object_id.unwrap()];
+        assert_eq!(object.card_def_id, commander);
+        assert_eq!(player.command_zone, vec![object.object_id]);
+        assert!(player.library.iter().chain(&player.hand).all(|id| state.objects[id].card_def_id != commander));
+    }
+
+    #[test]
+    fn presets_preserve_sample_decks() {
+        for name in ["kinnan", "brimaz", "ashcoat", "flubs"] {
+            let (_, deck, commander, _, _) = load_preset_deck(name);
+            let (expected, expected_commander) = match name {
+                "kinnan" => {
+                    let (deck, commander, _) = sample::kinnan_commander_deck();
+                    (deck, commander)
+                }
+                "brimaz" => sample::brimaz_commander_deck(),
+                "ashcoat" => sample::ashcoat_commander_deck(),
+                _ => sample::flubs_commander_deck(),
+            };
+            assert_eq!(deck, expected);
+            assert_eq!(commander, expected_commander);
         }
     }
 }

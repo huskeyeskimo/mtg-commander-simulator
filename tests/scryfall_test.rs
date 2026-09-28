@@ -454,3 +454,28 @@ fn scryfall_live_double_faced_card() {
     assert_eq!(def.power, Some(1));
     assert_eq!(def.toughness, Some(1));
 }
+
+#[test]
+fn import_deck_preserves_sample_cards_and_parses_cached_missing_cards() {
+    let cache = std::env::temp_dir().join(format!("mtg-import-regression-{}", std::process::id()));
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("test_missing_card.json"), r#"{
+        "name": "Test Missing Card", "mana_cost": "{R}",
+        "type_line": "Sorcery", "oracle_text": "Draw a card."
+    }"#).unwrap();
+    let result = ScryfallFetcher::new(&cache).import_deck(
+        "~~Commanders~~\n1 Kinnan, Bonder Prodigy\n~~Mainboard~~\n1 Sol Ring\n2 Test Missing Card\n96 Forest\n"
+    ).unwrap();
+    std::fs::remove_dir_all(cache).unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(result.deck.len(), 100);
+    let sample = mtg_gto::card::sample::build_sample_db();
+    for name in ["Kinnan, Bonder Prodigy", "Sol Ring", "Forest"] {
+        let id = sample.find_by_name(name).unwrap();
+        assert_eq!(result.db.find_by_name(name), Some(id));
+        assert_eq!(serde_json::to_value(result.db.get(id)).unwrap(), serde_json::to_value(sample.get(id)).unwrap());
+    }
+    let parsed = result.db.find_by_name("Test Missing Card").unwrap();
+    assert!(result.db.get(parsed).unwrap().spell_effect.is_some());
+    assert_eq!(result.deck.iter().filter(|&&id| id == parsed).count(), 2);
+}

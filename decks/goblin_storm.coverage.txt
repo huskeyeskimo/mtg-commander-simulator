@@ -1,0 +1,95 @@
+Commander Goldfish Simulator
+============================
+Deck:       goblin_storm (Zada, Hedron Grinder)
+Cards:      100
+Strategy:   greedy
+
+Card Coverage
+-------------
+  Fully implemented: 6/79 (8%)
+  Stubbed/partial:   0
+  Auto-parsed:       73
+  AutoParsed: Krenko, Mob Boss
+  AutoParsed: Pashalik Mons
+  AutoParsed: Brightstone Ritual
+  AutoParsed: Broadside Bombardiers
+  AutoParsed: Conspicuous Snoop
+  AutoParsed: Empty the Warrens
+  AutoParsed: Grapeshot
+  AutoParsed: Skirk Prospector
+  FullyImplemented: Roaming Throne
+  FullyImplemented: Skullclamp
+  FullyImplemented: Sol Ring
+  AutoParsed: Blasphemous Act
+  AutoParsed: Chaos Warp
+  AutoParsed: Frontline Heroism
+  AutoParsed: Goblin Bombardment
+  AutoParsed: Goblin Chieftain
+  AutoParsed: Goblin Dark-Dwellers
+  AutoParsed: Goblin Lackey
+  AutoParsed: Goblin Trashmaster
+  AutoParsed: Great Train Heist
+  AutoParsed: Grenzo, Havoc Raiser
+  AutoParsed: Howlsquad Heavy
+  AutoParsed: Past in Flames
+  AutoParsed: Redcap Gutter-Dweller
+  AutoParsed: Rundvelt Hordemaster
+  AutoParsed: Searslicer Goblin
+  FullyImplemented: Siege-Gang Commander
+  AutoParsed: Siege-Gang Lieutenant
+  AutoParsed: Idol of Oblivion
+  AutoParsed: Ruby Medallion
+  AutoParsed: Throne of Eldraine
+  AutoParsed: Arena of Glory
+  AutoParsed: Castle Embereth
+  AutoParsed: Den of the Bugbear
+  AutoParsed: Fountainport
+  AutoParsed: Kher Keep
+  AutoParsed: Spinerock Knoll
+  AutoParsed: War Room
+  AutoParsed: Shinka, the Bloodsoaked Keep
+  AutoParsed: Ancestors' Aid
+  AutoParsed: Battle Hymn
+  AutoParsed: Boggart Shenanigans
+  AutoParsed: Crimson Wisps
+  AutoParsed: Daring Discovery
+  AutoParsed: Dragon Fodder
+  AutoParsed: Expedite
+  AutoParsed: Faithless Looting
+  AutoParsed: Fists of Flame
+  AutoParsed: Gempalm Incinerator
+  AutoParsed: General Kreat, the Boltbringer
+  AutoParsed: Glimpse the Impossible
+  AutoParsed: Goblin Bushwhacker
+  AutoParsed: Goblin Matron
+  AutoParsed: Goblin Negotiation
+  AutoParsed: Goblin Warchief
+  AutoParsed: Haze of Rage
+  AutoParsed: Impact Tremors
+  AutoParsed: Impulsive Pilferer
+  AutoParsed: Krenko's Command
+  AutoParsed: Mana Geyser
+  AutoParsed: Mogg War Marshal
+  AutoParsed: Quest for the Goblin Lord
+  AutoParsed: Renegade Tactics
+  AutoParsed: Sazacap's Brew
+  AutoParsed: Seething Song
+  AutoParsed: Spreading Insurrection
+  AutoParsed: Storm-Kiln Artist
+  AutoParsed: Vandalblast
+  AutoParsed: Wild Ride
+  AutoParsed: Witch's Mark
+  FullyImplemented: Swiftfoot Boots
+  AutoParsed: Dwarven Mine
+  AutoParsed: Forgotten Cave
+  AutoParsed: Goblin Burrows
+  AutoParsed: Hidden Volcano
+  AutoParsed: Reliquary Tower
+  AutoParsed: Smoldering Crater
+  FullyImplemented: Mountain
+  AutoParsed: Zada, Hedron Grinder
+
+Classification uses the existing coverage analyzer against the sample database.
+FullyImplemented is the analyzer result, not an independent rules-completeness audit.
+AutoParsed identifies Scryfall-derived definitions; their effects may be partial or unsupported.
+Counts are unique card names; Mountain has 22 copies.

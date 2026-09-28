@@ -282,8 +282,8 @@ impl ScryfallFetcher {
         sample_db.get(id).cloned()
     }
 
-    /// Import an entire deck list from a string, fetching all cards from
-    /// Scryfall. Returns (CardDatabase, deck as Vec<CardId>, Option<commander_id>).
+    /// Import a deck list, reusing sample implementations and fetching missing
+    /// cards from Scryfall. The returned deck includes the commander.
     ///
     /// Supports the format:
     /// ```text
@@ -298,7 +298,7 @@ impl ScryfallFetcher {
         &mut self,
         deck_text: &str,
     ) -> Result<DeckImportResult, ScryfallError> {
-        let mut db = CardDatabase::new();
+        let mut db = crate::card::sample::build_sample_db();
         let mut deck: Vec<CardId> = Vec::new();
         let mut commander_id: Option<CardId> = None;
         // Map from card name -> CardId to avoid duplicate fetches
@@ -352,6 +352,9 @@ impl ScryfallFetcher {
             // Fetch or reuse card
             let card_id = if let Some(&existing_id) = name_to_id.get(lookup_name) {
                 existing_id
+            } else if let Some(id) = db.find_by_name(lookup_name) {
+                name_to_id.insert(lookup_name.to_string(), id);
+                id
             } else {
                 match self.fetch_card(lookup_name) {
                     Ok(scryfall_card) => {
