@@ -361,9 +361,18 @@ pub mod ids {
     pub const DRAGONBACK_ASSAULT_TOKEN: u64 = 1146;
     pub const SCUTE_SWARM_INSECT_TOKEN: u64 = 1147;
     pub const CHOCOBO_TOKEN: u64 = 1148;
+    pub const SEETHING_SONG: u64 = 1149;
+    pub const BATTLE_HYMN: u64 = 1150;
+    pub const DRAGON_FODDER: u64 = 1151;
+    pub const KRENKOS_COMMAND: u64 = 1152;
 }
 
 pub const ALL_CARDS: &[CardCatalogEntry] = &[
+    CardCatalogEntry { id: ids::SEETHING_SONG, key: "SEETHING_SONG", name: "Seething Song" },
+    CardCatalogEntry { id: ids::BATTLE_HYMN, key: "BATTLE_HYMN", name: "Battle Hymn" },
+    CardCatalogEntry { id: ids::DRAGON_FODDER, key: "DRAGON_FODDER", name: "Dragon Fodder" },
+    CardCatalogEntry { id: ids::KRENKOS_COMMAND, key: "KRENKOS_COMMAND", name: "Krenko's Command" },
+
     CardCatalogEntry {
         id: ids::MOUNTAIN,
         key: "MOUNTAIN",

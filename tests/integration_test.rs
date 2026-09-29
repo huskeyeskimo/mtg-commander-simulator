@@ -5305,3 +5305,111 @@ fn test_nirkana_revenant_no_bonus_on_non_swamp() {
         "No black mana bonus should be added for non-Swamp lands"
     );
 }
+
+// Cast with exactly the printed cost, so resolution assertions measure the effect.
+fn cast_goblin_storm_spell(state: &mut GameState, card: u64, controller: usize) -> u64 {
+    state.active_player = controller;
+    state.priority_player = controller;
+    state.phase = Phase::PreCombatMain;
+    let def = state.card_db().get(card).unwrap();
+    let cost = def.mana_cost.clone().unwrap();
+    let generic = if card == sample::ids::SEETHING_SONG { 2 } else { 1 };
+    assert_eq!(cost, mtg_gto::mana::ManaCost::new(generic, 0, 0, 0, 1, 0));
+    if card == sample::ids::SEETHING_SONG || card == sample::ids::BATTLE_HYMN {
+        assert_eq!(def.card_types, vec![mtg_gto::card::CardType::Instant]);
+    }
+    state.players[controller].mana_pool.red = cost.generic + cost.red;
+    let spell = state.create_card_in_zone(card, controller, ZoneType::Hand);
+    let action = Action::CastSpell { object_id: spell, targets: vec![] };
+    assert!(legal_actions(state).contains(&action));
+    rules::apply_action(state, &action);
+    assert_eq!(state.stack.len(), 1);
+    assert_eq!(state.players[controller].mana_pool.total(), 0);
+    spell
+}
+
+fn resolve_goblin_storm_spell(state: &mut GameState, spell: u64, controller: usize) {
+    rules::apply_action(state, &Action::PassPriority);
+    rules::apply_action(state, &Action::PassPriority);
+    assert!(state.stack.is_empty());
+    assert!(state.players[controller].graveyard.contains(&spell));
+}
+
+#[test]
+fn test_seething_song_adds_exactly_five_red() {
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(sample::build_sample_db()));
+    let spell = cast_goblin_storm_spell(&mut state, sample::ids::SEETHING_SONG, 1);
+    resolve_goblin_storm_spell(&mut state, spell, 1);
+    assert_eq!(state.players[1].mana_pool.red, 5);
+    assert_eq!(state.players[1].mana_pool.total(), 5);
+    assert_eq!(state.players[0].mana_pool.total(), 0);
+}
+
+#[test]
+fn test_battle_hymn_counts_only_controllers_creatures_at_resolution() {
+    for count in [0, 1, 4] {
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(sample::build_sample_db()));
+        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::SOL_RING, 1, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Graveyard);
+        let spell = cast_goblin_storm_spell(&mut state, sample::ids::BATTLE_HYMN, 1);
+        // Added after casting: the effect must evaluate the board on resolution.
+        for i in 0..count {
+            let creature = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+            let inst = state.objects.get_mut(&creature).unwrap();
+            inst.tapped = true;
+            inst.is_token = i == 0;
+        }
+        resolve_goblin_storm_spell(&mut state, spell, 1);
+        assert_eq!(state.players[1].mana_pool.red, count);
+        assert_eq!(state.players[1].mana_pool.total(), count);
+        assert_eq!(state.players[0].mana_pool.total(), 0);
+    }
+}
+
+fn assert_two_goblin_tokens(card: u64) {
+    use mtg_gto::card::{CardType, DynamicValue, Effect, Subtype};
+    use mtg_gto::mana::{Color, ManaCost};
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(sample::build_sample_db()));
+    let def = state.card_db().get(card).unwrap();
+    assert_eq!(def.card_types, vec![CardType::Sorcery]);
+    assert_eq!(def.mana_cost, Some(ManaCost::new(1, 0, 0, 0, 1, 0)));
+    match def.spell_effect.as_ref().unwrap() {
+        Effect::CreateTokens { token, count } => {
+            assert_eq!(token.colors, vec![Color::Red]);
+            assert_eq!(*count, DynamicValue::Fixed(2));
+        }
+        other => panic!("Expected token creation, got {other:?}"),
+    }
+    let spell = cast_goblin_storm_spell(&mut state, card, 1);
+    assert!(state.battlefield.is_empty());
+    resolve_goblin_storm_spell(&mut state, spell, 1);
+    assert_eq!(state.battlefield.len(), 2);
+    for id in &state.battlefield {
+        let inst = &state.objects[id];
+        assert!(inst.is_token);
+        assert!(inst.summoning_sick);
+        assert!(!inst.tapped);
+        assert_eq!(inst.controller, 1);
+        assert_eq!(inst.owner, 1);
+        let token = state.card_db().get(inst.card_def_id).unwrap();
+        assert_eq!(token.name, "Goblin");
+        assert_eq!(token.card_types, vec![CardType::Creature]);
+        assert_eq!(token.subtypes, vec![Subtype("Goblin".into())]);
+        assert_eq!((token.power, token.toughness), (Some(1), Some(1)));
+        assert!(token.keywords.is_empty());
+    }
+}
+
+#[test]
+fn test_dragon_fodder_creates_two_goblins() {
+    assert_two_goblin_tokens(sample::ids::DRAGON_FODDER);
+}
+
+#[test]
+fn test_krenkos_command_creates_two_goblins() {
+    assert_two_goblin_tokens(sample::ids::KRENKOS_COMMAND);
+}

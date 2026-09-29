@@ -2678,6 +2678,71 @@ pub fn build_sample_db() -> CardDatabase {
         ..Default::default()
     });
 
+    // Goblin Storm mana and token spells.
+    db.insert(CardDef {
+        id: ids::SEETHING_SONG,
+        name: "Seething Song".into(),
+        mana_cost: Some(ManaCost::new(2, 0, 0, 0, 1, 0)),
+        card_types: vec![CardType::Instant],
+        spell_effect: Some(Effect::AddMana { color: Some(Color::Red), amount: 5 }),
+        enters_tapped: false,
+        oracle_text: "Add {R}{R}{R}{R}{R}.".into(),
+        ..Default::default()
+    });
+
+    db.insert(CardDef {
+        id: ids::BATTLE_HYMN,
+        name: "Battle Hymn".into(),
+        mana_cost: Some(ManaCost::new(1, 0, 0, 0, 1, 0)),
+        card_types: vec![CardType::Instant],
+        spell_effect: Some(Effect::AddDynamicMana { color: Color::Red, count: DynamicValue::CreaturesControlled }),
+        enters_tapped: false,
+        oracle_text: "Add {R} for each creature you control.".into(),
+        ..Default::default()
+    });
+
+    db.insert(CardDef {
+        id: ids::DRAGON_FODDER,
+        name: "Dragon Fodder".into(),
+        mana_cost: Some(ManaCost::new(1, 0, 0, 0, 1, 0)),
+        card_types: vec![CardType::Sorcery],
+        spell_effect: Some(Effect::CreateTokens {
+            token: TokenDef {
+                name: "Goblin".into(),
+                power: 1,
+                toughness: 1,
+                colors: vec![Color::Red],
+                subtypes: vec![Subtype("Goblin".into())],
+                keywords: vec![],
+            },
+            count: DynamicValue::Fixed(2),
+        }),
+        enters_tapped: false,
+        oracle_text: "Create two 1/1 red Goblin creature tokens.".into(),
+        ..Default::default()
+    });
+
+    db.insert(CardDef {
+        id: ids::KRENKOS_COMMAND,
+        name: "Krenko's Command".into(),
+        mana_cost: Some(ManaCost::new(1, 0, 0, 0, 1, 0)),
+        card_types: vec![CardType::Sorcery],
+        spell_effect: Some(Effect::CreateTokens {
+            token: TokenDef {
+                name: "Goblin".into(),
+                power: 1,
+                toughness: 1,
+                colors: vec![Color::Red],
+                subtypes: vec![Subtype("Goblin".into())],
+                keywords: vec![],
+            },
+            count: DynamicValue::Fixed(2),
+        }),
+        enters_tapped: false,
+        oracle_text: "Create two 1/1 red Goblin creature tokens.".into(),
+        ..Default::default()
+    });
+
     // Dark Ritual: B — Add BBB
     db.insert(CardDef {
         id: ids::DARK_RITUAL,

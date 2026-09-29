@@ -479,3 +479,32 @@ fn import_deck_preserves_sample_cards_and_parses_cached_missing_cards() {
     assert!(result.db.get(parsed).unwrap().spell_effect.is_some());
     assert_eq!(result.deck.iter().filter(|&&id| id == parsed).count(), 2);
 }
+
+#[test]
+fn import_goblin_storm_spells_prefers_sample_definitions_over_cache() {
+    let cache = std::env::temp_dir().join(format!("mtg-goblin-spells-{}", std::process::id()));
+    std::fs::create_dir_all(&cache).unwrap();
+    let names = ["Seething Song", "Battle Hymn", "Dragon Fodder", "Krenko's Command"];
+    for (name, file) in names.iter().zip([
+        "seething_song.json", "battle_hymn.json", "dragon_fodder.json", "krenko's_command.json",
+    ]) {
+        std::fs::write(cache.join(file), serde_json::json!({
+            "name": name, "mana_cost": "{R}", "type_line": "Sorcery",
+            "oracle_text": "Draw a card."
+        }).to_string()).unwrap();
+    }
+    let result = ScryfallFetcher::new(&cache).import_deck(
+        "~~Commanders~~\n1 Kinnan, Bonder Prodigy\n~~Mainboard~~\n1 Seething Song\n1 Battle Hymn\n1 Dragon Fodder\n1 Krenko's Command\n95 Mountain\n"
+    ).unwrap();
+    std::fs::remove_dir_all(cache).unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(result.deck.len(), 100);
+    let sample = mtg_gto::card::sample::build_sample_db();
+    for name in names {
+        let id = sample.find_by_name(name).unwrap();
+        assert_eq!(result.db.find_by_name(name), Some(id));
+        assert!(result.deck.contains(&id));
+        assert_eq!(serde_json::to_value(result.db.get(id)).unwrap(),
+                   serde_json::to_value(sample.get(id)).unwrap());
+    }
+}
