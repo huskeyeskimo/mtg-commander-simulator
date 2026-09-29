@@ -530,3 +530,24 @@ fn import_krenko_prefers_complete_sample_definition() {
     assert_eq!(serde_json::to_value(result.db.get(id)).unwrap(),
                serde_json::to_value(sample.get(id)).unwrap());
 }
+
+#[test]
+fn import_brightstone_prefers_sample_definition() {
+    let cache = std::env::temp_dir().join(format!("mtg-brightstone-import-{}", std::process::id()));
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("brightstone_ritual.json"), serde_json::json!({
+        "name": "Brightstone Ritual", "mana_cost": "{R}", "type_line": "Instant",
+        "oracle_text": "Add {R} for each Goblin on the battlefield."
+    }).to_string()).unwrap();
+    let result = ScryfallFetcher::new(&cache).import_deck(
+        "~~Commanders~~\n1 Krenko, Mob Boss\n~~Mainboard~~\n1 Brightstone Ritual\n98 Mountain\n"
+    ).unwrap();
+    std::fs::remove_dir_all(cache).unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let id = mtg_gto::card::sample::ids::BRIGHTSTONE_RITUAL;
+    assert_eq!(result.db.find_by_name("Brightstone Ritual"), Some(id));
+    assert!(result.deck.contains(&id));
+    let sample = mtg_gto::card::sample::build_sample_db();
+    assert_eq!(serde_json::to_value(result.db.get(id)).unwrap(),
+               serde_json::to_value(sample.get(id)).unwrap());
+}

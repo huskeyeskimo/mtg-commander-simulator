@@ -1375,10 +1375,13 @@ impl GameState {
         controller: PlayerIndex,
         context: Option<&crate::card::DynamicContext>,
     ) -> i32 {
-        if let crate::card::DynamicValue::PermanentsWithSubtype(subtype) = value {
+        if let crate::card::DynamicValue::PermanentsWithSubtype(subtype)
+            | crate::card::DynamicValue::AllPermanentsWithSubtype(subtype) = value
+        {
             return self.battlefield.iter().filter(|&&id| {
                 self.get_characteristics(id).map_or(false, |c| {
-                    c.controller == controller && (c.subtypes.iter().any(|s| s.0 == *subtype)
+                    (matches!(value, crate::card::DynamicValue::AllPermanentsWithSubtype(_))
+                        || c.controller == controller) && (c.subtypes.iter().any(|s| s.0 == *subtype)
                         || c.keywords.contains(&crate::card::KeywordAbility::Changeling))
                 })
             }).count() as i32;

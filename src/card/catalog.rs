@@ -366,9 +366,15 @@ pub mod ids {
     pub const DRAGON_FODDER: u64 = 1151;
     pub const KRENKOS_COMMAND: u64 = 1152;
     pub const KRENKO_MOB_BOSS: u64 = 1153;
+    pub const BRIGHTSTONE_RITUAL: u64 = 1154;
 }
 
 pub const ALL_CARDS: &[CardCatalogEntry] = &[
+    CardCatalogEntry {
+        id: ids::BRIGHTSTONE_RITUAL,
+        key: "BRIGHTSTONE_RITUAL",
+        name: "Brightstone Ritual",
+    },
     CardCatalogEntry {
         id: ids::KRENKO_MOB_BOSS,
         key: "KRENKO_MOB_BOSS",

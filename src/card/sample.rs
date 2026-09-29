@@ -2703,6 +2703,20 @@ pub fn build_sample_db() -> CardDatabase {
         ..Default::default()
     });
 
+    db.insert(CardDef {
+        id: ids::BRIGHTSTONE_RITUAL,
+        name: "Brightstone Ritual".into(),
+        mana_cost: Some(ManaCost::new(0, 0, 0, 0, 1, 0)),
+        card_types: vec![CardType::Instant],
+        spell_effect: Some(Effect::AddDynamicMana {
+            color: Color::Red,
+            count: DynamicValue::AllPermanentsWithSubtype("Goblin".into()),
+        }),
+        enters_tapped: false,
+        oracle_text: "Add {R} for each Goblin on the battlefield.".into(),
+        ..Default::default()
+    });
+
     // Goblin Storm mana and token spells.
     db.insert(CardDef {
         id: ids::SEETHING_SONG,

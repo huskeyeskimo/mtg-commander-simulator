@@ -5638,3 +5638,120 @@ fn test_creature_mana_tap_cost_respects_sickness_haste_and_auto_tap() {
     assert_eq!(state.players[1].mana_pool.green, 1);
     assert_eq!(state.card_db().get(sample::ids::LLANOWAR_ELVES).unwrap().base_colors(), vec![Color::Green]);
 }
+
+fn brightstone_state() -> GameState {
+    let mut state = GameState::new(3);
+    let mut db = sample::build_sample_db();
+    db.insert(mtg_gto::card::CardDef {
+        id: 900020,
+        name: "Test Goblin Artifact".into(),
+        card_types: vec![mtg_gto::card::CardType::Artifact],
+        subtypes: vec![mtg_gto::card::Subtype("Goblin".into())],
+        ..Default::default()
+    });
+    state.card_db = Some(Arc::new(db));
+    state.active_player = 1;
+    state.priority_player = 1;
+    state.phase = Phase::PreCombatMain;
+    state
+}
+
+fn cast_brightstone(state: &mut GameState) -> u64 {
+    use mtg_gto::card::CardType;
+    use mtg_gto::mana::ManaCost;
+    let def = state.card_db().get(sample::ids::BRIGHTSTONE_RITUAL).unwrap();
+    assert_eq!(def.mana_cost, Some(ManaCost::new(0, 0, 0, 0, 1, 0)));
+    assert_eq!(def.card_types, vec![CardType::Instant]);
+    let spell = state.create_card_in_zone(sample::ids::BRIGHTSTONE_RITUAL, 1, ZoneType::Hand);
+    let action = Action::CastSpell { object_id: spell, targets: vec![] };
+    state.players[1].mana_pool.colorless = 1;
+    assert!(!legal_actions(state).contains(&action), "Colorless cannot pay R");
+    state.players[1].mana_pool.colorless = 0;
+    state.players[1].mana_pool.red = 1;
+    assert!(legal_actions(state).contains(&action));
+    rules::apply_action(state, &action);
+    assert_eq!(state.stack.len(), 1);
+    assert_eq!(state.players[1].mana_pool.total(), 0);
+    spell
+}
+
+fn resolve_brightstone(state: &mut GameState, spell: u64, red: u32) {
+    for _ in 0..state.players.len() {
+        rules::apply_action(state, &Action::PassPriority);
+    }
+    assert!(state.stack.is_empty());
+    assert!(state.players[1].graveyard.contains(&spell));
+    assert_eq!(state.players[1].mana_pool.red, red);
+    assert_eq!(state.players[1].mana_pool.total(), red);
+    assert_eq!(state.players[0].mana_pool.total(), 0);
+    assert_eq!(state.players[2].mana_pool.total(), 0);
+}
+
+#[test]
+fn test_brightstone_zero_goblins_ignores_other_zones_and_nongoblins() {
+    let mut state = brightstone_state();
+    for owner in 0..3 {
+        for zone in [ZoneType::Hand, ZoneType::Library, ZoneType::Graveyard, ZoneType::Exile, ZoneType::Command] {
+            state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, owner, zone);
+        }
+        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, owner, ZoneType::Battlefield);
+    }
+    let spell = cast_brightstone(&mut state);
+    resolve_brightstone(&mut state, spell, 0);
+}
+
+#[test]
+fn test_brightstone_counts_your_goblins() {
+    let mut state = brightstone_state();
+    state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield);
+    let spell = cast_brightstone(&mut state);
+    resolve_brightstone(&mut state, spell, 1);
+}
+
+#[test]
+fn test_brightstone_counts_goblins_of_all_opponents() {
+    let mut state = brightstone_state();
+    for owner in [0, 2] {
+        state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, owner, ZoneType::Battlefield);
+    }
+    let spell = cast_brightstone(&mut state);
+    resolve_brightstone(&mut state, spell, 2);
+}
+
+#[test]
+fn test_brightstone_counts_noncreature_goblin_permanents() {
+    let mut state = brightstone_state();
+    state.create_card_in_zone(900020, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(900020, 1, ZoneType::Battlefield);
+    let spell = cast_brightstone(&mut state);
+    resolve_brightstone(&mut state, spell, 2);
+}
+
+#[test]
+fn test_brightstone_uses_battlefield_at_resolution() {
+    let mut state = brightstone_state();
+    let goblin = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield);
+    let spell = cast_brightstone(&mut state);
+    state.move_object(goblin, ZoneType::Battlefield, ZoneType::Graveyard);
+    for owner in [0, 2] {
+        state.create_card_in_zone(900020, owner, ZoneType::Battlefield);
+    }
+    resolve_brightstone(&mut state, spell, 2);
+}
+
+#[test]
+fn test_brightstone_reuses_current_subtypes_and_changeling_counting() {
+    use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
+    let mut state = brightstone_state();
+    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let changeling = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 2, ZoneType::Battlefield);
+    state.objects.get_mut(&changeling).unwrap().temp_keywords.push(KeywordAbility::Changeling);
+    state.continuous_effects.push(ContinuousEffect {
+        source_id: bear, controller: 0, timestamp: 1, duration: Duration::UntilEndOfTurn,
+        affected: AffectedObjects::Specific(bear),
+        modification: LayerModification::AddSubtype(mtg_gto::card::Subtype("Goblin".into())),
+    });
+    state.invalidate_characteristics_cache();
+    let spell = cast_brightstone(&mut state);
+    resolve_brightstone(&mut state, spell, 2);
+}
