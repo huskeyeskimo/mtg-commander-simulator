@@ -668,6 +668,7 @@ pub(super) fn resolve_effect(
                     }
                 }
             }
+            state.invalidate_characteristics_cache();
         }
 
         Effect::Fight { .. } => {

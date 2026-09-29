@@ -90,6 +90,8 @@ pub enum AffectedObjects {
     OtherCreaturesWithSubtypeControlledBy(String, PlayerIndex),
     /// The permanent this source is attached to (equipment/aura buffs).
     AttachedTo,
+    /// Other creatures of a subtype controlled by the source's current controller.
+    OtherCreaturesWithSubtypeControlledBySource(String),
 }
 
 /// A single modification applied by a continuous effect, keyed to its layer.
@@ -240,6 +242,22 @@ pub fn compute_characteristics_with_ctx(
     card_db: &crate::game::CardDatabase,
     dyn_ctx: Option<&crate::card::DynamicContext>,
 ) -> Option<ComputedCharacteristics> {
+    compute_characteristics_through_layer(
+        obj_id, effects, objects, battlefield, card_db, dyn_ctx, None,
+    )
+}
+
+/// A bounded layer pass lets later filters read the source's Layer 2 controller
+/// without recursively evaluating that source's anthems.
+fn compute_characteristics_through_layer(
+    obj_id: ObjectId,
+    effects: &[ContinuousEffect],
+    objects: &std::collections::HashMap<ObjectId, crate::card::CardInstance>,
+    battlefield: &std::collections::HashSet<ObjectId>,
+    card_db: &crate::game::CardDatabase,
+    dyn_ctx: Option<&crate::card::DynamicContext>,
+    through: Option<Layer>,
+) -> Option<ComputedCharacteristics> {
     let inst = objects.get(&obj_id)?;
     let def = card_db.get(inst.card_def_id)?;
 
@@ -269,6 +287,7 @@ pub fn compute_characteristics_with_ctx(
     // Collect effects that apply to this object, sorted by (layer, timestamp)
     let mut applicable: Vec<&ContinuousEffect> = effects
         .iter()
+        .filter(|e| through.map_or(true, |layer| e.modification.layer() <= layer))
         .filter(|e| effect_applies_to(e, obj_id, inst, objects, battlefield, card_db))
         .collect();
 
@@ -280,6 +299,20 @@ pub fn compute_characteristics_with_ctx(
 
     // Apply effects in layer order
     for effect in &applicable {
+        if let AffectedObjects::OtherCreaturesWithSubtypeControlledBySource(subtype) = &effect.affected {
+            let source_controller = compute_characteristics_through_layer(
+                effect.source_id, effects, objects, battlefield, card_db, None,
+                Some(Layer::L2Control),
+            ).map(|c| c.controller);
+            if source_controller != Some(controller)
+                || !card_types.contains(&CardType::Creature)
+                || !(subtypes.iter().any(|s| s.0 == *subtype)
+                    || keywords.contains(&KeywordAbility::Changeling)
+                    || inst.temp_keywords.contains(&KeywordAbility::Changeling))
+            {
+                continue;
+            }
+        }
         match &effect.modification {
             // --- Layer 1: Copy ---
             LayerModification::CopyOf(copy_id) => {
@@ -420,6 +453,11 @@ fn effect_applies_to(
     }
 
     match &effect.affected {
+        AffectedObjects::OtherCreaturesWithSubtypeControlledBySource(_) => {
+            // Control and type eligibility are checked after earlier layers run.
+            obj_id != effect.source_id && battlefield.contains(&obj_id)
+                && battlefield.contains(&effect.source_id)
+        }
         AffectedObjects::Source => obj_id == effect.source_id,
         AffectedObjects::Specific(id) => obj_id == *id,
         AffectedObjects::AllCreatures => {

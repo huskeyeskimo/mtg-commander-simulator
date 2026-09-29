@@ -5755,3 +5755,169 @@ fn test_brightstone_reuses_current_subtypes_and_changeling_counting() {
     let spell = cast_brightstone(&mut state);
     resolve_brightstone(&mut state, spell, 2);
 }
+
+fn chieftain_state() -> (GameState, u64, u64, u64) {
+    use mtg_gto::card::{CardDef, CardType, Subtype};
+    let mut db = sample::build_sample_db();
+    db.insert(CardDef {
+        id: 900030, name: "Test Goblin noncreature".into(),
+        card_types: vec![CardType::Artifact], subtypes: vec![Subtype("Goblin".into())],
+        ..Default::default()
+    });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.active_player = 1;
+    state.priority_player = 1;
+    state.phase = Phase::PreCombatMain;
+    let chief = state.create_card_in_zone(sample::ids::GOBLIN_CHIEFTAIN, 1, ZoneType::Battlefield);
+    let ours = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield);
+    let theirs = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 0, ZoneType::Battlefield);
+    state.refresh_continuous_effects();
+    (state, chief, ours, theirs)
+}
+
+fn assert_chieftain_creature(state: &GameState, id: u64, pt: i32, haste: bool) {
+    assert_eq!(state.effective_power(id), pt);
+    assert_eq!(state.effective_toughness(id), pt);
+    assert_eq!(state.has_keyword(id, KeywordAbility::Haste), haste);
+}
+
+#[test]
+fn test_chieftain_only_buffs_other_controlled_goblin_creatures() {
+    use mtg_gto::mana::ManaCost;
+    let (mut state, chief, ours, theirs) = chieftain_state();
+    let def = state.card_db().get(sample::ids::GOBLIN_CHIEFTAIN).unwrap();
+    assert_eq!(def.mana_cost, Some(ManaCost::new(1, 0, 0, 0, 2, 0)));
+    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    let artifact = state.create_card_in_zone(900030, 1, ZoneType::Battlefield);
+    state.refresh_continuous_effects();
+    assert_chieftain_creature(&state, chief, 2, true);
+    assert_chieftain_creature(&state, ours, 4, true);
+    assert_chieftain_creature(&state, theirs, 3, false);
+    assert_chieftain_creature(&state, bear, 2, false);
+    assert_chieftain_creature(&state, artifact, 0, false);
+}
+
+#[test]
+fn test_chieftain_haste_enables_summoning_sick_goblin_tap_ability() {
+    let (mut state, chief, ours, _) = chieftain_state();
+    let action = Action::ActivateAbility { object_id: ours, ability_index: 0, targets: vec![] };
+    assert!(state.objects[&ours].summoning_sick);
+    assert!(legal_actions(&state).contains(&action));
+    rules::apply_action(&mut state, &action);
+    assert!(state.objects[&ours].tapped);
+    assert_eq!(state.stack.len(), 1);
+    // No refresh call: leaving the battlefield must immediately stop the grant.
+    state.move_object(chief, ZoneType::Battlefield, ZoneType::Graveyard);
+    state.objects.get_mut(&ours).unwrap().tapped = false;
+    assert_chieftain_creature(&state, ours, 3, false);
+    assert!(!legal_actions(&state).contains(&action));
+    rules::apply_action(&mut state, &action);
+    assert!(!state.objects[&ours].tapped);
+    assert_eq!(state.stack.len(), 1);
+}
+
+#[test]
+fn test_chieftain_control_change_retargets_existing_effects() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TargetSpec};
+    let (mut state, chief, ours, theirs) = chieftain_state();
+    // Populate cached characteristics before a real control-changing spell resolves.
+    assert_chieftain_creature(&state, ours, 4, true);
+    assert_chieftain_creature(&state, theirs, 3, false);
+    Arc::make_mut(state.card_db.as_mut().unwrap()).insert(CardDef {
+        id: 900031, name: "Test control spell".into(), card_types: vec![CardType::Instant],
+        mana_cost: Some(mtg_gto::mana::ManaCost::zero()),
+        spell_effect: Some(Effect::GainControlUntilEOT { target: TargetSpec::AnyCreature }),
+        ..Default::default()
+    });
+    state.active_player = 0;
+    state.priority_player = 0;
+    let spell = state.create_card_in_zone(900031, 0, ZoneType::Hand);
+    let action = Action::CastSpell { object_id: spell, targets: vec![Target::Object(chief)] };
+    // Supply the valid target directly: generic control-effect target enumeration
+    // is not implemented, and is outside this continuous-effect regression.
+    rules::apply_action(&mut state, &action);
+    assert_eq!(state.stack.len(), 1);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert_eq!(state.objects[&chief].controller, 0);
+    assert_chieftain_creature(&state, chief, 2, true);
+    assert_chieftain_creature(&state, ours, 3, false);
+    assert_chieftain_creature(&state, theirs, 4, true);
+}
+
+#[test]
+fn test_chieftain_layer_control_changes_and_expiration_update_recipients() {
+    use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
+    let (mut state, chief, ours, theirs) = chieftain_state();
+    assert_chieftain_creature(&state, ours, 4, true);
+    state.continuous_effects.push(ContinuousEffect {
+        source_id: chief, controller: 0, timestamp: 100, duration: Duration::UntilEndOfTurn,
+        affected: AffectedObjects::Specific(chief), modification: LayerModification::ChangeController(0),
+    });
+    state.invalidate_characteristics_cache();
+    assert_chieftain_creature(&state, ours, 3, false);
+    assert_chieftain_creature(&state, theirs, 4, true);
+    state.cleanup_eot_effects();
+    assert_chieftain_creature(&state, ours, 4, true);
+    assert_chieftain_creature(&state, theirs, 3, false);
+    // Control of a recipient also uses Layer 2 rather than its original controller.
+    state.continuous_effects.push(ContinuousEffect {
+        source_id: theirs, controller: 1, timestamp: 101, duration: Duration::UntilEndOfTurn,
+        affected: AffectedObjects::Specific(theirs), modification: LayerModification::ChangeController(1),
+    });
+    state.invalidate_characteristics_cache();
+    assert_chieftain_creature(&state, theirs, 4, true);
+}
+
+#[test]
+fn test_chieftain_removal_immediately_removes_buff_and_granted_haste() {
+    for zone in [ZoneType::Graveyard, ZoneType::Exile, ZoneType::Hand] {
+        let (mut state, chief, ours, _) = chieftain_state();
+        assert_chieftain_creature(&state, ours, 4, true);
+        state.move_object(chief, ZoneType::Battlefield, zone);
+        assert_chieftain_creature(&state, ours, 3, false);
+    }
+}
+
+#[test]
+fn test_chieftain_uses_layered_creature_types_and_subtypes() {
+    use mtg_gto::card::{CardType, Subtype};
+    use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
+    let (mut state, chief, ours, _) = chieftain_state();
+    let artifact = state.create_card_in_zone(900030, 1, ZoneType::Battlefield);
+    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    for (target, modification) in [
+        (artifact, LayerModification::AddType(CardType::Creature)),
+        (bear, LayerModification::AddSubtype(Subtype("Goblin".into()))),
+        (ours, LayerModification::RemoveType(CardType::Creature)),
+    ] {
+        state.continuous_effects.push(ContinuousEffect {
+            source_id: chief, controller: 1, timestamp: 100, duration: Duration::UntilEndOfTurn,
+            affected: AffectedObjects::Specific(target), modification,
+        });
+    }
+    state.invalidate_characteristics_cache();
+    assert_chieftain_creature(&state, artifact, 1, true);
+    assert_chieftain_creature(&state, bear, 3, true);
+    assert_chieftain_creature(&state, ours, 3, false);
+}
+
+#[test]
+fn test_chieftain_cast_registers_effects_and_multiple_chieftains_buff_each_other() {
+    let (mut state, chief, ours, _) = chieftain_state();
+    let second = state.create_card_in_zone(sample::ids::GOBLIN_CHIEFTAIN, 1, ZoneType::Hand);
+    state.players[1].mana_pool.red = 3;
+    let action = Action::CastSpell { object_id: second, targets: vec![] };
+    assert!(legal_actions(&state).contains(&action));
+    rules::apply_action(&mut state, &action);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert!(state.battlefield.contains(&second));
+    assert_chieftain_creature(&state, chief, 3, true);
+    assert_chieftain_creature(&state, second, 3, true);
+    assert_chieftain_creature(&state, ours, 5, true);
+    state.move_object(chief, ZoneType::Battlefield, ZoneType::Graveyard);
+    assert_chieftain_creature(&state, second, 2, true);
+    assert_chieftain_creature(&state, ours, 4, true);
+}

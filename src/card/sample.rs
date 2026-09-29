@@ -2717,6 +2717,31 @@ pub fn build_sample_db() -> CardDatabase {
         ..Default::default()
     });
 
+    db.insert(CardDef {
+        id: ids::GOBLIN_CHIEFTAIN,
+        name: "Goblin Chieftain".into(),
+        mana_cost: Some(ManaCost::new(1, 0, 0, 0, 2, 0)),
+        card_types: vec![CardType::Creature],
+        subtypes: vec![Subtype("Goblin".into())],
+        keywords: vec![KeywordAbility::Haste],
+        power: Some(2),
+        toughness: Some(2),
+        static_abilities: vec![
+            StaticAbility::Anthem {
+                power: 1,
+                toughness: 1,
+                affected: AffectedObjects::OtherCreaturesWithSubtypeControlledBySource("Goblin".into()),
+            },
+            StaticAbility::GrantKeyword {
+                keyword: KeywordAbility::Haste,
+                affected: AffectedObjects::OtherCreaturesWithSubtypeControlledBySource("Goblin".into()),
+            },
+        ],
+        enters_tapped: false,
+        oracle_text: "Haste\nOther Goblin creatures you control get +1/+1 and have haste.".into(),
+        ..Default::default()
+    });
+
     // Goblin Storm mana and token spells.
     db.insert(CardDef {
         id: ids::SEETHING_SONG,

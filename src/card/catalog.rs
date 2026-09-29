@@ -367,9 +367,15 @@ pub mod ids {
     pub const KRENKOS_COMMAND: u64 = 1152;
     pub const KRENKO_MOB_BOSS: u64 = 1153;
     pub const BRIGHTSTONE_RITUAL: u64 = 1154;
+    pub const GOBLIN_CHIEFTAIN: u64 = 1155;
 }
 
 pub const ALL_CARDS: &[CardCatalogEntry] = &[
+    CardCatalogEntry {
+        id: ids::GOBLIN_CHIEFTAIN,
+        key: "GOBLIN_CHIEFTAIN",
+        name: "Goblin Chieftain",
+    },
     CardCatalogEntry {
         id: ids::BRIGHTSTONE_RITUAL,
         key: "BRIGHTSTONE_RITUAL",
