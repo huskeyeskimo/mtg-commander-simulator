@@ -5413,3 +5413,228 @@ fn test_dragon_fodder_creates_two_goblins() {
 fn test_krenkos_command_creates_two_goblins() {
     assert_two_goblin_tokens(sample::ids::KRENKOS_COMMAND);
 }
+
+fn krenko_state() -> (GameState, u64, Action) {
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(sample::build_sample_db()));
+    state.active_player = 1;
+    state.priority_player = 1;
+    state.phase = Phase::PreCombatMain;
+    let id = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield);
+    let action = Action::ActivateAbility { object_id: id, ability_index: 0, targets: vec![] };
+    (state, id, action)
+}
+
+fn resolve_krenko(state: &mut GameState) {
+    rules::apply_action(state, &Action::PassPriority);
+    rules::apply_action(state, &Action::PassPriority);
+    assert!(state.stack.is_empty());
+}
+
+fn assert_krenko_tokens(state: &GameState, count: usize) {
+    use mtg_gto::card::{CardType, Subtype};
+    use mtg_gto::mana::Color;
+    let tokens: Vec<_> = state.battlefield.iter().filter(|id| state.objects[id].is_token).collect();
+    assert_eq!(tokens.len(), count);
+    for id in tokens {
+        let inst = &state.objects[id];
+        let def = state.card_db().get(inst.card_def_id).unwrap();
+        assert_eq!((inst.owner, inst.controller), (1, 1));
+        assert!(!inst.tapped);
+        assert!(inst.summoning_sick);
+        assert_eq!(def.name, "Goblin");
+        assert_eq!(def.card_types, vec![CardType::Creature]);
+        assert_eq!(def.subtypes, vec![Subtype("Goblin".into())]);
+        assert_eq!((def.power, def.toughness), (Some(1), Some(1)));
+        assert!(def.keywords.is_empty());
+        assert_eq!(def.colors, Some(vec![Color::Red]));
+        let chars = mtg_gto::layers::compute_characteristics(*id, &state.continuous_effects,
+            &state.objects, &state.battlefield.iter().copied().collect(), state.card_db()).unwrap();
+        assert_eq!(chars.colors, vec![Color::Red]);
+        assert_eq!(def.cmc(), 0);
+    }
+}
+
+#[test]
+fn test_krenko_summoning_sickness_blocks_enumerated_and_direct_activation() {
+    let (mut state, id, action) = krenko_state();
+    assert!(!legal_actions(&state).contains(&action));
+    rules::apply_action(&mut state, &action);
+    assert!(state.stack.is_empty());
+    assert!(!state.objects[&id].tapped);
+}
+
+#[test]
+fn test_krenko_ready_counts_himself_and_creates_red_goblin() {
+    let (mut state, id, action) = krenko_state();
+    state.objects.get_mut(&id).unwrap().summoning_sick = false;
+    assert!(legal_actions(&state).contains(&action));
+    rules::apply_action(&mut state, &action);
+    assert!(state.objects[&id].tapped);
+    assert_eq!(state.stack.len(), 1);
+    assert!(!legal_actions(&state).contains(&action));
+    rules::apply_action(&mut state, &action);
+    assert_eq!(state.stack.len(), 1, "Already tapped cannot activate again");
+    resolve_krenko(&mut state);
+    assert_krenko_tokens(&state, 1);
+}
+
+#[test]
+fn test_krenko_haste_allows_immediate_tap_activation() {
+    let (mut state, id, action) = krenko_state();
+    state.objects.get_mut(&id).unwrap().temp_keywords.push(KeywordAbility::Haste);
+    state.invalidate_characteristics_cache();
+    assert!(state.objects[&id].summoning_sick);
+    assert!(legal_actions(&state).contains(&action));
+    rules::apply_action(&mut state, &action);
+    assert!(state.objects[&id].tapped);
+    resolve_krenko(&mut state);
+    assert_krenko_tokens(&state, 1);
+}
+
+#[test]
+fn test_krenko_counts_controlled_noncreature_goblins_on_resolution() {
+    use mtg_gto::card::{CardDef, CardType, Subtype};
+    let (mut state, id, action) = krenko_state();
+    Arc::make_mut(state.card_db.as_mut().unwrap()).insert(CardDef {
+        id: 900001, name: "Test Goblin Permanent".into(),
+        card_types: vec![CardType::Artifact], subtypes: vec![Subtype("Goblin".into())],
+        ..Default::default()
+    });
+    state.objects.get_mut(&id).unwrap().summoning_sick = false;
+    state.create_card_in_zone(900001, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(900001, 1, ZoneType::Graveyard);
+    state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    rules::apply_action(&mut state, &action);
+    assert_krenko_tokens(&state, 0);
+    // This Goblin enters after activation and must still contribute to X.
+    state.create_card_in_zone(900001, 1, ZoneType::Battlefield);
+    resolve_krenko(&mut state);
+    assert_krenko_tokens(&state, 2);
+}
+
+#[test]
+fn test_krenko_leaving_before_resolution_reduces_count_to_zero() {
+    let (mut state, id, action) = krenko_state();
+    state.objects.get_mut(&id).unwrap().summoning_sick = false;
+    rules::apply_action(&mut state, &action);
+    state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
+    resolve_krenko(&mut state);
+    assert_krenko_tokens(&state, 0);
+}
+
+#[test]
+fn test_krenko_counts_current_subtypes_and_changeling() {
+    use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
+    let (mut state, id, action) = krenko_state();
+    state.objects.get_mut(&id).unwrap().summoning_sick = false;
+    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    let changeling = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    state.objects.get_mut(&changeling).unwrap().temp_keywords.push(KeywordAbility::Changeling);
+    state.continuous_effects.push(ContinuousEffect {
+        source_id: bear, controller: 1, timestamp: 1, duration: Duration::UntilEndOfTurn,
+        affected: AffectedObjects::Specific(bear),
+        modification: LayerModification::AddSubtype(mtg_gto::card::Subtype("Goblin".into())),
+    });
+    state.invalidate_characteristics_cache();
+    rules::apply_action(&mut state, &action);
+    resolve_krenko(&mut state);
+    assert_krenko_tokens(&state, 3);
+}
+
+#[test]
+fn test_krenko_becomes_ready_at_start_of_controllers_turn() {
+    let (mut state, id, action) = krenko_state();
+    state.active_player = 0;
+    state.priority_player = 0;
+    state.phase = Phase::Cleanup;
+    rules::apply_action(&mut state, &Action::PassPriority);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert_eq!(state.active_player, 1);
+    assert!(!state.objects[&id].summoning_sick);
+    state.phase = Phase::PreCombatMain;
+    assert!(legal_actions(&state).contains(&action));
+    rules::apply_action(&mut state, &action);
+    resolve_krenko(&mut state);
+    assert_krenko_tokens(&state, 1);
+}
+
+#[test]
+fn test_krenko_stack_ability_keeps_original_controller() {
+    let (mut state, id, action) = krenko_state();
+    state.objects.get_mut(&id).unwrap().summoning_sick = false;
+    rules::apply_action(&mut state, &action);
+    state.objects.get_mut(&id).unwrap().controller = 0;
+    state.invalidate_characteristics_cache();
+    resolve_krenko(&mut state);
+    // Original controller now controls zero Goblins; the opponent controls Krenko.
+    assert_krenko_tokens(&state, 0);
+}
+
+#[test]
+fn test_tap_cost_rule_applies_to_other_creatures_but_not_noncreatures() {
+    use mtg_gto::card::{CardDef, CardType};
+    let (mut state, _, _) = krenko_state();
+    let ability = state.card_db().get(sample::ids::KRENKO_MOB_BOSS).unwrap()
+        .activated_abilities[0].clone();
+    for (id, ty, haste, expected) in [
+        (900010, CardType::Creature, false, false),
+        (900011, CardType::Creature, true, true),
+        (900012, CardType::Artifact, false, true),
+    ] {
+        Arc::make_mut(state.card_db.as_mut().unwrap()).insert(CardDef {
+            id, name: format!("Tap test {id}"), card_types: vec![ty],
+            power: Some(1), toughness: Some(1),
+            keywords: if haste { vec![KeywordAbility::Haste] } else { vec![] },
+            activated_abilities: vec![ability.clone()], ..Default::default()
+        });
+        state.priority_player = 1;
+        let source = state.create_card_in_zone(id, 1, ZoneType::Battlefield);
+        let action = Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] };
+        assert_eq!(legal_actions(&state).contains(&action), expected);
+        rules::apply_action(&mut state, &action);
+        assert_eq!(state.objects[&source].tapped, expected);
+        if expected { resolve_krenko(&mut state); }
+    }
+}
+
+#[test]
+fn test_explicit_token_colors_roundtrip_and_legacy_card_defaults() {
+    use mtg_gto::card::CardDef;
+    use mtg_gto::mana::Color;
+    let db = sample::build_sample_db();
+    let original = db.get(sample::ids::LIGHTNING_BOLT).unwrap();
+    let mut json = serde_json::to_value(original).unwrap();
+    json.as_object_mut().unwrap().remove("colors");
+    let legacy: CardDef = serde_json::from_value(json).unwrap();
+    assert_eq!(legacy.base_colors(), original.base_colors());
+    for colors in [vec![], vec![Color::Red], vec![Color::Blue, Color::Green]] {
+        let card = CardDef { colors: Some(colors.clone()), ..Default::default() };
+        let decoded: CardDef = serde_json::from_str(&serde_json::to_string(&card).unwrap()).unwrap();
+        assert_eq!(decoded.base_colors(), colors);
+    }
+}
+
+#[test]
+fn test_creature_mana_tap_cost_respects_sickness_haste_and_auto_tap() {
+    use mtg_gto::mana::{Color, ManaCost};
+    let (mut state, _, _) = krenko_state();
+    let elf = state.create_card_in_zone(sample::ids::LLANOWAR_ELVES, 1, ZoneType::Battlefield);
+    let action = Action::ActivateManaAbility { object_id: elf, ability_index: 0 };
+    assert!(!legal_actions(&state).contains(&action));
+    assert!(!state.untapped_mana_sources(1).contains(&elf));
+    rules::apply_action(&mut state, &action);
+    assert_eq!(state.players[1].mana_pool.total(), 0);
+    rules::auto_tap_lands(&mut state, 1, &ManaCost::new(0, 0, 0, 0, 0, 1));
+    assert!(!state.objects[&elf].tapped);
+    state.objects.get_mut(&elf).unwrap().temp_keywords.push(KeywordAbility::Haste);
+    state.invalidate_characteristics_cache();
+    assert!(legal_actions(&state).contains(&action));
+    assert!(state.untapped_mana_sources(1).contains(&elf));
+    rules::apply_action(&mut state, &action);
+    assert!(state.objects[&elf].tapped);
+    assert_eq!(state.players[1].mana_pool.green, 1);
+    rules::apply_action(&mut state, &action);
+    assert_eq!(state.players[1].mana_pool.green, 1);
+    assert_eq!(state.card_db().get(sample::ids::LLANOWAR_ELVES).unwrap().base_colors(), vec![Color::Green]);
+}

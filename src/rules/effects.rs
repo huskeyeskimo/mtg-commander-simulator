@@ -216,15 +216,7 @@ pub(super) fn resolve_effect(
         }
 
         Effect::CreateTokens { token, count } => {
-            let db_ref = state.card_db.clone();
-            let db = db_ref.as_ref().expect("card_db required");
-            let n = count.evaluate(
-                controller,
-                &state.objects,
-                &state.battlefield,
-                &|id| db.get(id),
-                None,
-            );
+            let n = state.evaluate_dynamic_value(count, controller, None);
             for _ in 0..n.max(0) {
                 super::tokens::create_token(state, token, controller);
             }
@@ -382,16 +374,8 @@ pub(super) fn resolve_effect(
         }
 
         Effect::AddDynamicMana { color, count } => {
-            let db_ref = state.card_db.clone();
-            let db = db_ref.as_ref().expect("card_db required");
             let ctx = super::tokens::build_dynamic_context(state, controller);
-            let n = count.evaluate(
-                controller,
-                &state.objects,
-                &state.battlefield,
-                &|id| db.get(id),
-                Some(&ctx),
-            );
+            let n = state.evaluate_dynamic_value(count, controller, Some(&ctx));
             for _ in 0..n.max(0) {
                 state.players[controller].mana_pool.add_color(*color, 1);
             }

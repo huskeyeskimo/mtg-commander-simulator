@@ -16,7 +16,7 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
             source_id,
             ability_index,
         } => {
-            resolve_activated_ability(state, source_id, ability_index, &entry.targets);
+            resolve_activated_ability(state, source_id, ability_index, &entry.targets, entry.controller);
         }
         StackSource::TriggeredAbility {
             source_id,
@@ -112,16 +112,16 @@ fn resolve_activated_ability(
     source_id: ObjectId,
     ability_index: usize,
     targets: &[Target],
+    controller: PlayerIndex,
 ) {
-    let (effect, controller) = {
+    let effect = {
         let db = state.card_db();
         let inst = &state.objects[&source_id];
         let def = db.get(inst.card_def_id).unwrap();
         // Check activated abilities first, then loyalty abilities
-        let effect = def.activated_abilities.get(ability_index)
+        def.activated_abilities.get(ability_index)
             .map(|a| a.effect.clone())
-            .or_else(|| def.loyalty_abilities.get(ability_index).map(|a| a.effect.clone()));
-        (effect, inst.controller)
+            .or_else(|| def.loyalty_abilities.get(ability_index).map(|a| a.effect.clone()))
     };
 
     if let Some(effect) = effect {

@@ -204,6 +204,9 @@ pub struct CardDef {
     pub id: CardId,
     pub name: String,
     pub mana_cost: Option<ManaCost>,
+    /// Explicit base colors for tokens and other cards without colored mana costs.
+    #[serde(default)]
+    pub colors: Option<Vec<Color>>,
     pub card_types: Vec<CardType>,
     pub supertypes: Vec<Supertype>,
     pub subtypes: Vec<Subtype>,
@@ -295,6 +298,10 @@ pub struct CardDef {
 }
 
 impl CardDef {
+    pub fn base_colors(&self) -> Vec<Color> {
+        self.colors.clone().unwrap_or_else(|| self.color_identity())
+    }
+
     pub fn is_creature(&self) -> bool {
         self.card_types.contains(&CardType::Creature)
     }
@@ -379,6 +386,7 @@ impl Default for CardDef {
             id: 0,
             name: String::new(),
             mana_cost: None,
+            colors: None,
             card_types: Vec::new(),
             supertypes: Vec::new(),
             subtypes: Vec::new(),

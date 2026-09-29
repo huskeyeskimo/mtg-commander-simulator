@@ -508,3 +508,25 @@ fn import_goblin_storm_spells_prefers_sample_definitions_over_cache() {
                    serde_json::to_value(sample.get(id)).unwrap());
     }
 }
+
+#[test]
+fn import_krenko_prefers_complete_sample_definition() {
+    let cache = std::env::temp_dir().join(format!("mtg-krenko-import-{}", std::process::id()));
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("krenko,_mob_boss.json"), serde_json::json!({
+        "name": "Krenko, Mob Boss", "mana_cost": "{2}{R}{R}",
+        "type_line": "Legendary Creature — Goblin Warrior", "power": "3", "toughness": "3",
+        "oracle_text": "{T}: Create X 1/1 red Goblin creature tokens, where X is the number of Goblins you control."
+    }).to_string()).unwrap();
+    let result = ScryfallFetcher::new(&cache).import_deck(
+        "~~Commanders~~\n1 Krenko, Mob Boss\n~~Mainboard~~\n99 Mountain\n"
+    ).unwrap();
+    std::fs::remove_dir_all(cache).unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let id = mtg_gto::card::sample::ids::KRENKO_MOB_BOSS;
+    assert_eq!(result.db.find_by_name("Krenko, Mob Boss"), Some(id));
+    assert!(result.deck.contains(&id));
+    let sample = mtg_gto::card::sample::build_sample_db();
+    assert_eq!(serde_json::to_value(result.db.get(id)).unwrap(),
+               serde_json::to_value(sample.get(id)).unwrap());
+}

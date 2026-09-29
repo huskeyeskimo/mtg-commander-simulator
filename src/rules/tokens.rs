@@ -43,6 +43,7 @@ fn token_to_card_def(token_def: &TokenDef, card_id: u64) -> CardDef {
     CardDef {
         id: card_id,
         name: token_def.name.clone(),
+        colors: Some(token_def.colors.clone()),
         card_types: vec![CardType::Creature],
         subtypes: token_def.subtypes.clone(),
         keywords: token_def.keywords.clone(),

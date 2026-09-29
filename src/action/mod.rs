@@ -653,7 +653,7 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                 };
 
                 for (i, ability) in def.activated_abilities.iter().enumerate() {
-                    if ability.requires_tap && inst.tapped {
+                    if ability.requires_tap && !state.can_pay_tap_cost(obj_id) {
                         continue;
                     }
                     if can_potentially_pay(state, player, &ability.cost) {
@@ -692,7 +692,7 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                 }
 
                 // Mana abilities (tap abilities that don't use the stack)
-                if !inst.tapped && !def.mana_abilities.is_empty() {
+                if state.can_pay_tap_cost(obj_id) && !def.mana_abilities.is_empty() {
                     for (i, ma) in def.mana_abilities.iter().enumerate() {
                         // Skip conditional mana abilities that can't produce mana
                         if matches!(ma, ManaAbility::TapForLegendaryColors) {

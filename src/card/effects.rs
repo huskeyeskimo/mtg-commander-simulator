@@ -36,6 +36,8 @@ pub enum DynamicValue {
     ChargeCountersOnSource,
     /// Number of tapped creatures the controller controls (e.g., Throne of the God-Pharaoh).
     TappedCreaturesControlled,
+    /// All permanents of a subtype controlled by the ability controller.
+    PermanentsWithSubtype(String),
 }
 
 /// Extra context from the game state for evaluating `DynamicValue` variants
@@ -154,6 +156,12 @@ impl DynamicValue {
                     }
                     false
                 })
+                .count() as i32,
+            DynamicValue::PermanentsWithSubtype(subtype) => battlefield.iter()
+                .filter(|&&id| objects.get(&id).map_or(false, |inst| {
+                    inst.controller == controller && card_db(inst.card_def_id)
+                        .map_or(false, |def| def.subtypes.iter().any(|s| s.0 == *subtype))
+                }))
                 .count() as i32,
             DynamicValue::Fixed(val) => *val,
             DynamicValue::LandsControlled => {

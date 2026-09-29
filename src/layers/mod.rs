@@ -246,7 +246,7 @@ pub fn compute_characteristics_with_ctx(
     // Start from base characteristics (the printed card)
     let mut card_types = def.card_types.clone();
     let mut subtypes = def.subtypes.clone();
-    let mut colors = def.color_identity();
+    let mut colors = def.base_colors();
     let mut keywords = def.keywords.clone();
     let mut power = def.power.unwrap_or(0);
     let mut toughness = def.toughness.unwrap_or(0);
@@ -286,7 +286,7 @@ pub fn compute_characteristics_with_ctx(
                 if let Some(copy_def) = card_db.get(*copy_id) {
                     card_types = copy_def.card_types.clone();
                     subtypes = copy_def.subtypes.clone();
-                    colors = copy_def.color_identity();
+                    colors = copy_def.base_colors();
                     keywords = copy_def.keywords.clone();
                     power = copy_def.power.unwrap_or(0);
                     toughness = copy_def.toughness.unwrap_or(0);

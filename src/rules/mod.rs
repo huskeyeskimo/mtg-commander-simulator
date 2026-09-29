@@ -177,6 +177,10 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             let idx = *ability_index;
             let player = state.priority_player;
 
+            if !state.can_pay_tap_cost(obj_id) {
+                return;
+            }
+
             // Read mana ability and source properties in one borrow scope
             let (ma, source_is_nonland, source_is_swamp) = {
                 let db = state.card_db();
@@ -260,6 +264,9 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             };
 
             if let Some(ability) = ability {
+                if ability.requires_tap && !state.can_pay_tap_cost(obj_id) {
+                    return;
+                }
                 // Pay mana cost
                 mana::auto_tap_lands(state, player, &ability.cost);
                 if !state.players[player].mana_pool.pay(&ability.cost) {

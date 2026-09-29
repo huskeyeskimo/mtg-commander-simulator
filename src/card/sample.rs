@@ -2678,6 +2678,31 @@ pub fn build_sample_db() -> CardDatabase {
         ..Default::default()
     });
 
+    db.insert(CardDef {
+        id: ids::KRENKO_MOB_BOSS,
+        name: "Krenko, Mob Boss".into(),
+        mana_cost: Some(ManaCost::new(2, 0, 0, 0, 2, 0)),
+        card_types: vec![CardType::Creature],
+        supertypes: vec![Supertype::Legendary],
+        subtypes: vec![Subtype("Goblin".into()), Subtype("Warrior".into())],
+        power: Some(3),
+        toughness: Some(3),
+        activated_abilities: vec![ActivatedAbility {
+            cost: ManaCost::zero(),
+            requires_tap: true,
+            sacrifice_cost: None,
+            life_cost: 0,
+            effect: Effect::CreateTokens {
+                token: PredefinedToken::Goblin.to_token_def(),
+                count: DynamicValue::PermanentsWithSubtype("Goblin".into()),
+            },
+            description: "{T}: Create X 1/1 red Goblin creature tokens, where X is the number of Goblins you control.".into(),
+        }],
+        enters_tapped: false,
+        oracle_text: "{T}: Create X 1/1 red Goblin creature tokens, where X is the number of Goblins you control.".into(),
+        ..Default::default()
+    });
+
     // Goblin Storm mana and token spells.
     db.insert(CardDef {
         id: ids::SEETHING_SONG,

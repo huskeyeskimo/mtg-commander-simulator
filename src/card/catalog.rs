@@ -365,9 +365,15 @@ pub mod ids {
     pub const BATTLE_HYMN: u64 = 1150;
     pub const DRAGON_FODDER: u64 = 1151;
     pub const KRENKOS_COMMAND: u64 = 1152;
+    pub const KRENKO_MOB_BOSS: u64 = 1153;
 }
 
 pub const ALL_CARDS: &[CardCatalogEntry] = &[
+    CardCatalogEntry {
+        id: ids::KRENKO_MOB_BOSS,
+        key: "KRENKO_MOB_BOSS",
+        name: "Krenko, Mob Boss",
+    },
     CardCatalogEntry { id: ids::SEETHING_SONG, key: "SEETHING_SONG", name: "Seething Song" },
     CardCatalogEntry { id: ids::BATTLE_HYMN, key: "BATTLE_HYMN", name: "Battle Hymn" },
     CardCatalogEntry { id: ids::DRAGON_FODDER, key: "DRAGON_FODDER", name: "Dragon Fodder" },

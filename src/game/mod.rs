@@ -1095,7 +1095,7 @@ impl GameState {
             .filter(|&id| {
                 let inst = &self.objects[&id];
                 inst.controller == player
-                    && !inst.tapped
+                    && self.can_pay_tap_cost(id)
                     && db
                         .get(inst.card_def_id)
                         .map_or(false, |d| !d.mana_abilities.is_empty())
@@ -1358,6 +1358,33 @@ impl GameState {
         self.get_characteristics(obj_id)
             .map(|c| c.toughness)
             .unwrap_or(0)
+    }
+
+    /// Whether a permanent can pay a tap-symbol cost (CR 302.6).
+    pub fn can_pay_tap_cost(&self, obj_id: ObjectId) -> bool {
+        self.battlefield.contains(&obj_id) && self.objects.get(&obj_id).map_or(false, |inst| {
+            !inst.tapped && (!self.is_creature(obj_id) || !inst.summoning_sick
+                || self.has_keyword(obj_id, crate::card::KeywordAbility::Haste))
+        })
+    }
+
+    /// Evaluate a dynamic effect value against current permanent characteristics.
+    pub fn evaluate_dynamic_value(
+        &self,
+        value: &crate::card::DynamicValue,
+        controller: PlayerIndex,
+        context: Option<&crate::card::DynamicContext>,
+    ) -> i32 {
+        if let crate::card::DynamicValue::PermanentsWithSubtype(subtype) = value {
+            return self.battlefield.iter().filter(|&&id| {
+                self.get_characteristics(id).map_or(false, |c| {
+                    c.controller == controller && (c.subtypes.iter().any(|s| s.0 == *subtype)
+                        || c.keywords.contains(&crate::card::KeywordAbility::Changeling))
+                })
+            }).count() as i32;
+        }
+        value.evaluate(controller, &self.objects, &self.battlefield,
+            &|id| self.card_db().get(id), context)
     }
 
     /// Check if an object has a keyword ability using the layer engine.
