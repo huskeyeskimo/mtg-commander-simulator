@@ -1028,6 +1028,11 @@ pub fn format_targets(state: &GameState, targets: &[Target], db: &CardDatabase) 
             if *p == 0 { "You".into() } else { "Goldfish".into() }
         }
         Target::Object(id) => card_name(state, *id, db),
+        Target::StackEntry(id) => state.stack.iter().find(|entry| entry.id == *id)
+            .and_then(|entry| match entry.source {
+                crate::game::StackSource::Spell(object) => Some(format!("{} (stack #{})", card_name(state, object, db), id)),
+                _ => None,
+            }).unwrap_or_else(|| format!("Stack #{} (gone)", id)),
     }).collect();
     descs.join(", ")
 }

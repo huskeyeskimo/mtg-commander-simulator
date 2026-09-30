@@ -34,6 +34,9 @@ pub enum CanonicalTarget {
         controller: PlayerIndex,
         instance_index: usize,
     },
+    /// Bottom-based position in the public ordered stack. None denotes a stale
+    /// runtime target and must never resolve to a different spell.
+    StackEntry { stack_index: Option<usize> },
 }
 
 /// Stable action identifier independent of ObjectId assignment.
@@ -626,6 +629,9 @@ pub fn resolve(
                 .iter()
                 .filter_map(|ct| resolve_target(ct, state))
                 .collect();
+            if concrete_targets.len() != targets.len() {
+                return None;
+            }
             Some(Action::CastFromGraveyard {
                 object_id: obj_id,
                 targets: concrete_targets,
@@ -655,6 +661,9 @@ pub fn resolve(
 /// Canonicalize a concrete `Target` to a `CanonicalTarget`.
 fn canonicalize_target(target: &Target, state: &GameState) -> CanonicalTarget {
     match target {
+        Target::StackEntry(id) => CanonicalTarget::StackEntry {
+            stack_index: state.stack.iter().position(|entry| entry.id == *id && matches!(entry.source, crate::game::StackSource::Spell(_))),
+        },
         Target::Player(idx) => CanonicalTarget::Player(*idx),
         Target::Object(obj_id) => {
             let inst = &state.objects[obj_id];
@@ -673,6 +682,10 @@ fn canonicalize_target(target: &Target, state: &GameState) -> CanonicalTarget {
 /// Resolve a `CanonicalTarget` back to a concrete `Target`.
 fn resolve_target(target: &CanonicalTarget, state: &GameState) -> Option<Target> {
     match target {
+        CanonicalTarget::StackEntry { stack_index } => {
+            let entry = state.stack.get((*stack_index)?)?;
+            matches!(entry.source, crate::game::StackSource::Spell(_)).then_some(Target::StackEntry(entry.id))
+        }
         CanonicalTarget::Player(idx) => Some(Target::Player(*idx)),
         CanonicalTarget::Object {
             card_id,

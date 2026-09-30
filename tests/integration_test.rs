@@ -6325,7 +6325,8 @@ fn test_targeting_counterspell_stack_target_remains_legal() {
     let draw = state.create_card_in_zone(920004, 0, ZoneType::Hand);
     let counter = state.create_card_in_zone(920005, 0, ZoneType::Hand);
     targeting_cast(&mut state, draw, vec![]);
-    targeting_cast(&mut state, counter, vec![Target::Object(draw)]);
+    let draw_stack_id = state.stack.last().unwrap().id;
+    targeting_cast(&mut state, counter, vec![Target::StackEntry(draw_stack_id)]);
     targeting_resolve(&mut state);
     assert!(state.stack.is_empty());
     assert_eq!(state.players[0].library.len(), 3);
@@ -6488,4 +6489,241 @@ fn test_targeting_composite_untargeted_graveyard_effect_does_not_inherit_target(
     assert!(state.stack.is_empty());
     assert_eq!(state.drain_events().iter().filter(|event| matches!(event,
         GameEvent::ZoneChange { object, from: Zone::Stack, to: Zone::Graveyard } if *object == spell)).count(), 1);
+}
+
+// Two identical ordinary spells expose stack identity independently of card identity.
+fn stack_target_state(offset: u64) -> (GameState, u64, u64, u64) {
+    let mut state = targeting_state();
+    state.next_stack_id += offset;
+    state.next_object_id += offset;
+    let lower = state.create_card_in_zone(920004, 0, ZoneType::Hand);
+    let upper = state.create_card_in_zone(920004, 0, ZoneType::Hand);
+    let counter = state.create_card_in_zone(920005, 0, ZoneType::Hand);
+    targeting_cast(&mut state, lower, vec![]);
+    targeting_cast(&mut state, upper, vec![]);
+    (state, lower, upper, counter)
+}
+
+#[test]
+fn test_stack_target_independent_selection_and_countering() {
+    for selected_index in [0, 1] {
+        let (mut state, lower, upper, counter) = stack_target_state(0);
+        let ids: Vec<_> = state.stack.iter().map(|entry| entry.id).collect();
+        let actions: Vec<_> = legal_actions(&state).into_iter().filter(|action| matches!(action,
+            Action::CastSpell { object_id, .. } if *object_id == counter)).collect();
+        assert_eq!(actions, ids.iter().map(|id| Action::CastSpell {
+            object_id: counter, targets: vec![Target::StackEntry(*id)],
+        }).collect::<Vec<_>>());
+        targeting_cast(&mut state, counter, vec![Target::StackEntry(ids[selected_index])]);
+        assert_eq!(state.stack.last().unwrap().target_generations, vec![None]);
+        targeting_resolve(&mut state);
+        assert_eq!(state.stack.len(), 1);
+        assert_eq!(state.stack[0].id, ids[1 - selected_index]);
+        assert_eq!(state.players[0].graveyard, vec![[lower, upper][selected_index], counter]);
+        assert_eq!(state.players[0].library.len(), 3); // Neither draw spell resolved.
+    }
+}
+
+#[test]
+fn test_stack_target_canonical_roundtrip_across_equivalent_states() {
+    let (state, _, _, counter) = stack_target_state(0);
+    let (other, _, _, other_counter) = stack_target_state(1000);
+    use mtg_gto::info_set::InformationSet;
+    assert_eq!(InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value(),
+        InformationSet::from_view(&other.visible_state(0), other.card_db()).hash_value());
+    for index in [0, 1] {
+        let action = Action::CastSpell { object_id: counter, targets: vec![Target::StackEntry(state.stack[index].id)] };
+        let canonical = canonicalize(&action, &state);
+        assert_eq!(resolve(&canonical, &state, 0), Some(action));
+        let other_action = Action::CastSpell { object_id: other_counter, targets: vec![Target::StackEntry(other.stack[index].id)] };
+        assert_eq!(canonicalize(&other_action, &other), canonical);
+        assert_eq!(resolve(&canonical, &other, 0), Some(other_action));
+        let bytes = bincode::serialize(&canonical).unwrap();
+        let decoded = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(resolve(&decoded, &other, 0), resolve(&canonical, &other, 0));
+    }
+}
+
+#[test]
+fn test_stack_target_information_set_preserves_relationships() {
+    use mtg_gto::info_set::InformationSet;
+    let mut hashes = Vec::new();
+    for index in [0, 1] {
+        let mut equivalent_hashes = Vec::new();
+        for offset in [0, 1000] {
+            let (mut state, _, _, counter) = stack_target_state(offset);
+            let target = state.stack[index].id;
+            targeting_cast(&mut state, counter, vec![Target::StackEntry(target)]);
+            equivalent_hashes.push(InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value());
+        }
+        assert_eq!(equivalent_hashes[0], equivalent_hashes[1]);
+        hashes.push(equivalent_hashes[0]);
+    }
+    assert_ne!(hashes[0], hashes[1]); // Same card names, different targeted spell.
+}
+
+#[test]
+fn test_stack_target_snapshot_and_serialization() {
+    let (mut state, lower, _, counter) = stack_target_state(70);
+    let target = state.stack[0].id;
+    targeting_cast(&mut state, counter, vec![Target::StackEntry(target)]);
+    let saved = state.snapshot();
+    let expected_stack = serde_json::to_value(&state.stack).unwrap();
+    let expected_next_id = state.next_stack_id;
+    let json = serde_json::to_vec(&state).unwrap();
+    let binary = bincode::serialize(&state).unwrap();
+    let mut from_json: GameState = serde_json::from_slice(&json).unwrap();
+    let mut from_binary: GameState = bincode::deserialize(&binary).unwrap();
+    from_json.card_db = state.card_db.clone();
+    from_binary.card_db = state.card_db.clone();
+    targeting_resolve(&mut state);
+    state.new_stack_id();
+    state.restore(saved);
+    for mut restored in [state.clone(), from_json, from_binary] {
+        assert_eq!(serde_json::to_value(&restored.stack).unwrap(), expected_stack);
+        assert_eq!(restored.new_stack_id(), expected_next_id);
+        targeting_resolve(&mut restored);
+        assert_eq!(restored.stack.len(), 1);
+        assert_eq!(restored.players[0].graveyard, vec![lower, counter]);
+    }
+}
+
+#[test]
+fn test_stack_target_invalid_and_stale_casts_do_not_mutate() {
+    let (mut state, lower, _, counter) = stack_target_state(0);
+    let stale = state.stack[0].id;
+    state.move_object(lower, ZoneType::Stack, ZoneType::Hand);
+    targeting_cast(&mut state, lower, vec![]);
+    assert_ne!(state.stack.last().unwrap().id, stale);
+    let ability_id = state.new_stack_id();
+    state.stack.push(mtg_gto::game::StackEntry { id: ability_id,
+        source: mtg_gto::game::StackSource::ActivatedAbility { source_id: lower, ability_index: 0 },
+        controller: 0, targets: vec![], target_generations: vec![] });
+    for target in [Target::StackEntry(stale), Target::StackEntry(u64::MAX),
+        Target::StackEntry(ability_id), Target::Object(lower), Target::Player(1)] {
+        let action = Action::CastSpell { object_id: counter, targets: vec![target.clone()] };
+        assert!(!legal_actions(&state).contains(&action));
+        state.drain_events();
+        let before = serde_json::to_value(&state).unwrap();
+        rules::apply_action(&mut state, &action);
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+        assert!(state.drain_events().is_empty());
+        if matches!(target, Target::StackEntry(_)) {
+            assert_eq!(resolve(&canonicalize(&action, &state), &state, 0), None);
+        }
+    }
+}
+
+#[test]
+fn test_stack_target_stale_on_resolution_does_not_counter_another_spell() {
+    let (mut state, lower, _, counter) = stack_target_state(0);
+    let target = state.stack[0].id;
+    let survivor = state.stack[1].id;
+    targeting_cast(&mut state, counter, vec![Target::StackEntry(target)]);
+    state.move_object(lower, ZoneType::Stack, ZoneType::Hand);
+    targeting_resolve(&mut state);
+    assert_eq!(state.stack.len(), 1);
+    assert_eq!(state.stack[0].id, survivor);
+    assert_eq!(state.players[0].graveyard, vec![counter]);
+    assert!(state.players[0].hand.contains(&lower));
+}
+
+#[test]
+fn test_stack_target_does_not_replace_permanent_or_player_targets() {
+    use mtg_gto::{card::TargetSpec, targeting::target_is_legal};
+    let (mut state, _, _, _) = stack_target_state(0);
+    let creature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let stack_id = state.stack[0].id;
+    assert!(target_is_legal(&state, 0, &TargetSpec::AnyCreature, &Target::Object(creature)));
+    assert!(target_is_legal(&state, 0, &TargetSpec::AnyPlayer, &Target::Player(1)));
+    assert!(!target_is_legal(&state, 0, &TargetSpec::AnyCreature, &Target::StackEntry(stack_id)));
+    assert!(!target_is_legal(&state, 0, &TargetSpec::AnyPlayer, &Target::StackEntry(stack_id)));
+    for target in [Target::Object(creature), Target::Player(1)] {
+        let action = Action::CastSpell { object_id: state.create_card_in_zone(920004, 0, ZoneType::Hand), targets: vec![target] };
+        assert_eq!(resolve(&canonicalize(&action, &state), &state, 0), Some(action));
+    }
+}
+
+#[test]
+fn test_stack_target_cleanup_graveyard_reconstruction_rejects_missing_targets() {
+    use mtg_gto::action::canonical::{CanonicalAction, CanonicalTarget};
+    let (mut state, _, _, counter) = stack_target_state(0);
+    state.move_object(counter, ZoneType::Hand, ZoneType::Graveyard);
+    let action = Action::CastFromGraveyard {
+        object_id: counter, targets: vec![Target::StackEntry(state.stack[1].id)],
+    };
+    let canonical = canonicalize(&action, &state);
+    assert_eq!(resolve(&canonical, &state, 0), Some(action));
+    for index in [None, Some(state.stack.len()), Some(usize::MAX)] {
+        let mut invalid = canonical.clone();
+        if let CanonicalAction::CastFromGraveyard { targets, .. } = &mut invalid {
+            *targets = vec![CanonicalTarget::StackEntry { stack_index: index }];
+        } else { panic!("expected graveyard cast"); }
+        assert_eq!(resolve(&invalid, &state, 0), None, "index {index:?}");
+    }
+    // An occupied position is insufficient: AnySpell cannot select an ability.
+    state.stack[1].source = mtg_gto::game::StackSource::ActivatedAbility {
+        source_id: counter, ability_index: 0,
+    };
+    assert_eq!(resolve(&canonical, &state, 0), None);
+}
+
+#[test]
+fn test_stack_target_cleanup_interleaved_ability_positions() {
+    use mtg_gto::action::canonical::{CanonicalAction, CanonicalTarget};
+    let (mut state, lower, _, counter) = stack_target_state(0);
+    let ability_id = state.new_stack_id();
+    state.stack.insert(1, mtg_gto::game::StackEntry {
+        id: ability_id,
+        source: mtg_gto::game::StackSource::ActivatedAbility { source_id: lower, ability_index: 0 },
+        controller: 0, targets: vec![], target_generations: vec![],
+    });
+    let mut equivalent = state.clone();
+    for entry in &mut equivalent.stack { entry.id += 100; }
+    equivalent.next_stack_id += 100;
+    let actions = legal_actions(&state);
+    for index in [0, 2] {
+        let action = Action::CastSpell { object_id: counter, targets: vec![Target::StackEntry(state.stack[index].id)] };
+        assert!(actions.contains(&action));
+        let canonical = canonicalize(&action, &state);
+        assert!(matches!(&canonical, CanonicalAction::CastSpell { targets, .. }
+            if targets == &vec![CanonicalTarget::StackEntry { stack_index: Some(index) }]));
+        assert_eq!(resolve(&canonical, &state, 0), Some(action));
+        assert_eq!(resolve(&canonical, &equivalent, 0), Some(Action::CastSpell {
+            object_id: counter, targets: vec![Target::StackEntry(equivalent.stack[index].id)],
+        }));
+    }
+    let ability_action = Action::CastSpell { object_id: counter, targets: vec![Target::StackEntry(ability_id)] };
+    assert!(!actions.contains(&ability_action));
+    let mut canonical = canonicalize(&ability_action, &state);
+    if let CanonicalAction::CastSpell { targets, .. } = &mut canonical {
+        *targets = vec![CanonicalTarget::StackEntry { stack_index: Some(1) }];
+    }
+    assert_eq!(resolve(&canonical, &state, 0), None);
+}
+
+#[test]
+fn test_stack_target_cleanup_stale_composite_skips_counter_and_draw() {
+    use mtg_gto::card::{Effect, TargetSpec};
+    let (mut state, lower, upper, counter) = stack_target_state(0);
+    let mut db = state.card_db().clone();
+    let mut def = db.get(920005).unwrap().clone();
+    def.spell_effect = Some(Effect::Multiple(vec![
+        Effect::Counter { target: TargetSpec::AnySpell }, Effect::DrawCards { count: 1 },
+    ]));
+    db.insert(def);
+    state.card_db = Some(Arc::new(db));
+    let target = state.stack[0].id;
+    let survivor = state.stack[1].id;
+    targeting_cast(&mut state, counter, vec![Target::StackEntry(target)]);
+    state.move_object(lower, ZoneType::Stack, ZoneType::Hand);
+    let hand = state.players[0].hand.clone();
+    let library = state.players[0].library.clone();
+    targeting_resolve(&mut state);
+    assert_eq!(state.stack.len(), 1);
+    assert_eq!(state.stack[0].id, survivor);
+    assert!(matches!(state.stack[0].source, mtg_gto::game::StackSource::Spell(id) if id == upper));
+    assert_eq!(state.players[0].hand, hand);
+    assert_eq!(state.players[0].library, library);
+    assert_eq!(state.players[0].graveyard, vec![counter]);
 }

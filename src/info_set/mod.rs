@@ -139,7 +139,7 @@ impl InformationSet {
         let stack_entries: Vec<StackInfo> = view
             .stack
             .iter()
-            .map(|entry| stack_entry_to_info(entry, &view.objects))
+            .map(|entry| stack_entry_to_info(entry, &view.objects, view.stack))
             .collect();
 
         // Graveyards: sorted CardIds
@@ -279,6 +279,7 @@ fn phase_to_u8(phase: crate::game::Phase) -> u8 {
 fn stack_entry_to_info(
     entry: &StackEntry,
     objects: &std::collections::HashMap<crate::card::ObjectId, &CardInstance>,
+    stack: &[StackEntry],
 ) -> StackInfo {
     let source_card_id = match entry.source {
         StackSource::Spell(obj_id) => objects
@@ -301,11 +302,17 @@ fn stack_entry_to_info(
         .map(|t| {
             let mut h = DefaultHasher::new();
             match t {
+                crate::game::Target::StackEntry(id) => {
+                    2u8.hash(&mut h);
+                    stack.iter().position(|entry| entry.id == *id).hash(&mut h);
+                }
                 crate::game::Target::Player(idx) => {
                     0u8.hash(&mut h);
                     idx.hash(&mut h);
                 }
                 crate::game::Target::Object(obj_id) => {
+                    // TODO: Preserve canonical permanent occurrence/incarnation relationships
+                    // before relying heavily on solver strategy quality for targeted-spell states.
                     1u8.hash(&mut h);
                     if let Some(inst) = objects.get(obj_id) {
                         inst.card_def_id.hash(&mut h);

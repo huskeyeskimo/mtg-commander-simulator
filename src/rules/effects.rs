@@ -72,6 +72,7 @@ pub(super) fn resolve_effect(
                 }
 
                 match target {
+                    Target::StackEntry(_) => (),
                     Target::Player(p) => {
                         let old_life = state.players[*p].life;
                         state.players[*p].life -= actual_damage as i32;
@@ -234,24 +235,13 @@ pub(super) fn resolve_effect(
         }
 
         Effect::Counter { .. } => {
-            // Find the targeted spell on the stack and counter it
-            let target_obj_id = targets.iter().find_map(|t| {
-                if let Target::Object(id) = t { Some(*id) } else { None }
-            });
-
-            if let Some(target_id) = target_obj_id {
-                // Find and remove the targeted spell from the stack
+            // No fallback to another spell: only the selected stack occurrence
+            // can be countered, even if its ID has since become stale.
+            if let Some(Target::StackEntry(target_id)) = targets.first() {
                 if let Some(idx) = state.stack.iter().position(|entry| {
-                    matches!(&entry.source, StackSource::Spell(id) if *id == target_id)
+                    entry.id == *target_id && matches!(entry.source, StackSource::Spell(_))
                 }) {
                     let countered = state.stack.remove(idx);
-                    if let StackSource::Spell(obj_id) = countered.source {
-                        state.move_object(obj_id, ZoneType::Stack, ZoneType::Graveyard);
-                    }
-                }
-            } else {
-                // Fallback: counter top spell on stack if no target specified
-                if let Some(countered) = state.stack.pop() {
                     if let StackSource::Spell(obj_id) = countered.source {
                         state.move_object(obj_id, ZoneType::Stack, ZoneType::Graveyard);
                     }

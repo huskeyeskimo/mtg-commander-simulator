@@ -135,10 +135,13 @@ impl Phase {
     }
 }
 
+/// Identity of one occurrence on the stack, separate from physical card identity.
+pub type StackId = u64;
+
 /// A stack entry — a spell or ability waiting to resolve.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StackEntry {
-    pub id: u64,
+    pub id: StackId,
     pub source: StackSource,
     pub controller: PlayerIndex,
     pub targets: Vec<Target>,
@@ -169,6 +172,8 @@ pub enum StackSource {
 pub enum Target {
     Player(PlayerIndex),
     Object(ObjectId),
+    /// A spell occurrence on the stack, not its physical card.
+    StackEntry(StackId),
 }
 
 /// Per-player state.
@@ -375,7 +380,7 @@ pub struct GameState {
     pub next_object_id: ObjectId,
 
     /// Next stack ID.
-    pub next_stack_id: u64,
+    pub next_stack_id: StackId,
 
     /// Pending triggers waiting to be put on the stack.
     /// These accumulate during rule processing and are placed on the stack
@@ -504,7 +509,7 @@ pub struct GameStateSnapshot {
     consecutive_passes: u32,
     combat: CombatState,
     next_object_id: ObjectId,
-    next_stack_id: u64,
+    next_stack_id: StackId,
     pending_triggers: Vec<PendingTrigger>,
     continuous_effects: Vec<ContinuousEffect>,
     next_timestamp: u32,
@@ -879,7 +884,7 @@ impl GameState {
     }
 
     /// Allocate a new stack entry ID.
-    pub fn new_stack_id(&mut self) -> u64 {
+    pub fn new_stack_id(&mut self) -> StackId {
         let id = self.next_stack_id;
         self.next_stack_id += 1;
         id
@@ -1428,6 +1433,7 @@ impl GameState {
                 &self.replacement_effects,
                 &ReplacementEventKind::DamageDealt,
                 match target {
+                    Target::StackEntry(_) => return 0,
                     Target::Player(p) => *p,
                     Target::Object(id) => self.objects.get(id).map(|i| i.controller).unwrap_or(0),
                 },

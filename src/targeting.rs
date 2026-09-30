@@ -197,14 +197,11 @@ pub fn target_is_legal(
                     _ => false,
                 }
         }
+        Target::StackEntry(id) => matches!(spec, TargetSpec::AnySpell)
+            && state.stack.iter().any(|entry| entry.id == *id && matches!(entry.source, StackSource::Spell(_))),
         Target::Object(id) => {
             if !state.objects.contains_key(id) {
                 return false;
-            }
-            if matches!(spec, TargetSpec::AnySpell) {
-                return state.stack.iter().any(
-                    |entry| matches!(entry.source, StackSource::Spell(spell) if spell == *id),
-                );
             }
             if matches!(spec, TargetSpec::CardInHand) {
                 return state.players[controller].hand.contains(id);
@@ -268,7 +265,7 @@ pub fn enumerate_spell_targets(
         .collect();
     candidates.extend((0..state.players.len()).map(Target::Player));
     candidates.extend(state.stack.iter().filter_map(|entry| match entry.source {
-        StackSource::Spell(id) => Some(Target::Object(id)),
+        StackSource::Spell(_) => Some(Target::StackEntry(entry.id)),
         _ => None,
     }));
     candidates.extend(
@@ -289,7 +286,7 @@ pub fn target_generations(state: &GameState, targets: &[Target]) -> Vec<Option<u
         .iter()
         .map(|target| match target {
             Target::Object(id) => state.objects.get(id).map(|inst| inst.zone_change_count),
-            Target::Player(_) => None,
+            Target::Player(_) | Target::StackEntry(_) => None,
         })
         .collect()
 }
