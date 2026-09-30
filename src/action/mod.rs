@@ -656,7 +656,8 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                     if ability.requires_tap && !state.can_pay_tap_cost(obj_id) {
                         continue;
                     }
-                    if can_potentially_pay(state, player, &ability.cost) {
+                    let reserved = ability.requires_tap.then_some(obj_id);
+                    if can_potentially_pay_excluding(state, player, &ability.cost, reserved) {
                         match &ability.effect {
                             Effect::ExileFromHandLinked => {
                                 // Generate one action per card in hand
@@ -787,6 +788,15 @@ fn can_potentially_pay(
     player: PlayerIndex,
     cost: &crate::mana::ManaCost,
 ) -> bool {
+    can_potentially_pay_excluding(state, player, cost, None)
+}
+
+fn can_potentially_pay_excluding(
+    state: &GameState,
+    player: PlayerIndex,
+    cost: &crate::mana::ManaCost,
+    reserved: Option<ObjectId>,
+) -> bool {
     use crate::card::ManaAbility;
     use crate::mana::Color;
 
@@ -803,6 +813,7 @@ fn can_potentially_pay(
     let mut flexible_colors: Vec<Vec<Color>> = Vec::new();
 
     for &source_id in &sources {
+        if Some(source_id) == reserved { continue; }
         let inst = &state.objects[&source_id];
         let def = match db.get(inst.card_def_id) {
             Some(d) => d,

@@ -5921,3 +5921,189 @@ fn test_chieftain_cast_registers_effects_and_multiple_chieftains_buff_each_other
     assert_chieftain_creature(&state, second, 2, true);
     assert_chieftain_creature(&state, ours, 4, true);
 }
+
+// Synthetic definitions keep these regressions independent of any deck's cards.
+fn hardening_state() -> GameState {
+    use mtg_gto::card::{ActivatedAbility, CardDef, CardType, Effect, ManaAbility, TargetSpec};
+    use mtg_gto::mana::{Color, ManaCost};
+    let mut db = mtg_gto::game::CardDatabase::new();
+    let ability = |cost, requires_tap, effect| ActivatedAbility {
+        cost, requires_tap, sacrifice_cost: None, life_cost: 0, effect,
+        description: "Engine regression ability".into(),
+    };
+    db.insert(CardDef {
+        id: 910000, name: "Mana and tap source".into(), card_types: vec![CardType::Artifact],
+        mana_abilities: vec![ManaAbility::TapForColorless],
+        activated_abilities: vec![
+            ability(ManaCost::new(1, 0, 0, 0, 0, 0), true, Effect::GainLife { amount: 1 }),
+            ability(ManaCost::new(1, 0, 0, 0, 0, 0), false, Effect::GainLife { amount: 1 }),
+        ], ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 910001, name: "Tap creature".into(), card_types: vec![CardType::Creature],
+        power: Some(1), toughness: Some(1),
+        activated_abilities: vec![ability(ManaCost::zero(), true, Effect::GainLife { amount: 1 })],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 910002, name: "Haste granter".into(), card_types: vec![CardType::Artifact],
+        activated_abilities: vec![ability(ManaCost::zero(), false, Effect::GainKeywordUntilEOT {
+            keyword: KeywordAbility::Haste, target: TargetSpec::AnyCreature,
+        })], ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 910003, name: "Test ritual".into(), card_types: vec![CardType::Instant],
+        mana_cost: Some(ManaCost::new(0, 0, 0, 0, 1, 0)),
+        spell_effect: Some(Effect::AddMana { color: Some(Color::Red), amount: 5 }),
+        ..Default::default()
+    });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::PreCombatMain;
+    state
+}
+
+#[test]
+fn test_hardening_tap_source_cannot_pay_its_own_mana_cost() {
+    let mut state = hardening_state();
+    let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield);
+    let action = Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] };
+    assert!(!legal_actions(&state).contains(&action));
+    rules::apply_action(&mut state, &action);
+    assert!(state.stack.is_empty());
+    assert!(!state.objects[&source].tapped);
+    assert_eq!(state.players[0].mana_pool.total(), 0);
+}
+
+#[test]
+fn test_hardening_reserved_tap_source_allows_other_mana_and_floating_mana() {
+    for floating in [false, true] {
+        let mut state = hardening_state();
+        let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield);
+        let other = if floating {
+            state.players[0].mana_pool.colorless = 1;
+            None
+        } else {
+            Some(state.create_card_in_zone(910000, 0, ZoneType::Battlefield))
+        };
+        let action = Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] };
+        assert!(legal_actions(&state).contains(&action));
+        rules::apply_action(&mut state, &action);
+        assert_eq!(state.stack.len(), 1);
+        assert!(state.objects[&source].tapped);
+        if let Some(other) = other { assert!(state.objects[&other].tapped); }
+        assert_eq!(state.players[0].mana_pool.total(), 0);
+    }
+    // A source with no tap-symbol cost remains eligible to generate payment mana.
+    let mut state = hardening_state();
+    let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield);
+    let action = Action::ActivateAbility { object_id: source, ability_index: 1, targets: vec![] };
+    assert!(legal_actions(&state).contains(&action));
+    rules::apply_action(&mut state, &action);
+    assert_eq!(state.stack.len(), 1);
+    assert!(state.objects[&source].tapped);
+    assert_eq!(state.players[0].mana_pool.total(), 0);
+}
+
+#[test]
+fn test_hardening_ritual_mana_persists_through_priority_and_resolution_not_phase_change() {
+    let mut state = hardening_state();
+    let ritual = state.create_card_in_zone(910003, 0, ZoneType::Hand);
+    state.players[0].mana_pool.red = 1;
+    rules::apply_action(&mut state, &Action::CastSpell { object_id: ritual, targets: vec![] });
+    rules::apply_action(&mut state, &Action::PassPriority);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert_eq!(state.phase, Phase::PreCombatMain);
+    assert_eq!(state.players[0].mana_pool.red, 5);
+    let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield);
+    state.priority_player = 0;
+    rules::apply_action(&mut state, &Action::ActivateAbility {
+        object_id: source, ability_index: 1, targets: vec![],
+    });
+    assert_eq!(state.players[0].mana_pool.red, 4);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert_eq!(state.players[0].mana_pool.red, 4);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert_eq!(state.phase, Phase::PreCombatMain);
+    assert_eq!(state.players[0].mana_pool.red, 4);
+    assert!(state.stack.is_empty());
+    state.players[1].mana_pool.blue = 2;
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert_eq!(state.players[0].mana_pool.red, 4);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert_eq!(state.phase, Phase::BeginningOfCombat);
+    assert_eq!(state.players[0].mana_pool.total(), 0);
+    assert_eq!(state.players[1].mana_pool.total(), 0);
+}
+
+#[test]
+fn test_hardening_mana_empties_at_combat_step_boundaries() {
+    for phase in [Phase::BeginningOfCombat, Phase::FirstStrikeDamage, Phase::CombatDamage, Phase::EndOfCombat] {
+        let mut state = hardening_state();
+        state.phase = phase;
+        state.players[0].mana_pool.red = 3;
+        state.players[1].mana_pool.colorless = 2;
+        rules::apply_action(&mut state, &Action::PassPriority);
+        assert_eq!(state.players[0].mana_pool.red, 3);
+        rules::apply_action(&mut state, &Action::PassPriority);
+        assert_ne!(state.phase, phase);
+        assert_eq!(state.players[0].mana_pool.total(), 0);
+        assert_eq!(state.players[1].mana_pool.total(), 0);
+    }
+    // Combat declarations advance directly in this engine, bypassing priority.
+    for attack in [false, true] {
+        let mut state = hardening_state();
+        let creature = state.create_card_in_zone(910001, 0, ZoneType::Battlefield);
+        state.objects.get_mut(&creature).unwrap().summoning_sick = false;
+        state.phase = Phase::DeclareAttackers;
+        state.players[0].mana_pool.red = 3;
+        rules::apply_action(&mut state, &Action::DeclareAttackers {
+            attackers: if attack { vec![creature] } else { vec![] },
+        });
+        assert_eq!(state.players[0].mana_pool.total(), 0);
+        if attack {
+            state.players[1].mana_pool.blue = 2;
+            rules::apply_action(&mut state, &Action::DeclareBlockers { blocks: vec![] });
+            assert_eq!(state.players[1].mana_pool.total(), 0);
+        }
+    }
+}
+
+#[test]
+fn test_hardening_resolved_haste_invalidates_cache_and_expires() {
+    for activate in [false, true] {
+        let mut state = hardening_state();
+        let creature = state.create_card_in_zone(910001, 0, ZoneType::Battlefield);
+        let granter = state.create_card_in_zone(910002, 0, ZoneType::Battlefield);
+        let tap = Action::ActivateAbility { object_id: creature, ability_index: 0, targets: vec![] };
+        // Warm the real cache through queries before the effect resolves.
+        assert!(!state.has_keyword(creature, KeywordAbility::Haste));
+        assert!(!legal_actions(&state).contains(&tap));
+        // Explicit valid target: target enumeration is outside this regression.
+        rules::apply_action(&mut state, &Action::ActivateAbility {
+            object_id: granter, ability_index: 0, targets: vec![Target::Object(creature)],
+        });
+        rules::apply_action(&mut state, &Action::PassPriority);
+        rules::apply_action(&mut state, &Action::PassPriority);
+        state.priority_player = 0;
+        assert!(state.has_keyword(creature, KeywordAbility::Haste));
+        assert!(state.objects[&creature].summoning_sick);
+        assert!(legal_actions(&state).contains(&tap));
+        if activate {
+            rules::apply_action(&mut state, &tap);
+            assert!(state.objects[&creature].tapped);
+            rules::apply_action(&mut state, &Action::PassPriority);
+            rules::apply_action(&mut state, &Action::PassPriority);
+        }
+        state.phase = Phase::EndStep;
+        state.consecutive_passes = 0;
+        rules::apply_action(&mut state, &Action::PassPriority);
+        rules::apply_action(&mut state, &Action::PassPriority);
+        assert_eq!(state.active_player, 1);
+        assert!(!state.has_keyword(creature, KeywordAbility::Haste));
+        assert!(state.objects[&creature].summoning_sick);
+        state.priority_player = 0;
+        assert!(!legal_actions(&state).contains(&tap));
+        if !activate { assert!(!state.objects[&creature].tapped); }
+    }
+}

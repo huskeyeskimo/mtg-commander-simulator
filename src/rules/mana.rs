@@ -221,6 +221,16 @@ pub fn auto_tap_lands(
     player: PlayerIndex,
     cost: &crate::mana::ManaCost,
 ) {
+    auto_tap_lands_excluding(state, player, cost, None);
+}
+
+/// Reserve a permanent that must remain untapped to pay another activation cost.
+pub(super) fn auto_tap_lands_excluding(
+    state: &mut GameState,
+    player: PlayerIndex,
+    cost: &crate::mana::ManaCost,
+    reserved: Option<ObjectId>,
+) {
     let mut decisions: Vec<TapDecision> = Vec::new();
 
     // Pre-compute legendary colors for Mox Amber (needs immutable borrow)
@@ -241,6 +251,7 @@ pub fn auto_tap_lands(
         let mut source_infos: Vec<SourceInfo> = sources
             .iter()
             .filter_map(|&id| {
+                if Some(id) == reserved { return None; }
                 let inst = state.objects.get(&id)?;
                 let def = db.get(inst.card_def_id)?;
                 Some(SourceInfo {

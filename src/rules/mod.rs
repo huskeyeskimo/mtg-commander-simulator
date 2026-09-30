@@ -268,7 +268,9 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                     return;
                 }
                 // Pay mana cost
-                mana::auto_tap_lands(state, player, &ability.cost);
+                mana::auto_tap_lands_excluding(
+                    state, player, &ability.cost, ability.requires_tap.then_some(obj_id),
+                );
                 if !state.players[player].mana_pool.pay(&ability.cost) {
                     return;
                 }
@@ -332,7 +334,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             state.consecutive_passes = 0;
             if attackers.is_empty() {
                 // No attackers — skip combat entirely
-                state.phase = Phase::EndOfCombat;
+                phases::transition_to_phase(state, Phase::EndOfCombat);
                 state.priority_player = state.active_player;
             } else {
                 // Exalted: if exactly one creature attacks, each permanent with
@@ -352,7 +354,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 let flushed = triggers::flush_triggers(state);
 
                 if flushed {
-                    state.phase = Phase::DeclareBlockers;
+                    phases::transition_to_phase(state, Phase::DeclareBlockers);
                     state.priority_player = state.next_player(state.active_player);
                 }
             }
@@ -374,7 +376,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
 
             // Advance to combat damage (skip first strike if not applicable)
             state.consecutive_passes = 0;
-            state.phase = Phase::FirstStrikeDamage;
+            phases::transition_to_phase(state, Phase::FirstStrikeDamage);
             // Execute the first strike damage step entry (which may skip to CombatDamage)
             phases::execute_phase_entry_public(state);
         }

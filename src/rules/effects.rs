@@ -631,6 +631,7 @@ pub(super) fn resolve_effect(
                     }
                 }
             }
+            state.invalidate_characteristics_cache();
         }
 
         Effect::SetPowerToughness { power, toughness, until_eot, .. } => {

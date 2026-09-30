@@ -24,6 +24,17 @@ pub(super) fn handle_priority_pass(state: &mut GameState) {
     }
 }
 
+/// Each Phase variant represents a step or phase boundary. Mana empties when
+/// crossing it (CR 106.4), never merely when passing priority or resolving.
+pub(super) fn transition_to_phase(state: &mut GameState, next: Phase) {
+    if state.phase != next {
+        for player in &mut state.players {
+            player.mana_pool.drain();
+        }
+        state.phase = next;
+    }
+}
+
 /// Advance to the next phase.
 pub(super) fn advance_phase(state: &mut GameState) {
     let current_idx = Phase::TURN_ORDER
@@ -43,7 +54,7 @@ pub(super) fn advance_phase(state: &mut GameState) {
     }
 
     if next_idx < Phase::TURN_ORDER.len() {
-        state.phase = Phase::TURN_ORDER[next_idx];
+        transition_to_phase(state, Phase::TURN_ORDER[next_idx]);
     } else {
         // End of turn — go to next turn
         next_turn(state);
@@ -204,7 +215,7 @@ fn next_turn(state: &mut GameState) {
 
     state.priority_player = state.active_player;
     state.turn_number += 1;
-    state.phase = Phase::TURN_ORDER[0]; // Untap
+    transition_to_phase(state, Phase::TURN_ORDER[0]); // Untap
     state.consecutive_passes = 0;
     state.spells_cast_this_turn = 0;
 
