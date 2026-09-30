@@ -523,7 +523,7 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                             let reduced = crate::rules::apply_cost_reduction(fb_cost, reduction);
                             if can_potentially_pay(state, player, &reduced) {
                                 let targets = enumerate_targets_for_spell(state, player, def);
-                                if targets.is_empty() {
+                                if targets.is_empty() && !spell_requires_target(def) {
                                     actions.push(Action::CastFromGraveyard {
                                         object_id: obj_id,
                                         targets: vec![],
@@ -556,10 +556,14 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                                 );
                                 let reduced = crate::rules::apply_cost_reduction(cost, reduction);
                                 if can_potentially_pay(state, player, &reduced) {
-                                    actions.push(Action::CastFromGraveyard {
-                                        object_id: obj_id,
-                                        targets: vec![],
-                                    });
+                                    let targets = enumerate_targets_for_spell(state, player, def);
+                                    if targets.is_empty() && !spell_requires_target(def) {
+                                        actions.push(Action::CastFromGraveyard { object_id: obj_id, targets: vec![] });
+                                    } else {
+                                        for target in targets {
+                                            actions.push(Action::CastFromGraveyard { object_id: obj_id, targets: vec![target] });
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -890,170 +894,11 @@ fn can_potentially_pay_excluding(
 /// Returns true if a spell's effect requires a target to be legal.
 /// Non-targeted spells (draw, destroy all, gain life, etc.) return false.
 pub fn spell_requires_target(def: &crate::card::CardDef) -> bool {
-    let effect = match &def.spell_effect {
-        Some(e) => e,
-        None => return false,
-    };
-    matches!(
-        effect,
-        Effect::DealDamage { .. }
-            | Effect::DestroyTarget { .. }
-            | Effect::ExileTarget { .. }
-            | Effect::BounceTo { .. }
-            | Effect::Counter { .. }
-            | Effect::LoseLife { .. }
-            | Effect::DiscardCards { .. }
-            | Effect::Buff { .. }
-            | Effect::Debuff { .. }
-            | Effect::PutCounters { .. }
-            | Effect::MillCards { .. }
-            | Effect::SacrificeCreatures { .. }
-    )
+    !matches!(crate::targeting::spell_targeting(def), crate::targeting::SpellTargeting::Untargeted)
 }
 
-/// Enumerate valid targets for a spell.
-fn enumerate_targets_for_spell(
-    state: &GameState,
-    caster: PlayerIndex,
-    def: &crate::card::CardDef,
-) -> Vec<Target> {
-    use crate::card::{Effect, TargetSpec};
-
-    let effect = match &def.spell_effect {
-        Some(e) => e,
-        None => return vec![],
-    };
-
-    fn targets_for_spec(state: &GameState, caster: PlayerIndex, spec: &TargetSpec) -> Vec<Target> {
-        use crate::card::KeywordAbility;
-
-        let db = state.card_db();
-        let mut targets = Vec::new();
-
-        /// Check if a permanent can be targeted by a given player.
-        /// Hexproof: can't be targeted by opponents. Shroud: can't be targeted by anyone.
-        fn can_target_permanent(
-            state: &GameState,
-            obj_id: crate::card::ObjectId,
-            caster: PlayerIndex,
-        ) -> bool {
-            if state.has_keyword(obj_id, KeywordAbility::Shroud) {
-                return false;
-            }
-            if state.has_keyword(obj_id, KeywordAbility::Hexproof)
-                && state.objects[&obj_id].controller != caster
-            {
-                return false;
-            }
-            true
-        }
-
-        match spec {
-            TargetSpec::AnyCreature => {
-                for &id in &state.battlefield {
-                    let inst = &state.objects[&id];
-                    if db.get(inst.card_def_id).map_or(false, |d| d.is_creature())
-                        && can_target_permanent(state, id, caster)
-                    {
-                        targets.push(Target::Object(id));
-                    }
-                }
-            }
-            TargetSpec::AnyPlayer => {
-                for i in 0..state.players.len() {
-                    // Hexproof on players (e.g., Leyline of Sanctity) not modeled yet
-                    targets.push(Target::Player(i));
-                }
-            }
-            TargetSpec::CreatureOrPlayer => {
-                for &id in &state.battlefield {
-                    let inst = &state.objects[&id];
-                    if db.get(inst.card_def_id).map_or(false, |d| d.is_creature())
-                        && can_target_permanent(state, id, caster)
-                    {
-                        targets.push(Target::Object(id));
-                    }
-                }
-                for i in 0..state.players.len() {
-                    targets.push(Target::Player(i));
-                }
-            }
-            TargetSpec::Opponent => {
-                for opp in state.opponents(caster) {
-                    targets.push(Target::Player(opp));
-                }
-            }
-            TargetSpec::AnySpell => {
-                for entry in &state.stack {
-                    if let crate::game::StackSource::Spell(obj_id) = entry.source {
-                        targets.push(Target::Object(obj_id));
-                    }
-                }
-            }
-            TargetSpec::AnyNonlandPermanent => {
-                for &id in &state.battlefield {
-                    let inst = &state.objects[&id];
-                    if db.get(inst.card_def_id).map_or(false, |d| !d.is_land())
-                        && can_target_permanent(state, id, caster)
-                    {
-                        targets.push(Target::Object(id));
-                    }
-                }
-            }
-            TargetSpec::NoTarget | TargetSpec::Controller | TargetSpec::EachCreature => {
-                // EachCreature is untargeted (auto-resolves at effect time).
-                // No targets are generated here for casting/activation; the
-                // resolve_effect handler auto-targets all creatures.
-            }
-            TargetSpec::CardInHand => {
-                for &id in &state.players[caster].hand {
-                    targets.push(Target::Object(id));
-                }
-            }
-            TargetSpec::CardInExileBySource => {
-                // Targets are enumerated at activation time with source context,
-                // not here. See legal_actions for ActivateAbility handling.
-            }
-            TargetSpec::AnyPermanent => {
-                for &id in &state.battlefield {
-                    if can_target_permanent(state, id, caster) {
-                        targets.push(Target::Object(id));
-                    }
-                }
-            }
-            TargetSpec::CreatureOrPlaneswalker => {
-                for &id in &state.battlefield {
-                    let inst = &state.objects[&id];
-                    if let Some(d) = db.get(inst.card_def_id) {
-                        if (d.is_creature()
-                            || d.card_types.contains(&crate::card::CardType::Planeswalker))
-                            && can_target_permanent(state, id, caster)
-                        {
-                            targets.push(Target::Object(id));
-                        }
-                    }
-                }
-            }
-        }
-        targets
-    }
-
-    match effect {
-        Effect::DealDamage { target, .. } => targets_for_spec(state, caster, target),
-        Effect::DestroyTarget { target } => targets_for_spec(state, caster, target),
-        Effect::ExileTarget { target } => targets_for_spec(state, caster, target),
-        Effect::BounceTo { target, .. } => targets_for_spec(state, caster, target),
-        Effect::Counter { target } => targets_for_spec(state, caster, target),
-        Effect::LoseLife { target, .. } => targets_for_spec(state, caster, target),
-        Effect::DiscardCards { target, .. } => targets_for_spec(state, caster, target),
-        Effect::Buff { .. } | Effect::Debuff { .. } => {
-            targets_for_spec(state, caster, &crate::card::TargetSpec::AnyCreature)
-        }
-        Effect::PutCounters { target, .. } => targets_for_spec(state, caster, target),
-        Effect::MillCards { target, .. } => targets_for_spec(state, caster, target),
-        Effect::SacrificeCreatures { target, .. } => targets_for_spec(state, caster, target),
-        _ => vec![], // non-targeted spells (DestroyAll, GainLife, DrawCards, etc.)
-    }
+fn enumerate_targets_for_spell(state: &GameState, caster: PlayerIndex, def: &crate::card::CardDef) -> Vec<Target> {
+    crate::targeting::enumerate_spell_targets(state, caster, def)
 }
 
 /// Enumerate valid tutor target actions for a player with a pending tutor.

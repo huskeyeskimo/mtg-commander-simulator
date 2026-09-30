@@ -25,6 +25,24 @@ pub(crate) use tokens::create_token_from_combo;
 
 /// Apply an action to the game state, advancing it.
 pub fn apply_action(state: &mut GameState, action: &Action) {
+    // Validate supplied targets before costs, zone changes, or cast events.
+    let cast = match action {
+        Action::CastSpell { object_id, targets } => Some((*object_id, targets, ZoneType::Hand)),
+        Action::CastFromGraveyard { object_id, targets } => Some((*object_id, targets, ZoneType::Graveyard)),
+        Action::CastCommander { object_id, targets } => Some((*object_id, targets, ZoneType::Command)),
+        _ => None,
+    };
+    if let Some((id, targets, zone)) = cast {
+        let player = state.priority_player;
+        let zone_cards = match zone {
+            ZoneType::Hand => &state.players[player].hand,
+            ZoneType::Graveyard => &state.players[player].graveyard,
+            _ => &state.players[player].command_zone,
+        };
+        if !zone_cards.contains(&id) { return; }
+        let Some(def) = state.objects.get(&id).and_then(|inst| state.card_db().get(inst.card_def_id)) else { return; };
+        if !crate::targeting::valid_spell_targets(state, player, def, targets) { return; }
+    }
     match action {
         Action::PassPriority => {
             // If there's a pending tutor, passing means "fail to find" —
@@ -149,7 +167,10 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 source: StackSource::Spell(obj_id),
                 controller: player,
                 targets: targets.clone(),
+                target_generations: crate::targeting::target_generations(state, targets),
             });
+            // Casting is a zone change even though stack placement is explicit.
+            state.objects.get_mut(&obj_id).unwrap().zone_change_count += 1;
             // Remove from hand (but don't put in a zone yet — it's on the stack)
             state.players[player].hand.retain(|&id| id != obj_id);
 
@@ -310,6 +331,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                     },
                     controller: player,
                     targets: targets.clone(),
+                    target_generations: crate::targeting::target_generations(state, targets),
                 });
             }
             state.consecutive_passes = 0;
@@ -453,8 +475,10 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 source: StackSource::Spell(obj_id),
                 controller: player,
                 targets: targets.clone(),
+                target_generations: crate::targeting::target_generations(state, targets),
             });
             // Remove from command zone
+            state.objects.get_mut(&obj_id).unwrap().zone_change_count += 1;
             state.players[player].command_zone.retain(|&id| id != obj_id);
 
             state.emit_event(GameEvent::SpellCast {
@@ -551,6 +575,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 },
                 controller,
                 targets: Vec::new(),
+                target_generations: Vec::new(),
             });
             state.consecutive_passes = 0;
         }
@@ -609,7 +634,9 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 source: StackSource::Spell(obj_id),
                 controller: player,
                 targets: targets.clone(),
+                target_generations: crate::targeting::target_generations(state, targets),
             });
+            state.objects.get_mut(&obj_id).unwrap().zone_change_count += 1;
             state.players[player].graveyard.retain(|&id| id != obj_id);
 
             state.emit_event(GameEvent::SpellCast {

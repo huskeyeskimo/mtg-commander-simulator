@@ -142,6 +142,9 @@ pub struct StackEntry {
     pub source: StackSource,
     pub controller: PlayerIndex,
     pub targets: Vec<Target>,
+    /// Incarnation of each object target when selected (CR 400.7).
+    #[serde(default)]
+    pub target_generations: Vec<Option<u32>>,
 }
 
 /// What put this entry on the stack.
@@ -1280,7 +1283,7 @@ impl GameState {
     /// On a cache miss the battlefield `HashSet` is built once (amortised across
     /// all objects in the same cache epoch) and passed to the layer engine for
     /// O(1) membership tests.
-    fn get_characteristics(&self, obj_id: ObjectId) -> Option<ComputedCharacteristics> {
+    pub(crate) fn get_characteristics(&self, obj_id: ObjectId) -> Option<ComputedCharacteristics> {
         let mut cache = self.characteristics_cache.0.lock().unwrap();
 
         // Fast path: cache hit

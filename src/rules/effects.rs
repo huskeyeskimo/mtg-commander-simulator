@@ -13,6 +13,22 @@ pub(super) fn resolve_effect(
     targets: &[Target],
     source_id: Option<ObjectId>,
 ) {
+    // Spell targets and untargeted recipients are different. Interpret each
+    // leaf's declaration, including leaves nested inside Multiple, before its
+    // handler runs. NoTarget retains the handler's existing untargeted behavior.
+    use crate::targeting::EffectRecipients;
+    let recipients = match crate::targeting::effect_recipients(effect) {
+        EffectRecipients::Declared(crate::card::TargetSpec::Controller) => Some(vec![Target::Player(controller)]),
+        EffectRecipients::Declared(crate::card::TargetSpec::EachCreature) => Some(state.battlefield.iter().copied()
+            .filter(|&id| state.is_creature(id)).map(Target::Object).collect()),
+        EffectRecipients::Declared(crate::card::TargetSpec::NoTarget)
+        | EffectRecipients::Independent => Some(Vec::new()),
+        EffectRecipients::Declared(_)
+        | EffectRecipients::SelectedObjects
+        | EffectRecipients::Children => None,
+    };
+    let targets = recipients.as_deref().unwrap_or(targets);
+
     match effect {
         Effect::DealDamage { amount, target: target_spec } => {
             // For untargeted effects, auto-generate targets from the spec.
@@ -26,13 +42,8 @@ pub(super) fn resolve_effect(
                     }
                     crate::card::TargetSpec::EachCreature => {
                         // "Each creature" — deal damage to all creatures on the battlefield
-                        let db = state.card_db();
                         state.battlefield.iter().copied()
-                            .filter(|&id| {
-                                state.objects.get(&id)
-                                    .and_then(|inst| db.get(inst.card_def_id))
-                                    .map_or(false, |def| def.is_creature())
-                            })
+                            .filter(|&id| state.is_creature(id))
                             .map(Target::Object)
                             .collect()
                     }

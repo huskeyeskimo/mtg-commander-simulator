@@ -10,7 +10,7 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
 
     match entry.source {
         StackSource::Spell(obj_id) => {
-            resolve_spell(state, obj_id, &entry.targets, entry.controller);
+            resolve_spell(state, obj_id, &entry.targets, &entry.target_generations, entry.controller);
         }
         StackSource::ActivatedAbility {
             source_id,
@@ -35,6 +35,7 @@ fn resolve_spell(
     state: &mut GameState,
     obj_id: ObjectId,
     targets: &[Target],
+    generations: &[Option<u32>],
     controller: PlayerIndex,
 ) {
     // Clone the card definition to avoid borrow conflict
@@ -91,8 +92,14 @@ fn resolve_spell(
             let _ = super::triggers::flush_triggers(state);
         }
     } else {
-        if let Some(ref effect) = def.spell_effect {
-            super::effects::resolve_effect(state, effect, controller, targets, Some(obj_id));
+        // CR 608.2b: an illegal sole target stops the whole spell, including
+        // untargeted instructions such as drawing. Check only before execution.
+        let legal = crate::targeting::valid_spell_targets(state, controller, &def, targets)
+            && crate::targeting::target_generations(state, targets) == generations;
+        if legal {
+            if let Some(ref effect) = def.spell_effect {
+                super::effects::resolve_effect(state, effect, controller, targets, Some(obj_id));
+            }
         }
         // Commander redirect: non-permanent commander spells go to command zone
         if state.is_commander(obj_id) {

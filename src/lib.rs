@@ -19,3 +19,4 @@ pub mod info_set;
 pub mod solver;
 #[cfg(feature = "tui")]
 pub mod tui;
+pub mod targeting;

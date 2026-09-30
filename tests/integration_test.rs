@@ -6107,3 +6107,385 @@ fn test_hardening_resolved_haste_invalidates_cache_and_expires() {
         if !activate { assert!(!state.objects[&creature].tapped); }
     }
 }
+
+// Single-target spell foundations: synthetic definitions, no Zada/copying.
+fn targeting_state() -> GameState {
+    use mtg_gto::card::{CardDef, CardType, Effect, TargetSpec};
+    use mtg_gto::mana::ManaCost;
+    let mut db = mtg_gto::game::CardDatabase::new();
+    let haste = Effect::GainKeywordUntilEOT { keyword: KeywordAbility::Haste, target: TargetSpec::AnyCreature };
+    for (id, effect) in [
+        (920000, Effect::Multiple(vec![haste.clone(), Effect::Multiple(vec![haste]), Effect::DrawCards { count: 1 }])),
+        (920003, Effect::Buff { power: 2, toughness: 2, until_eot: true }),
+        (920004, Effect::DrawCards { count: 1 }),
+        (920005, Effect::Counter { target: TargetSpec::AnySpell }),
+    ] {
+        db.insert(CardDef { id, name: format!("Test spell {id}"), card_types: vec![CardType::Instant],
+            mana_cost: Some(ManaCost::new(0, 0, 0, 0, 1, 0)), spell_effect: Some(effect), ..Default::default() });
+    }
+    db.insert(CardDef { id: 920001, name: "Test creature".into(), card_types: vec![CardType::Creature],
+        power: Some(2), toughness: Some(2), ..Default::default() });
+    db.insert(CardDef { id: 920002, name: "Test artifact".into(), card_types: vec![CardType::Artifact],
+        power: Some(2), toughness: Some(2), ..Default::default() });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::PreCombatMain;
+    state.players[0].mana_pool.red = 10;
+    for _ in 0..3 { state.create_card_in_zone(920002, 0, ZoneType::Library); }
+    state
+}
+
+fn targeting_layer(state: &mut GameState, id: u64, modification: mtg_gto::layers::LayerModification) {
+    use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration};
+    let timestamp = state.new_timestamp();
+    state.continuous_effects.push(ContinuousEffect { source_id: id, controller: 0, timestamp,
+        duration: Duration::UntilEndOfTurn, affected: AffectedObjects::Specific(id), modification });
+    state.invalidate_characteristics_cache();
+}
+
+fn targeting_cast(state: &mut GameState, spell: u64, targets: Vec<Target>) {
+    let action = Action::CastSpell { object_id: spell, targets };
+    assert!(legal_actions(state).contains(&action));
+    rules::apply_action(state, &action);
+    assert!(!state.stack.is_empty());
+}
+
+fn targeting_resolve(state: &mut GameState) {
+    rules::apply_action(state, &Action::PassPriority);
+    rules::apply_action(state, &Action::PassPriority);
+}
+
+#[test]
+fn test_targeting_generation_keywords_and_zones() {
+    use mtg_gto::layers::LayerModification::AddKeyword;
+    let mut state = targeting_state();
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+    let ours = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let theirs = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
+    let own_hex = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let opp_hex = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
+    let shroud = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(920002, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(920001, 0, ZoneType::Graveyard);
+    targeting_layer(&mut state, own_hex, AddKeyword(KeywordAbility::Hexproof));
+    targeting_layer(&mut state, opp_hex, AddKeyword(KeywordAbility::Hexproof));
+    targeting_layer(&mut state, shroud, AddKeyword(KeywordAbility::Shroud));
+    let targets: Vec<_> = legal_actions(&state).into_iter().filter_map(|a| match a {
+        Action::CastSpell { object_id, targets } if object_id == spell => Some(targets), _ => None,
+    }).collect();
+    assert_eq!(targets, vec![vec![Target::Object(ours)], vec![Target::Object(theirs)], vec![Target::Object(own_hex)]]);
+}
+
+#[test]
+fn test_targeting_no_creature_no_cast() {
+    let mut state = targeting_state();
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+    state.create_card_in_zone(920002, 0, ZoneType::Battlefield);
+    assert!(!legal_actions(&state).iter().any(|a| matches!(a, Action::CastSpell { object_id, .. } if *object_id == spell)));
+}
+
+#[test]
+fn test_targeting_uses_layered_creature_types() {
+    use mtg_gto::{card::CardType, layers::LayerModification};
+    let mut state = targeting_state();
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+    let animated = state.create_card_in_zone(920002, 0, ZoneType::Battlefield);
+    let removed = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    targeting_layer(&mut state, animated, LayerModification::AddType(CardType::Creature));
+    targeting_layer(&mut state, removed, LayerModification::RemoveType(CardType::Creature));
+    let actions = legal_actions(&state);
+    assert!(actions.contains(&Action::CastSpell { object_id: spell, targets: vec![Target::Object(animated)] }));
+    assert!(!actions.contains(&Action::CastSpell { object_id: spell, targets: vec![Target::Object(removed)] }));
+}
+
+#[test]
+fn test_targeting_invalid_cast_has_no_mutation() {
+    let mut state = targeting_state();
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+    let creature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let artifact = state.create_card_in_zone(920002, 0, ZoneType::Battlefield);
+    let dead = state.create_card_in_zone(920001, 0, ZoneType::Graveyard);
+    let shroud = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let hex = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
+    targeting_layer(&mut state, shroud, mtg_gto::layers::LayerModification::AddKeyword(KeywordAbility::Shroud));
+    targeting_layer(&mut state, hex, mtg_gto::layers::LayerModification::AddKeyword(KeywordAbility::Hexproof));
+    state.drain_events();
+    for targets in [vec![], vec![Target::Object(creature); 2], vec![Target::Player(0)],
+        vec![Target::Object(u64::MAX)], vec![Target::Object(artifact)], vec![Target::Object(dead)],
+        vec![Target::Object(shroud)], vec![Target::Object(hex)]] {
+        let before = serde_json::to_value(&state).unwrap();
+        rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets });
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+        assert!(state.drain_events().is_empty());
+    }
+    let untargeted = state.create_card_in_zone(920004, 0, ZoneType::Hand);
+    state.drain_events();
+    let before = serde_json::to_value(&state).unwrap();
+    rules::apply_action(&mut state, &Action::CastSpell { object_id: untargeted, targets: vec![Target::Object(creature)] });
+    assert_eq!(serde_json::to_value(&state).unwrap(), before);
+    assert!(state.drain_events().is_empty());
+}
+
+#[test]
+fn test_targeting_shared_target_haste_draw_and_graveyard() {
+    let mut state = targeting_state();
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+    let other = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let chosen = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
+    targeting_cast(&mut state, spell, vec![Target::Object(chosen)]);
+    assert_eq!(state.stack[0].targets, vec![Target::Object(chosen)]);
+    assert_eq!(state.stack[0].target_generations, vec![Some(state.objects[&chosen].zone_change_count)]);
+    // Stack snapshots preserve the selected incarnation, too.
+    let encoded = serde_json::to_vec(&state.stack[0]).unwrap();
+    let decoded: mtg_gto::game::StackEntry = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded.target_generations, state.stack[0].target_generations);
+    state.drain_events();
+    targeting_resolve(&mut state);
+    assert!(state.has_keyword(chosen, KeywordAbility::Haste));
+    assert!(!state.has_keyword(other, KeywordAbility::Haste));
+    assert_eq!(state.players[0].hand.len(), 1);
+    assert_eq!(state.players[0].library.len(), 2);
+    assert!(state.players[1].hand.is_empty());
+    assert!(state.stack.is_empty());
+    assert_eq!(state.players[0].graveyard, vec![spell]);
+    assert_eq!(state.drain_events().iter().filter(|event| matches!(event,
+        GameEvent::ZoneChange { object, from: Zone::Stack, to: Zone::Graveyard } if *object == spell)).count(), 1);
+}
+
+#[test]
+fn test_targeting_departed_or_blinked_target_stops_entire_spell() {
+    for returns in [false, true] {
+        let mut state = targeting_state();
+        let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+        let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+        targeting_cast(&mut state, spell, vec![Target::Object(target)]);
+        state.move_object(target, ZoneType::Battlefield, ZoneType::Exile);
+        if returns { state.move_object(target, ZoneType::Exile, ZoneType::Battlefield); }
+        targeting_resolve(&mut state);
+        assert!(!state.has_keyword(target, KeywordAbility::Haste));
+        assert!(state.players[0].hand.is_empty());
+        assert_eq!(state.players[0].library.len(), 3);
+        assert!(state.stack.is_empty());
+        assert_eq!(state.players[0].graveyard, vec![spell]);
+    }
+}
+
+#[test]
+fn test_targeting_new_restrictions_stop_entire_spell() {
+    use mtg_gto::{card::CardType, layers::LayerModification};
+    for modification in [LayerModification::AddKeyword(KeywordAbility::Shroud),
+        LayerModification::AddKeyword(KeywordAbility::Hexproof), LayerModification::RemoveType(CardType::Creature)] {
+        let mut state = targeting_state();
+        let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+        let target = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
+        targeting_cast(&mut state, spell, vec![Target::Object(target)]);
+        targeting_layer(&mut state, target, modification);
+        targeting_resolve(&mut state);
+        assert!(!state.has_keyword(target, KeywordAbility::Haste));
+        assert!(state.players[0].hand.is_empty());
+        assert_eq!(state.players[0].library.len(), 3);
+        assert_eq!(state.players[0].graveyard, vec![spell]);
+    }
+}
+
+#[test]
+fn test_targeting_control_change_and_own_hexproof_remain_legal() {
+    for hexproof in [false, true] {
+        let mut state = targeting_state();
+        let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+        let target = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
+        targeting_cast(&mut state, spell, vec![Target::Object(target)]);
+        targeting_layer(&mut state, target, mtg_gto::layers::LayerModification::ChangeController(0));
+        if hexproof { targeting_layer(&mut state, target, mtg_gto::layers::LayerModification::AddKeyword(KeywordAbility::Hexproof)); }
+        targeting_resolve(&mut state);
+        assert!(state.has_keyword(target, KeywordAbility::Haste));
+        assert_eq!(state.players[0].hand.len(), 1);
+    }
+}
+
+#[test]
+fn test_targeting_legacy_simple_and_untargeted_spells() {
+    let mut state = targeting_state();
+    let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let buff = state.create_card_in_zone(920003, 0, ZoneType::Hand);
+    targeting_cast(&mut state, buff, vec![Target::Object(target)]);
+    targeting_resolve(&mut state);
+    assert_eq!(state.effective_power(target), 4);
+    state.priority_player = 0;
+    let draw = state.create_card_in_zone(920004, 0, ZoneType::Hand);
+    targeting_cast(&mut state, draw, vec![]);
+    targeting_resolve(&mut state);
+    assert_eq!(state.players[0].library.len(), 2);
+    assert_eq!(state.players[0].graveyard, vec![buff, draw]);
+}
+
+#[test]
+fn test_targeting_counterspell_stack_target_remains_legal() {
+    let mut state = targeting_state();
+    let draw = state.create_card_in_zone(920004, 0, ZoneType::Hand);
+    let counter = state.create_card_in_zone(920005, 0, ZoneType::Hand);
+    targeting_cast(&mut state, draw, vec![]);
+    targeting_cast(&mut state, counter, vec![Target::Object(draw)]);
+    targeting_resolve(&mut state);
+    assert!(state.stack.is_empty());
+    assert_eq!(state.players[0].library.len(), 3);
+    assert!(state.players[0].graveyard.contains(&draw));
+    assert!(state.players[0].graveyard.contains(&counter));
+}
+
+#[test]
+fn test_targeting_graveyard_cast_uses_same_contract() {
+    use mtg_gto::mana::ManaCost;
+    for flashback in [false, true] {
+        let mut state = targeting_state();
+        let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+        let mut def = db.get(920000).unwrap().clone();
+        if flashback { def.flashback_cost = Some(ManaCost::new(0, 0, 0, 0, 1, 0)); }
+        else { def.escape_exile_count = Some(1); }
+        db.insert(def);
+        let spell = state.create_card_in_zone(920000, 0, ZoneType::Graveyard);
+        state.create_card_in_zone(920002, 0, ZoneType::Graveyard);
+        assert!(!legal_actions(&state).iter().any(|a| matches!(a, Action::CastFromGraveyard { object_id, .. } if *object_id == spell)));
+        let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+        let action = Action::CastFromGraveyard { object_id: spell, targets: vec![Target::Object(target)] };
+        assert!(legal_actions(&state).contains(&action));
+        state.drain_events();
+        let before = serde_json::to_value(&state).unwrap();
+        rules::apply_action(&mut state, &Action::CastFromGraveyard { object_id: spell, targets: vec![] });
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+        assert!(state.drain_events().is_empty());
+        rules::apply_action(&mut state, &action);
+        assert_eq!(state.stack[0].targets, vec![Target::Object(target)]);
+        targeting_resolve(&mut state);
+        assert!(state.has_keyword(target, KeywordAbility::Haste));
+        assert_eq!(state.players[0].library.len(), 2);
+    }
+}
+
+#[test]
+fn test_targeting_owner_graveyard_differs_from_caster() {
+    let mut state = targeting_state();
+    let spell = state.create_card_in_zone(920000, 1, ZoneType::Hand);
+    state.players[1].hand.retain(|&id| id != spell);
+    state.players[0].hand.push(spell);
+    let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    targeting_cast(&mut state, spell, vec![Target::Object(target)]);
+    targeting_resolve(&mut state);
+    assert!(state.players[0].graveyard.is_empty());
+    assert_eq!(state.players[1].graveyard, vec![spell]);
+    assert_eq!(state.players[0].hand.len(), 1);
+}
+
+#[test]
+fn test_targeting_incompatible_composite_is_not_cast_targetless() {
+    use mtg_gto::card::{Effect, TargetSpec};
+    let mut state = targeting_state();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut def = db.get(920000).unwrap().clone();
+    def.spell_effect = Some(Effect::Multiple(vec![
+        Effect::GainKeywordUntilEOT { keyword: KeywordAbility::Haste, target: TargetSpec::AnyCreature },
+        Effect::LoseLife { amount: 1, target: TargetSpec::Opponent },
+    ]));
+    db.insert(def);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+    state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    assert!(!legal_actions(&state).iter().any(|a| matches!(a, Action::CastSpell { object_id, .. } if *object_id == spell)));
+}
+
+#[test]
+fn test_targeting_composite_each_creature_keeps_untargeted_recipients() {
+    use mtg_gto::{card::{CardType, Effect, TargetSpec}, layers::LayerModification};
+    let mut state = targeting_state();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut def = db.get(920000).unwrap().clone();
+    def.spell_effect = Some(Effect::Multiple(vec![
+        Effect::GainKeywordUntilEOT { keyword: KeywordAbility::Haste, target: TargetSpec::AnyCreature },
+        Effect::Multiple(vec![Effect::DealDamage { amount: 1, target: TargetSpec::EachCreature }]),
+    ]));
+    db.insert(def);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+    let chosen = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let other = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
+    let animated = state.create_card_in_zone(920002, 0, ZoneType::Battlefield);
+    let noncreature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    targeting_layer(&mut state, other, LayerModification::AddKeyword(KeywordAbility::Shroud));
+    targeting_layer(&mut state, animated, LayerModification::AddType(CardType::Creature));
+    targeting_layer(&mut state, noncreature, LayerModification::RemoveType(CardType::Creature));
+    targeting_cast(&mut state, spell, vec![Target::Object(chosen)]);
+    targeting_resolve(&mut state);
+    assert!(state.has_keyword(chosen, KeywordAbility::Haste));
+    for id in [other, animated, noncreature] { assert!(!state.has_keyword(id, KeywordAbility::Haste)); }
+    for id in [chosen, other, animated] { assert_eq!(state.objects[&id].damage_marked, 1); }
+    assert_eq!(state.objects[&noncreature].damage_marked, 0);
+    assert_eq!(state.players[0].life, 20);
+    assert_eq!(state.players[1].life, 20);
+}
+
+#[test]
+fn test_targeting_composite_controller_is_not_targeted_opponent() {
+    use mtg_gto::card::{Effect, TargetSpec};
+    let mut state = targeting_state();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut def = db.get(920000).unwrap().clone();
+    def.spell_effect = Some(Effect::Multiple(vec![
+        Effect::LoseLife { amount: 3, target: TargetSpec::Opponent },
+        Effect::Multiple(vec![Effect::LoseLife { amount: 2, target: TargetSpec::Controller }]),
+    ]));
+    db.insert(def);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+    targeting_cast(&mut state, spell, vec![Target::Player(1)]);
+    targeting_resolve(&mut state);
+    assert_eq!(state.players[1].life, 17);
+    assert_eq!(state.players[0].life, 18);
+    assert_eq!(state.players[0].graveyard, vec![spell]);
+}
+
+#[test]
+fn test_targeting_composite_no_target_damage_keeps_each_player_semantics() {
+    use mtg_gto::card::{Effect, TargetSpec};
+    let mut state = targeting_state();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut def = db.get(920000).unwrap().clone();
+    def.spell_effect = Some(Effect::Multiple(vec![
+        Effect::GainKeywordUntilEOT { keyword: KeywordAbility::Haste, target: TargetSpec::AnyCreature },
+        Effect::DealDamage { amount: 1, target: TargetSpec::NoTarget },
+    ]));
+    db.insert(def);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+    let creature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    targeting_cast(&mut state, spell, vec![Target::Object(creature)]);
+    targeting_resolve(&mut state);
+    assert!(state.has_keyword(creature, KeywordAbility::Haste));
+    assert_eq!(state.objects[&creature].damage_marked, 0);
+    assert_eq!(state.players[0].life, 19);
+    assert_eq!(state.players[1].life, 19);
+}
+
+#[test]
+fn test_targeting_composite_untargeted_graveyard_effect_does_not_inherit_target() {
+    use mtg_gto::card::{Effect, TargetSpec};
+    let mut state = targeting_state();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut def = db.get(920000).unwrap().clone();
+    def.spell_effect = Some(Effect::Multiple(vec![
+        Effect::GainKeywordUntilEOT { keyword: KeywordAbility::Haste, target: TargetSpec::AnyCreature },
+        Effect::ReturnToTopOfLibrary { target: TargetSpec::NoTarget },
+    ]));
+    db.insert(def);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+    let chosen = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let unrelated = state.create_card_in_zone(920001, 0, ZoneType::Graveyard);
+    let generation = state.objects[&chosen].zone_change_count;
+    let library = state.players[0].library.clone();
+    targeting_cast(&mut state, spell, vec![Target::Object(chosen)]);
+    state.drain_events();
+    targeting_resolve(&mut state);
+    assert!(state.has_keyword(chosen, KeywordAbility::Haste));
+    assert!(state.battlefield.contains(&chosen));
+    assert_eq!(state.objects[&chosen].zone_change_count, generation);
+    assert_eq!(state.players[0].library, library);
+    assert_eq!(state.players[0].graveyard, vec![unrelated, spell]);
+    assert!(state.stack.is_empty());
+    assert_eq!(state.drain_events().iter().filter(|event| matches!(event,
+        GameEvent::ZoneChange { object, from: Zone::Stack, to: Zone::Graveyard } if *object == spell)).count(), 1);
+}

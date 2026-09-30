@@ -157,6 +157,7 @@ pub(super) fn push_trigger_to_stack(state: &mut GameState, trigger: &PendingTrig
         },
         controller: trigger.controller,
         targets: trigger.targets.clone(),
+        target_generations: crate::targeting::target_generations(state, &trigger.targets),
     });
     state.emit_event(GameEvent::AbilityTriggered {
         source: trigger.source_id,
