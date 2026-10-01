@@ -12,6 +12,10 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
         StackSource::Spell(obj_id) => {
             resolve_spell(state, obj_id, &entry.targets, &entry.target_generations, entry.controller);
         }
+        StackSource::SpellCopy { definition } => {
+            resolve_spell_effect(state, &definition, &entry.targets, &entry.target_generations,
+                entry.controller, None);
+        }
         StackSource::ActivatedAbility {
             source_id,
             ability_index,
@@ -94,13 +98,7 @@ fn resolve_spell(
     } else {
         // CR 608.2b: an illegal sole target stops the whole spell, including
         // untargeted instructions such as drawing. Check only before execution.
-        let legal = crate::targeting::valid_spell_targets(state, controller, &def, targets)
-            && crate::targeting::target_generations(state, targets) == generations;
-        if legal {
-            if let Some(ref effect) = def.spell_effect {
-                super::effects::resolve_effect(state, effect, controller, targets, Some(obj_id));
-            }
-        }
+        resolve_spell_effect(state, &def, targets, generations, controller, Some(obj_id));
         // Commander redirect: non-permanent commander spells go to command zone
         if state.is_commander(obj_id) {
             state.move_object(obj_id, ZoneType::Stack, ZoneType::Command);
@@ -109,6 +107,25 @@ fn resolve_spell(
             state.move_object(obj_id, ZoneType::Stack, ZoneType::Exile);
         } else {
             state.move_object(obj_id, ZoneType::Stack, ZoneType::Graveyard);
+        }
+    }
+}
+
+/// Execute the shared instant/sorcery portion; card movement belongs to the
+/// physical-spell caller. A copy has no physical source or destination card.
+fn resolve_spell_effect(
+    state: &mut GameState,
+    definition: &crate::card::CardDef,
+    targets: &[Target],
+    generations: &[Option<u32>],
+    controller: PlayerIndex,
+    physical_source: Option<ObjectId>,
+) {
+    let legal = crate::targeting::valid_spell_targets(state, controller, definition, targets)
+        && crate::targeting::target_generations(state, targets) == generations;
+    if legal {
+        if let Some(ref effect) = definition.spell_effect {
+            super::effects::resolve_effect(state, effect, controller, targets, physical_source);
         }
     }
 }

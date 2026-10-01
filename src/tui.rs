@@ -896,6 +896,9 @@ pub fn format_stack_entry(state: &GameState, entry: &crate::game::StackEntry, db
             let name = card_name(state, *obj_id, db);
             format!("Spell: {}", name)
         }
+        crate::game::StackSource::SpellCopy { definition } => {
+            format!("Spell copy: {} (stack #{})", definition.name, entry.id)
+        }
         crate::game::StackSource::ActivatedAbility { source_id, ability_index } => {
             let name = card_name(state, *source_id, db);
             format!("Ability: {} #{}", name, ability_index)
@@ -1031,6 +1034,7 @@ pub fn format_targets(state: &GameState, targets: &[Target], db: &CardDatabase) 
         Target::StackEntry(id) => state.stack.iter().find(|entry| entry.id == *id)
             .and_then(|entry| match entry.source {
                 crate::game::StackSource::Spell(object) => Some(format!("{} (stack #{})", card_name(state, object, db), id)),
+                crate::game::StackSource::SpellCopy { ref definition } => Some(format!("{} copy (stack #{})", definition.name, id)),
                 _ => None,
             }).unwrap_or_else(|| format!("Stack #{} (gone)", id)),
     }).collect();

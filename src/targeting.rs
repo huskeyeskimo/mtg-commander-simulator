@@ -1,6 +1,6 @@
 //! Shared targeting contract for untargeted and single-target spells.
 use crate::card::{CardDef, CardType, Effect, KeywordAbility, TargetSpec};
-use crate::game::{GameState, PlayerIndex, StackSource, Target};
+use crate::game::{GameState, PlayerIndex, Target};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpellTargeting {
@@ -17,7 +17,7 @@ pub fn spell_targeting(def: &CardDef) -> SpellTargeting {
         .unwrap_or(SpellTargeting::Untargeted)
 }
 
-fn effect_targeting(effect: &Effect) -> SpellTargeting {
+pub(crate) fn effect_targeting(effect: &Effect) -> SpellTargeting {
     use Effect::*;
     match effect {
         Multiple(effects) => {
@@ -198,7 +198,7 @@ pub fn target_is_legal(
                 }
         }
         Target::StackEntry(id) => matches!(spec, TargetSpec::AnySpell)
-            && state.stack.iter().any(|entry| entry.id == *id && matches!(entry.source, StackSource::Spell(_))),
+            && state.stack.iter().any(|entry| entry.id == *id && entry.source.is_spell()),
         Target::Object(id) => {
             if !state.objects.contains_key(id) {
                 return false;
@@ -264,10 +264,8 @@ pub fn enumerate_spell_targets(
         .map(Target::Object)
         .collect();
     candidates.extend((0..state.players.len()).map(Target::Player));
-    candidates.extend(state.stack.iter().filter_map(|entry| match entry.source {
-        StackSource::Spell(_) => Some(Target::StackEntry(entry.id)),
-        _ => None,
-    }));
+    candidates.extend(state.stack.iter().filter(|entry| entry.source.is_spell())
+        .map(|entry| Target::StackEntry(entry.id)));
     candidates.extend(
         state.players[controller]
             .hand

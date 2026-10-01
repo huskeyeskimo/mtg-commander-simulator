@@ -239,7 +239,7 @@ pub(super) fn resolve_effect(
             // can be countered, even if its ID has since become stale.
             if let Some(Target::StackEntry(target_id)) = targets.first() {
                 if let Some(idx) = state.stack.iter().position(|entry| {
-                    entry.id == *target_id && matches!(entry.source, StackSource::Spell(_))
+                    entry.id == *target_id && entry.source.is_spell()
                 }) {
                     let countered = state.stack.remove(idx);
                     if let StackSource::Spell(obj_id) = countered.source {

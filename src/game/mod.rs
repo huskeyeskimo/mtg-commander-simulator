@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use crate::card::{CardId, CardInstance, ObjectId, ZoneType};
+use crate::card::{CardDef, CardId, CardInstance, ObjectId, ZoneType};
 
 // Re-export CardDatabase from its new home in card::database for backward compatibility.
 pub use crate::card::CardDatabase;
@@ -165,6 +165,14 @@ pub enum StackSource {
         source_id: ObjectId,
         ability_index: usize,
     },
+    /// A spell without a physical card on the stack. Owns its spell data.
+    SpellCopy { definition: Box<CardDef> },
+}
+
+impl StackSource {
+    pub fn is_spell(&self) -> bool {
+        matches!(self, Self::Spell(_) | Self::SpellCopy { .. })
+    }
 }
 
 /// A resolved target.
@@ -635,12 +643,15 @@ impl GameState {
         // Stack — spells/abilities are public
         for entry in &self.stack {
             let source_id = match entry.source {
-                StackSource::Spell(id) => id,
-                StackSource::ActivatedAbility { source_id, .. } => source_id,
-                StackSource::TriggeredAbility { source_id, .. } => source_id,
+                StackSource::Spell(id) => Some(id),
+                StackSource::ActivatedAbility { source_id, .. } => Some(source_id),
+                StackSource::TriggeredAbility { source_id, .. } => Some(source_id),
+                StackSource::SpellCopy { .. } => None,
             };
-            if let Some(inst) = self.objects.get(&source_id) {
-                visible.insert(source_id, inst);
+            if let Some(source_id) = source_id {
+                if let Some(inst) = self.objects.get(&source_id) {
+                    visible.insert(source_id, inst);
+                }
             }
         }
         // All graveyards — public

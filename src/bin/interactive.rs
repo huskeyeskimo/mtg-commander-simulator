@@ -363,6 +363,9 @@ fn display_game_state(state: &GameState, db: &CardDatabase) {
                         .map(|d| format!("Spell: {}", d.name))
                         .unwrap_or_else(|| "Spell: ?".into())
                 }
+                mtg_gto::game::StackSource::SpellCopy { definition } => {
+                    format!("Spell copy: {} (stack #{})", definition.name, entry.id)
+                }
                 mtg_gto::game::StackSource::ActivatedAbility { source_id, ability_index } => {
                     db.get(state.objects[source_id].card_def_id)
                         .map(|d| format!("Ability of {} (#{}) ", d.name, ability_index))
@@ -577,6 +580,7 @@ fn format_targets(state: &GameState, targets: &[Target], db: &CardDatabase) -> S
         Target::StackEntry(id) => state.stack.iter().find(|entry| entry.id == *id)
             .and_then(|entry| match entry.source {
                 mtg_gto::game::StackSource::Spell(object) => Some(format!("{} (stack #{})", card_name(state, object, db), id)),
+                mtg_gto::game::StackSource::SpellCopy { ref definition } => Some(format!("{} copy (stack #{})", definition.name, id)),
                 _ => None,
             }).unwrap_or_else(|| format!("Stack #{} (gone)", id)),
     }).collect();

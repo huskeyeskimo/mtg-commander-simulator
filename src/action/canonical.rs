@@ -662,7 +662,7 @@ pub fn resolve(
 fn canonicalize_target(target: &Target, state: &GameState) -> CanonicalTarget {
     match target {
         Target::StackEntry(id) => CanonicalTarget::StackEntry {
-            stack_index: state.stack.iter().position(|entry| entry.id == *id && matches!(entry.source, crate::game::StackSource::Spell(_))),
+            stack_index: state.stack.iter().position(|entry| entry.id == *id && entry.source.is_spell()),
         },
         Target::Player(idx) => CanonicalTarget::Player(*idx),
         Target::Object(obj_id) => {
@@ -684,7 +684,7 @@ fn resolve_target(target: &CanonicalTarget, state: &GameState) -> Option<Target>
     match target {
         CanonicalTarget::StackEntry { stack_index } => {
             let entry = state.stack.get((*stack_index)?)?;
-            matches!(entry.source, crate::game::StackSource::Spell(_)).then_some(Target::StackEntry(entry.id))
+            entry.source.is_spell().then_some(Target::StackEntry(entry.id))
         }
         CanonicalTarget::Player(idx) => Some(Target::Player(*idx)),
         CanonicalTarget::Object {

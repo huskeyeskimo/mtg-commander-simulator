@@ -99,6 +99,7 @@ pub struct PermanentInfo {
 pub struct StackInfo {
     pub controller: usize,
     pub source_card_id: u64,
+    pub is_spell_copy: bool,
     pub target_summary: Vec<u64>, // hashed target descriptions
 }
 
@@ -281,19 +282,20 @@ fn stack_entry_to_info(
     objects: &std::collections::HashMap<crate::card::ObjectId, &CardInstance>,
     stack: &[StackEntry],
 ) -> StackInfo {
-    let source_card_id = match entry.source {
+    let source_card_id = match &entry.source {
         StackSource::Spell(obj_id) => objects
-            .get(&obj_id)
+            .get(obj_id)
             .map(|inst| inst.card_def_id)
             .unwrap_or(0),
         StackSource::ActivatedAbility { source_id, .. } => objects
-            .get(&source_id)
+            .get(source_id)
             .map(|inst| inst.card_def_id)
             .unwrap_or(0),
         StackSource::TriggeredAbility { source_id, .. } => objects
-            .get(&source_id)
+            .get(source_id)
             .map(|inst| inst.card_def_id)
             .unwrap_or(0),
+        StackSource::SpellCopy { definition } => definition.id,
     };
 
     let target_summary: Vec<u64> = entry
@@ -329,6 +331,7 @@ fn stack_entry_to_info(
     StackInfo {
         controller: entry.controller,
         source_card_id,
+        is_spell_copy: matches!(entry.source, StackSource::SpellCopy { .. }),
         target_summary,
     }
 }
