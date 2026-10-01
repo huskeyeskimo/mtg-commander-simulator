@@ -55,6 +55,7 @@ pub fn check_state_based_actions(state: &mut GameState) {
     loop {
         // --- Inner SBA loop: perform all SBAs until stable ---
         let mut died_this_round: Vec<ObjectId> = Vec::new();
+        let mut captured_dies_triggers = Vec::new();
         let mut any_sba = false;
 
         loop {
@@ -152,6 +153,7 @@ pub fn check_state_based_actions(state: &mut GameState) {
                     def.supertypes.contains(&crate::card::Supertype::Legendary)
                 });
             for &id in &legendary_dupes {
+                captured_dies_triggers.extend(super::triggers::capture_source_triggers(state, TriggerCondition::Dies, id));
                 state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
                 any_action = true;
             }
@@ -167,6 +169,7 @@ pub fn check_state_based_actions(state: &mut GameState) {
                     def.card_types.contains(&CardType::Planeswalker)
                 });
             for &id in &pw_dupes {
+                captured_dies_triggers.extend(super::triggers::capture_source_triggers(state, TriggerCondition::Dies, id));
                 state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
                 any_action = true;
             }
@@ -198,6 +201,7 @@ pub fn check_state_based_actions(state: &mut GameState) {
                     })
                     .collect();
                 for &id in &pw_zero_loyalty {
+                    captured_dies_triggers.extend(super::triggers::capture_source_triggers(state, TriggerCondition::Dies, id));
                     state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
                     any_action = true;
                 }
@@ -305,6 +309,7 @@ pub fn check_state_based_actions(state: &mut GameState) {
                     // Replacement prevented the death — creature stays
                     continue;
                 }
+                captured_dies_triggers.extend(super::triggers::capture_source_triggers(state, TriggerCondition::Dies, obj_id));
                 state.move_object(obj_id, ZoneType::Battlefield, dest_zone);
                 any_action = true;
             }
@@ -334,10 +339,7 @@ pub fn check_state_based_actions(state: &mut GameState) {
 
         // --- Queue triggers for SBA events ---
         let triggers_before = state.pending_triggers.len();
-        for &obj_id in &died_this_round {
-            // Check the dying creature's own "when ~ dies" triggers.
-            super::triggers::check_triggers(state, TriggerCondition::Dies, Some(obj_id));
-        }
+        state.pending_triggers.extend(captured_dies_triggers);
         // Check "whenever a creature dies" watcher triggers on surviving permanents.
         if !died_this_round.is_empty() {
             super::triggers::check_triggers(state, TriggerCondition::ACreatureDies, None);

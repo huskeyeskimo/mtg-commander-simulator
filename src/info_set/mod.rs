@@ -54,6 +54,8 @@ pub struct InformationSet {
 
     /// Stack entries, in stack order (top = last element).
     pub stack_entries: Vec<StackInfo>,
+    /// Cast relationships retained by triggers waiting for APNAP ordering.
+    pub pending_cast_spells: Vec<Option<CastSpellInfo>>,
 
     /// Our graveyard as sorted CardIds.
     pub my_graveyard: Vec<u64>,
@@ -101,6 +103,16 @@ pub struct StackInfo {
     pub source_card_id: u64,
     pub is_spell_copy: bool,
     pub target_summary: Vec<u64>, // hashed target descriptions
+    /// Historical cast relationship, distinct from this ability's targets.
+    pub cast_spell: Option<CastSpellInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CastSpellInfo {
+    pub card_id: u64,
+    pub controller: usize,
+    pub live_stack_position: Option<usize>,
+    pub target_summary: Vec<u64>,
 }
 
 impl InformationSet {
@@ -141,6 +153,10 @@ impl InformationSet {
             .stack
             .iter()
             .map(|entry| stack_entry_to_info(entry, &view.objects, view.stack))
+            .collect();
+        let pending_cast_spells = view.pending_triggers.iter()
+            .map(|trigger| trigger.context.cast_spell.as_ref()
+                .map(|spell| cast_spell_to_info(spell, &view.objects, view.stack)))
             .collect();
 
         // Graveyards: sorted CardIds
@@ -211,6 +227,7 @@ impl InformationSet {
             opp_library_size: view.opp_library_size,
             battlefield,
             stack_entries,
+            pending_cast_spells,
             my_graveyard,
             opp_graveyard,
             my_exile,
@@ -241,6 +258,7 @@ impl InformationSet {
         self.opp_library_size.hash(&mut hasher);
         self.battlefield.hash(&mut hasher);
         self.stack_entries.hash(&mut hasher);
+        self.pending_cast_spells.hash(&mut hasher);
         self.my_graveyard.hash(&mut hasher);
         self.opp_graveyard.hash(&mut hasher);
         self.my_exile.hash(&mut hasher);
@@ -291,17 +309,56 @@ fn stack_entry_to_info(
             .get(source_id)
             .map(|inst| inst.card_def_id)
             .unwrap_or(0),
-        StackSource::TriggeredAbility { source_id, .. } => objects
-            .get(source_id)
-            .map(|inst| inst.card_def_id)
-            .unwrap_or(0),
+        StackSource::TriggeredAbility { context, .. } => context.source_card_id,
         StackSource::SpellCopy { definition } => definition.id,
     };
 
-    let target_summary: Vec<u64> = entry
-        .targets
-        .iter()
-        .map(|t| {
+    let target_summary = summarize_targets(&entry.targets, objects, stack);
+    let cast_spell = match &entry.source {
+        StackSource::TriggeredAbility { context, .. } => context.cast_spell.as_ref()
+            .map(|spell| cast_spell_to_info(spell, objects, stack)),
+        _ => None,
+    };
+
+    StackInfo {
+        controller: entry.controller,
+        source_card_id,
+        is_spell_copy: matches!(entry.source, StackSource::SpellCopy { .. }),
+        target_summary,
+        cast_spell,
+    }
+}
+
+fn cast_spell_to_info(
+    spell: &crate::game::CastSpellSnapshot,
+    objects: &std::collections::HashMap<crate::card::ObjectId, &CardInstance>,
+    stack: &[StackEntry],
+) -> CastSpellInfo {
+    CastSpellInfo {
+        card_id: spell.definition.id,
+        controller: spell.controller,
+        live_stack_position: stack.iter().position(|entry| entry.id == spell.stack_id),
+        target_summary: spell.targets.iter().enumerate().map(|(index, target)| {
+            match target {
+                crate::game::Target::Object(_) => {
+                    let mut h = DefaultHasher::new();
+                    1u8.hash(&mut h);
+                    spell.historical_object_targets.get(index).hash(&mut h);
+                    spell.target_generations.get(index).hash(&mut h);
+                    h.finish()
+                }
+                _ => summarize_targets(std::slice::from_ref(target), objects, stack)[0],
+            }
+        }).collect(),
+    }
+}
+
+fn summarize_targets(
+    targets: &[crate::game::Target],
+    objects: &std::collections::HashMap<crate::card::ObjectId, &CardInstance>,
+    stack: &[StackEntry],
+) -> Vec<u64> {
+    targets.iter().map(|t| {
             let mut h = DefaultHasher::new();
             match t {
                 crate::game::Target::StackEntry(id) => {
@@ -325,15 +382,7 @@ fn stack_entry_to_info(
                 }
             }
             h.finish()
-        })
-        .collect();
-
-    StackInfo {
-        controller: entry.controller,
-        source_card_id,
-        is_spell_copy: matches!(entry.source, StackSource::SpellCopy { .. }),
-        target_summary,
-    }
+    }).collect()
 }
 
 // =========================================================================

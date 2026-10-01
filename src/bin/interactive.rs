@@ -371,8 +371,8 @@ fn display_game_state(state: &GameState, db: &CardDatabase) {
                         .map(|d| format!("Ability of {} (#{}) ", d.name, ability_index))
                         .unwrap_or_else(|| "Ability: ?".into())
                 }
-                mtg_gto::game::StackSource::TriggeredAbility { source_id, ability_index } => {
-                    db.get(state.objects[source_id].card_def_id)
+                mtg_gto::game::StackSource::TriggeredAbility { ability_index, context, .. } => {
+                    db.get(context.source_card_id)
                         .map(|d| format!("Trigger of {} (#{}) ", d.name, ability_index))
                         .unwrap_or_else(|| "Trigger: ?".into())
                 }

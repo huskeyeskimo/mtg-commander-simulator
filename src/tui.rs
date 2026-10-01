@@ -903,8 +903,9 @@ pub fn format_stack_entry(state: &GameState, entry: &crate::game::StackEntry, db
             let name = card_name(state, *source_id, db);
             format!("Ability: {} #{}", name, ability_index)
         }
-        crate::game::StackSource::TriggeredAbility { source_id, ability_index } => {
-            let name = card_name(state, *source_id, db);
+        crate::game::StackSource::TriggeredAbility { ability_index, context, .. } => {
+            let name = db.get(context.source_card_id)
+                .map(|definition| definition.name.as_str()).unwrap_or("?");
             format!("Trigger: {} #{}", name, ability_index)
         }
     }

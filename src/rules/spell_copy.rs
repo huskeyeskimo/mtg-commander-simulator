@@ -1,7 +1,7 @@
 //! Direct creation of independent instant and sorcery spell copies.
 use crate::card::effects::{Condition, DynamicValue};
 use crate::card::{CardType, Effect};
-use crate::game::{GameState, PlayerIndex, StackEntry, StackId, StackSource, Target};
+use crate::game::{CastSpellSnapshot, GameState, PlayerIndex, StackEntry, StackId, StackSource, Target};
 use crate::targeting::{self, SpellTargeting};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,29 +32,51 @@ pub fn copy_stack_spell(
     if copy_controller >= state.players.len() || state.players[copy_controller].has_lost {
         return Err(CopyError::InvalidController);
     }
-    let source = state
-        .stack
-        .iter()
-        .find(|entry| entry.id == source_stack_id)
+    let snapshot = snapshot_stack_spell(state, source_stack_id)?;
+    copy_spell_snapshot(state, &snapshot, copy_controller, target_policy)
+}
+
+/// Own the spell information while its stack entry still exists. The result
+/// remains usable after the source card and stack entry leave their zones.
+pub fn snapshot_stack_spell(state: &GameState, source_stack_id: StackId) -> Result<CastSpellSnapshot, CopyError> {
+    let source = state.stack.iter().find(|entry| entry.id == source_stack_id)
         .ok_or(CopyError::MissingSource)?;
     let definition = match &source.source {
         StackSource::Spell(object_id) => {
-            let instance = state
-                .objects
-                .get(object_id)
-                .ok_or(CopyError::MissingDefinition)?;
-            state
-                .card_db
-                .as_ref()
-                .and_then(|db| db.get(instance.card_def_id))
-                .ok_or(CopyError::MissingDefinition)?
-                .clone()
+            let instance = state.objects.get(object_id).ok_or(CopyError::MissingDefinition)?;
+            state.card_db.as_ref().and_then(|db| db.get(instance.card_def_id))
+                .ok_or(CopyError::MissingDefinition)?.clone()
         }
         StackSource::SpellCopy { definition } => (**definition).clone(),
         StackSource::ActivatedAbility { .. } | StackSource::TriggeredAbility { .. } => {
             return Err(CopyError::SourceIsAbility);
         }
     };
+    Ok(CastSpellSnapshot {
+        stack_id: source.id,
+        definition: Box::new(definition),
+        controller: source.controller,
+        targets: source.targets.clone(),
+        target_generations: source.target_generations.clone(),
+        historical_object_targets: source.targets.iter().map(|target| match target {
+            Target::Object(id) => state.objects.get(id).map(|inst| (inst.card_def_id, inst.controller)),
+            Target::Player(_) | Target::StackEntry(_) => None,
+        }).collect(),
+    })
+}
+
+/// Put an independent copy on the stack from retained spell information.
+/// Validation and construction are shared with live-source copying.
+pub fn copy_spell_snapshot(
+    state: &mut GameState,
+    source: &CastSpellSnapshot,
+    copy_controller: PlayerIndex,
+    target_policy: CopyTargetPolicy,
+) -> Result<StackId, CopyError> {
+    if copy_controller >= state.players.len() || state.players[copy_controller].has_lost {
+        return Err(CopyError::InvalidController);
+    }
+    let definition = &*source.definition;
     if !definition
         .card_types
         .iter()
@@ -111,7 +133,7 @@ pub fn copy_stack_spell(
             (source.targets.clone(), source.target_generations.clone())
         }
         CopyTargetPolicy::Replace(targets) => {
-            if !targeting::valid_spell_targets(state, copy_controller, &definition, &targets) {
+            if !targeting::valid_spell_targets(state, copy_controller, definition, &targets) {
                 return Err(CopyError::InvalidTargets);
             }
             let generations = targeting::target_generations(state, &targets);
@@ -128,7 +150,7 @@ pub fn copy_stack_spell(
     state.stack.push(StackEntry {
         id,
         source: StackSource::SpellCopy {
-            definition: Box::new(definition),
+            definition: source.definition.clone(),
         },
         controller: copy_controller,
         targets,

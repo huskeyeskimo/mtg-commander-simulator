@@ -19,7 +19,7 @@ use crate::mana::Color;
 
 // Public API re-exports
 pub use mana::{total_cost_reduction, apply_cost_reduction, auto_tap_lands, spell_cost_reduction, total_cost_increase};
-pub use spell_copy::{copy_stack_spell, CopyError, CopyTargetPolicy};
+pub use spell_copy::{copy_spell_snapshot, copy_stack_spell, snapshot_stack_spell, CopyError, CopyTargetPolicy};
 pub use sba::check_state_based_actions;
 pub use triggers::fire_triggers;
 pub use setup::{setup_game, setup_game_seeded, setup_commander_game, setup_commander_game_seeded, setup_commander_game_with_partners, set_tutor_targets, reshuffle_opening_hand, validate_commander_deck, validate_commander_deck_with_partner};
@@ -187,7 +187,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             });
 
             // Fire spell-cast triggers (YouCastSpell, OpponentCastsSpell, etc.)
-            triggers::fire_spell_cast_triggers(state, player, is_creature);
+            triggers::fire_spell_cast_triggers(state, player, is_creature, stack_id);
 
             state.consecutive_passes = 0;
         }
@@ -494,7 +494,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             });
 
             // Fire spell-cast triggers (YouCastSpell, OpponentCastsSpell, etc.)
-            triggers::fire_spell_cast_triggers(state, player, is_creature);
+            triggers::fire_spell_cast_triggers(state, player, is_creature, stack_id);
 
             state.consecutive_passes = 0;
         }
@@ -651,7 +651,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 to: Zone::Stack,
             });
 
-            triggers::fire_spell_cast_triggers(state, player, is_creature);
+            triggers::fire_spell_cast_triggers(state, player, is_creature, stack_id);
             state.consecutive_passes = 0;
         }
 

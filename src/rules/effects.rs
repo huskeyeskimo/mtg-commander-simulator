@@ -1,4 +1,4 @@
-use crate::card::{Effect, KeywordAbility, ObjectId, TriggerCondition, ZoneType};
+use crate::card::{CardId, Effect, KeywordAbility, ObjectId, TriggerCondition, ZoneType};
 use crate::events::GameEvent;
 use crate::game::{GameState, PlayerIndex, StackSource, Target};
 
@@ -12,6 +12,30 @@ pub(super) fn resolve_effect(
     controller: PlayerIndex,
     targets: &[Target],
     source_id: Option<ObjectId>,
+) {
+    resolve_effect_inner(state, effect, controller, targets, source_id, None);
+}
+
+/// Use captured source data only when resolving a trigger whose original
+/// battlefield incarnation is no longer present.
+pub(super) fn resolve_effect_with_last_known_source(
+    state: &mut GameState,
+    effect: &Effect,
+    controller: PlayerIndex,
+    targets: &[Target],
+    source_id: Option<ObjectId>,
+    last_known_source_card_id: CardId,
+) {
+    resolve_effect_inner(state, effect, controller, targets, source_id, Some(last_known_source_card_id));
+}
+
+fn resolve_effect_inner(
+    state: &mut GameState,
+    effect: &Effect,
+    controller: PlayerIndex,
+    targets: &[Target],
+    source_id: Option<ObjectId>,
+    last_known_source_card_id: Option<CardId>,
 ) {
     // Spell targets and untargeted recipients are different. Interpret each
     // leaf's declaration, including leaves nested inside Multiple, before its
@@ -146,6 +170,9 @@ pub(super) fn resolve_effect(
                 })
                 .collect();
 
+            let dies_triggers: Vec<_> = destroyable.iter().flat_map(|&id|
+                super::triggers::capture_source_triggers(state, TriggerCondition::Dies, id)).collect();
+
             for &id in &destroyable {
                 state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
             }
@@ -153,9 +180,7 @@ pub(super) fn resolve_effect(
                 state.refresh_continuous_effects();
             }
             // Fire dies triggers for destroyed creatures.
-            for &id in &destroyable {
-                super::triggers::check_triggers(state, TriggerCondition::Dies, Some(id));
-            }
+            state.pending_triggers.extend(dies_triggers);
             if !destroyable.is_empty() {
                 let _ = super::triggers::flush_triggers(state);
             }
@@ -271,6 +296,9 @@ pub(super) fn resolve_effect(
                 .filter(|&id| !state.has_keyword(id, KeywordAbility::Indestructible))
                 .collect();
 
+            let dies_triggers: Vec<_> = creatures.iter().flat_map(|&id|
+                super::triggers::capture_source_triggers(state, TriggerCondition::Dies, id)).collect();
+
             for &id in &creatures {
                 let dest_zone = state.death_replacement_zone(id);
                 if dest_zone != ZoneType::Battlefield {
@@ -282,9 +310,7 @@ pub(super) fn resolve_effect(
                 state.refresh_replacement_effects();
             }
             // Fire dies triggers
-            for &id in &creatures {
-                super::triggers::check_triggers(state, TriggerCondition::Dies, Some(id));
-            }
+            state.pending_triggers.extend(dies_triggers);
             if !creatures.is_empty() {
                 let _ = super::triggers::flush_triggers(state);
             }
@@ -428,7 +454,7 @@ pub(super) fn resolve_effect(
 
         Effect::Multiple(effects) => {
             for e in effects {
-                resolve_effect(state, e, controller, targets, source_id);
+                resolve_effect_inner(state, e, controller, targets, source_id, last_known_source_card_id);
             }
         }
 
@@ -775,16 +801,16 @@ pub(super) fn resolve_effect(
         Effect::Modal { choices, choose_count } => {
             // Simplified: for goldfish/AI, always choose the first N choices
             for effect in choices.iter().take(*choose_count as usize) {
-                resolve_effect(state, effect, controller, targets, source_id);
+                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id);
             }
         }
 
         Effect::Conditional { condition, if_true, if_false } => {
             let met = evaluate_condition(state, condition, controller);
             if met {
-                resolve_effect(state, if_true, controller, targets, source_id);
+                resolve_effect_inner(state, if_true, controller, targets, source_id, last_known_source_card_id);
             } else if let Some(else_effect) = if_false {
-                resolve_effect(state, else_effect, controller, targets, source_id);
+                resolve_effect_inner(state, else_effect, controller, targets, source_id, last_known_source_card_id);
             }
         }
 
@@ -800,7 +826,7 @@ pub(super) fn resolve_effect(
                 Some(&ctx),
             );
             for _ in 0..n.max(0) {
-                resolve_effect(state, effect, controller, targets, source_id);
+                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id);
             }
         }
 
@@ -936,9 +962,8 @@ pub(super) fn resolve_effect(
         Effect::CreateTokenCopyOfSource => {
             // Create a token that is a copy of the source permanent (same card_def_id).
             // The token inherits all abilities (e.g., Scute Swarm copies get landfall).
-            if let Some(sid) = source_id {
-                let card_def_id = state.objects.get(&sid).map(|i| i.card_def_id);
-                if let Some(cid) = card_def_id {
+            if let Some(cid) = source_id.and_then(|sid| state.objects.get(&sid).map(|i| i.card_def_id))
+                .or(last_known_source_card_id) {
                     let obj_id = state.create_card_in_zone(cid, controller, ZoneType::Battlefield);
                     if let Some(inst) = state.objects.get_mut(&obj_id) {
                         inst.controller = controller;
@@ -957,7 +982,6 @@ pub(super) fn resolve_effect(
                         None,
                     );
                     let _ = super::triggers::flush_triggers(state);
-                }
             }
         }
 

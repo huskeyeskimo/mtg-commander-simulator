@@ -164,6 +164,7 @@ pub enum StackSource {
     TriggeredAbility {
         source_id: ObjectId,
         ability_index: usize,
+        context: Box<TriggerContext>,
     },
     /// A spell without a physical card on the stack. Owns its spell data.
     SpellCopy { definition: Box<CardDef> },
@@ -470,6 +471,57 @@ pub struct PendingTrigger {
     pub ability_index: usize,
     pub controller: PlayerIndex,
     pub targets: Vec<Target>,
+    /// Captured when the trigger is created, before its source can change.
+    pub context: TriggerContext,
+}
+
+/// Last-known spell data retained by a cast trigger. The stack ID is historical,
+/// not a target and not a requirement that the original remain on the stack.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CastSpellSnapshot {
+    pub stack_id: StackId,
+    pub definition: Box<CardDef>,
+    pub controller: PlayerIndex,
+    pub targets: Vec<Target>,
+    pub target_generations: Vec<Option<u32>>,
+    /// Public identity of each object target at cast time, retained even if
+    /// that object later leaves every visible zone. Never a runtime ObjectId.
+    pub historical_object_targets: Vec<Option<(crate::card::CardId, PlayerIndex)>>,
+}
+
+/// The resolving instruction and public source information owned by a trigger.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerContext {
+    pub source_card_id: crate::card::CardId,
+    pub source_generation: u32,
+    pub effect: crate::card::Effect,
+    pub cast_spell: Option<CastSpellSnapshot>,
+}
+
+impl PendingTrigger {
+    /// Capture a source's instruction now, before the source can leave or change.
+    pub fn from_source(
+        state: &GameState,
+        source_id: ObjectId,
+        ability_index: usize,
+        controller: PlayerIndex,
+        targets: Vec<Target>,
+    ) -> Option<Self> {
+        let inst = state.objects.get(&source_id)?;
+        let ability = state.card_db().get(inst.card_def_id)?.triggered_abilities.get(ability_index)?;
+        Some(Self {
+            source_id,
+            ability_index,
+            controller,
+            targets,
+            context: TriggerContext {
+                source_card_id: inst.card_def_id,
+                source_generation: inst.zone_change_count,
+                effect: ability.effect.clone(),
+                cast_spell: None,
+            },
+        })
+    }
 }
 
 /// A pending tutor choice — a SearchLibrary effect has resolved and the

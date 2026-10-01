@@ -24,9 +24,10 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
         }
         StackSource::TriggeredAbility {
             source_id,
-            ability_index,
+            ability_index: _,
+            context,
         } => {
-            resolve_triggered_ability(state, source_id, ability_index, &entry.targets);
+            resolve_triggered_ability(state, source_id, &context, &entry.targets, entry.controller);
         }
     }
 
@@ -157,19 +158,17 @@ fn resolve_activated_ability(
 fn resolve_triggered_ability(
     state: &mut GameState,
     source_id: ObjectId,
-    ability_index: usize,
+    context: &crate::game::TriggerContext,
     targets: &[Target],
+    controller: PlayerIndex,
 ) {
-    let info = {
-        let db = state.card_db();
-        state.objects.get(&source_id).and_then(|inst| {
-            let def = db.get(inst.card_def_id)?;
-            let effect = def.triggered_abilities.get(ability_index).map(|a| a.effect.clone())?;
-            Some((effect, inst.controller))
-        })
-    };
-
-    if let Some((effect, controller)) = info {
-        super::effects::resolve_effect(state, &effect, controller, targets, Some(source_id));
-    }
+    // The source is useful only while it is the same incarnation. Never let
+    // a returned permanent supply state for the older ability on the stack.
+    let live_source = state.objects.get(&source_id)
+        .filter(|inst| state.battlefield.contains(&source_id)
+            && inst.zone_change_count == context.source_generation)
+        .map(|_| source_id);
+    super::effects::resolve_effect_with_last_known_source(
+        state, &context.effect, controller, targets, live_source, context.source_card_id,
+    );
 }

@@ -284,8 +284,11 @@ pub fn canonicalize(action: &Action, state: &GameState) -> CanonicalAction {
             let source_card_ids: Vec<(CardId, usize, usize)> = ordering
                 .iter()
                 .map(|&(source_id, ability_index)| {
-                    let card_id = state.objects[&source_id].card_def_id;
-                    let instance_index = battlefield_instance_index(state, source_id);
+                    let trigger = state.pending_triggers.iter()
+                        .find(|t| t.source_id == source_id && t.ability_index == ability_index)
+                        .expect("ordered trigger must still be pending");
+                    let card_id = trigger.context.source_card_id;
+                    let instance_index = pending_source_index(state, source_id, card_id);
                     (card_id, instance_index, ability_index)
                 })
                 .collect();
@@ -519,12 +522,11 @@ pub fn resolve(
             let mut used: Vec<bool> = vec![false; player_triggers.len()];
 
             for &(card_id, instance_index, ability_index) in source_card_ids {
-                let target_obj_id = find_on_battlefield_by_index(state, card_id, instance_index);
+                let target_obj_id = find_pending_source_by_index(state, card_id, instance_index);
                 let mut found = false;
                 for (i, &(src_id, ab_idx)) in player_triggers.iter().enumerate() {
                     if !used[i]
                         && ab_idx == ability_index
-                        && state.objects[&src_id].card_def_id == card_id
                         && target_obj_id == Some(src_id)
                     {
                         ordering.push((src_id, ab_idx));
@@ -652,6 +654,26 @@ pub fn resolve(
             Some(Action::PlayLandFromGraveyard { object_id: obj_id })
         }
     }
+}
+
+/// Pending abilities retain their source identity after the source leaves.
+/// Use occurrence among pending sources rather than battlefield position.
+fn pending_sources_with_card(state: &GameState, card_id: CardId) -> Vec<ObjectId> {
+    let mut sources = Vec::new();
+    for trigger in &state.pending_triggers {
+        if trigger.context.source_card_id == card_id && !sources.contains(&trigger.source_id) {
+            sources.push(trigger.source_id);
+        }
+    }
+    sources
+}
+
+fn pending_source_index(state: &GameState, source_id: ObjectId, card_id: CardId) -> usize {
+    pending_sources_with_card(state, card_id).iter().position(|&id| id == source_id).unwrap_or(0)
+}
+
+fn find_pending_source_by_index(state: &GameState, card_id: CardId, index: usize) -> Option<ObjectId> {
+    pending_sources_with_card(state, card_id).get(index).copied()
 }
 
 // ---------------------------------------------------------------------------

@@ -1,11 +1,36 @@
-use crate::card::{ObjectId, TriggerCondition};
+use crate::card::{CardInstance, ObjectId, TriggerCondition, TriggeredAbility};
 use crate::events::GameEvent;
-use crate::game::{GameState, PendingTrigger, PlayerIndex, StackEntry, StackSource};
+use crate::game::{CastSpellSnapshot, GameState, PendingTrigger, PlayerIndex, StackEntry, StackId, StackSource, TriggerContext};
+
+fn captured_context(inst: &CardInstance, ability: &TriggeredAbility, cast_spell: Option<CastSpellSnapshot>) -> TriggerContext {
+    TriggerContext {
+        source_card_id: inst.card_def_id,
+        source_generation: inst.zone_change_count,
+        effect: ability.effect.clone(),
+        cast_spell,
+    }
+}
 
 /// Check all permanents on the battlefield for triggered abilities matching
 /// the given condition, and queue any that trigger.
 pub(super) fn check_triggers(state: &mut GameState, condition: TriggerCondition, source_hint: Option<ObjectId>) {
-    let triggers: Vec<PendingTrigger> = {
+    let triggers = collect_triggers(state, condition, source_hint);
+    state.pending_triggers.extend(triggers);
+}
+
+/// Capture a source's triggers before a zone change, while its battlefield
+/// incarnation and instructions are still available. Callers may queue them
+/// after state-based actions settle.
+pub(super) fn capture_source_triggers(
+    state: &GameState,
+    condition: TriggerCondition,
+    source_id: ObjectId,
+) -> Vec<PendingTrigger> {
+    collect_triggers(state, condition, Some(source_id))
+}
+
+fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint: Option<ObjectId>) -> Vec<PendingTrigger> {
+    {
         let db = state.card_db();
         let mut found = Vec::new();
 
@@ -41,14 +66,13 @@ pub(super) fn check_triggers(state: &mut GameState, condition: TriggerCondition,
                         ability_index: i,
                         controller,
                         targets: vec![], // targets chosen when put on stack (simplified: auto-target)
+                        context: captured_context(inst, trigger, None),
                     });
                 }
             }
         }
         found
-    };
-
-    state.pending_triggers.extend(triggers);
+    }
 }
 
 /// Check `ACreatureYouControlDies` triggers — only fires for permanents whose
@@ -78,6 +102,7 @@ pub(super) fn check_your_creature_dies_triggers(
                         ability_index: i,
                         controller,
                         targets: vec![],
+                        context: captured_context(inst, trigger, None),
                     });
                 }
             }
@@ -154,6 +179,7 @@ pub(super) fn push_trigger_to_stack(state: &mut GameState, trigger: &PendingTrig
         source: StackSource::TriggeredAbility {
             source_id: trigger.source_id,
             ability_index: trigger.ability_index,
+            context: Box::new(trigger.context.clone()),
         },
         controller: trigger.controller,
         targets: trigger.targets.clone(),
@@ -219,10 +245,11 @@ pub(super) fn mana_from_swamp_bonus_count(state: &GameState, player: PlayerIndex
 /// Fire spell-cast triggers for a spell that was just cast.
 /// `caster` is the player who cast the spell. `is_creature` indicates whether
 /// the spell is a creature spell (relevant for OpponentCastsNoncreatureSpell).
-pub(super) fn fire_spell_cast_triggers(state: &mut GameState, caster: PlayerIndex, is_creature: bool) {
+pub(super) fn fire_spell_cast_triggers(state: &mut GameState, caster: PlayerIndex, is_creature: bool, spell_stack_id: StackId) {
     let triggers: Vec<PendingTrigger> = {
         let db = state.card_db();
         let mut found = Vec::new();
+        let mut cast_spell = None;
 
         for &obj_id in &state.battlefield {
             let inst = &state.objects[&obj_id];
@@ -245,11 +272,16 @@ pub(super) fn fire_spell_cast_triggers(state: &mut GameState, caster: PlayerInde
                     _ => false,
                 };
                 if matches {
+                    let snapshot = cast_spell.get_or_insert_with(||
+                        super::spell_copy::snapshot_stack_spell(state, spell_stack_id)
+                            .expect("a newly cast spell must be present on the stack")
+                    );
                     found.push(PendingTrigger {
                         source_id: obj_id,
                         ability_index: i,
                         controller,
                         targets: vec![],
+                        context: captured_context(inst, trigger, Some(snapshot.clone())),
                     });
                 }
             }
@@ -393,6 +425,7 @@ pub(super) fn fire_card_draw_triggers(state: &mut GameState, drawing_player: Pla
                         ability_index: i,
                         controller,
                         targets: vec![],
+                        context: captured_context(inst, trigger, None),
                     });
                 }
             }

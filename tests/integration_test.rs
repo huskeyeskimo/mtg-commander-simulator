@@ -15,6 +15,13 @@ use mtg_gto::rules;
 use mtg_gto::simulation;
 use mtg_gto::strategy::{GoldfishStrategy, GreedyStrategy, RandomStrategy, Strategy};
 
+fn queue_test_trigger(state: &mut GameState, source_id: u64, ability_index: usize, controller: usize) {
+    let trigger = mtg_gto::game::PendingTrigger::from_source(
+        state, source_id, ability_index, controller, vec![],
+    ).expect("synthetic trigger source must exist");
+    state.pending_triggers.push(trigger);
+}
+
 #[test]
 fn test_sample_db_builds() {
     let db = sample::build_sample_db();
@@ -296,18 +303,8 @@ fn test_order_triggers_surfaced_for_multiple_simultaneous_triggers() {
     state.turn_number = 2;
 
     // Manually queue two simultaneous ETB triggers for player 0
-    state.pending_triggers.push(mtg_gto::game::PendingTrigger {
-        source_id: vis1,
-        ability_index: 0,
-        controller: 0,
-        targets: vec![],
-    });
-    state.pending_triggers.push(mtg_gto::game::PendingTrigger {
-        source_id: vis2,
-        ability_index: 0,
-        controller: 0,
-        targets: vec![],
-    });
+    queue_test_trigger(&mut state, vis1, 0, 0);
+    queue_test_trigger(&mut state, vis2, 0, 0);
 
     // Attempt to flush — should pause because player 0 has >1 trigger
     // (flush_triggers is internal, but we can observe via legal_actions)
@@ -372,12 +369,7 @@ fn test_single_trigger_auto_flushes_without_ordering() {
     state.turn_number = 2;
 
     // Queue a single trigger
-    state.pending_triggers.push(mtg_gto::game::PendingTrigger {
-        source_id: vis,
-        ability_index: 0,
-        controller: 0,
-        targets: vec![],
-    });
+    queue_test_trigger(&mut state, vis, 0, 0);
 
     // legal_actions should NOT offer OrderTriggers — single trigger auto-flushes
     // But first we need to actually run flush_triggers. The pending_triggers are
@@ -527,30 +519,10 @@ fn test_apnap_both_players_multiple_triggers() {
     state.turn_number = 2;
 
     // Queue 2 triggers for AP (player 0) and 2 for NAP (player 1)
-    state.pending_triggers.push(mtg_gto::game::PendingTrigger {
-        source_id: vis_p0_a,
-        ability_index: 0,
-        controller: 0,
-        targets: vec![],
-    });
-    state.pending_triggers.push(mtg_gto::game::PendingTrigger {
-        source_id: vis_p0_b,
-        ability_index: 0,
-        controller: 0,
-        targets: vec![],
-    });
-    state.pending_triggers.push(mtg_gto::game::PendingTrigger {
-        source_id: vis_p1_a,
-        ability_index: 0,
-        controller: 1,
-        targets: vec![],
-    });
-    state.pending_triggers.push(mtg_gto::game::PendingTrigger {
-        source_id: vis_p1_b,
-        ability_index: 0,
-        controller: 1,
-        targets: vec![],
-    });
+    queue_test_trigger(&mut state, vis_p0_a, 0, 0);
+    queue_test_trigger(&mut state, vis_p0_b, 0, 0);
+    queue_test_trigger(&mut state, vis_p1_a, 0, 1);
+    queue_test_trigger(&mut state, vis_p1_b, 0, 1);
 
     // AP (player 0) should order first
     let actions = legal_actions(&state);
@@ -644,12 +616,7 @@ fn test_more_than_six_triggers_fifo_fallback() {
 
     // Queue 7 triggers for player 0
     for &vis_id in &vis_ids {
-        state.pending_triggers.push(mtg_gto::game::PendingTrigger {
-            source_id: vis_id,
-            ability_index: 0,
-            controller: 0,
-            targets: vec![],
-        });
+        queue_test_trigger(&mut state, vis_id, 0, 0);
     }
 
     let actions = legal_actions(&state);
@@ -1293,18 +1260,8 @@ fn test_canonical_roundtrip_trigger_ordering() {
     state.phase = Phase::PreCombatMain;
     state.turn_number = 2;
 
-    state.pending_triggers.push(mtg_gto::game::PendingTrigger {
-        source_id: vis1,
-        ability_index: 0,
-        controller: 0,
-        targets: vec![],
-    });
-    state.pending_triggers.push(mtg_gto::game::PendingTrigger {
-        source_id: vis2,
-        ability_index: 0,
-        controller: 0,
-        targets: vec![],
-    });
+    queue_test_trigger(&mut state, vis1, 0, 0);
+    queue_test_trigger(&mut state, vis2, 0, 0);
 
     let actions = legal_actions(&state);
     let order_actions: Vec<&Action> = actions
@@ -3490,6 +3447,7 @@ fn test_multi_phase_abstraction() {
         my_mana: [0; 6],
         battlefield: vec![],
         stack_entries: vec![],
+        pending_cast_spells: vec![],
         my_graveyard: vec![],
         opp_graveyard: vec![],
         my_exile: vec![],
