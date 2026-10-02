@@ -14,12 +14,12 @@ use rand::Rng;
 use crate::action::Action;
 use crate::card::{CardType, KeywordAbility, ManaAbility, ObjectId, SacrificeCost, TriggerCondition, ZoneType};
 use crate::events::{GameEvent, Zone};
-use crate::game::{GameState, Phase, PlayerIndex, StackEntry, StackSource};
+use crate::game::{GameState, Phase, PlayerIndex, StackEntry, StackSource, TriggerOrderResume};
 use crate::mana::Color;
 
 // Public API re-exports
 pub use mana::{total_cost_reduction, apply_cost_reduction, auto_tap_lands, spell_cost_reduction, total_cost_increase};
-pub use spell_copy::{copy_spell_snapshot, copy_stack_spell, snapshot_stack_spell, CopyError, CopyTargetPolicy};
+pub use spell_copy::{begin_terminal_copy_batch, copy_spell_snapshot, copy_stack_spell, prepare_spell_copy, snapshot_stack_spell, CopyBatchOutcome, CopyError, CopyTargetPolicy};
 pub use sba::check_state_based_actions;
 pub use triggers::fire_triggers;
 pub use setup::{setup_game, setup_game_seeded, setup_commander_game, setup_commander_game_seeded, setup_commander_game_with_partners, set_tutor_targets, reshuffle_opening_hand, validate_commander_deck, validate_commander_deck_with_partner};
@@ -27,6 +27,13 @@ pub(crate) use tokens::create_token_from_combo;
 
 /// Apply an action to the game state, advancing it.
 pub fn apply_action(state: &mut GameState, action: &Action) {
+    if state.pending_copy_order.is_some() {
+        if let Action::ChooseNextCopy { item_index } = action {
+            let _ = spell_copy::choose_next_copy(state, *item_index);
+        }
+        return;
+    }
+    if matches!(action, Action::ChooseNextCopy { .. }) { return; }
     // Validate supplied targets before costs, zone changes, or cast events.
     let cast = match action {
         Action::CastSpell { object_id, targets } => Some((*object_id, targets, ZoneType::Hand)),
@@ -46,6 +53,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
         if !crate::targeting::valid_spell_targets(state, player, def, targets) { return; }
     }
     match action {
+        Action::ChooseNextCopy { .. } => unreachable!(),
         Action::PassPriority => {
             // If there's a pending tutor, passing means "fail to find" —
             // clear it and return without advancing priority normally.
@@ -375,9 +383,11 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 for &attacker_id in attackers {
                     triggers::check_triggers(state, TriggerCondition::Attacks, Some(attacker_id));
                 }
+                state.trigger_order_resume = Some(TriggerOrderResume::AfterAttackers);
                 let flushed = triggers::flush_triggers(state);
 
                 if flushed {
+                    state.trigger_order_resume = None;
                     phases::transition_to_phase(state, Phase::DeclareBlockers);
                     state.priority_player = state.next_player(state.active_player);
                 }
@@ -432,7 +442,16 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             }
 
             // Continue flushing remaining triggers (the other player's).
-            let _ = triggers::flush_triggers(state);
+            if triggers::flush_triggers(state) {
+                match state.trigger_order_resume.take().unwrap_or(TriggerOrderResume::AfterResolution) {
+                    TriggerOrderResume::AfterResolution => restore_priority_after_resolution(state),
+                    TriggerOrderResume::Player(player) => state.priority_player = player,
+                    TriggerOrderResume::AfterAttackers => {
+                        phases::transition_to_phase(state, Phase::DeclareBlockers);
+                        state.priority_player = state.next_player(state.active_player);
+                    }
+                }
+            }
         }
 
         Action::CastCommander { object_id, targets } => {
@@ -780,6 +799,7 @@ fn has_static_ability_on_battlefield(
 /// 3. Phial of Galadriel: draw 2 instead of 1 when hand is empty
 /// If none apply, normal draw.
 pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
+    if state.pending_copy_order.is_some() { return; }
     // Check for draw replacement effects on the battlefield
     let has_renfield = has_static_ability_on_battlefield(
         state, player, &crate::layers::StaticAbility::RenfieldDrawReplacement,
@@ -875,6 +895,26 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
     }
 }
 
+/// Finish resolution only after state-based actions and all queued triggers
+/// have had a chance to establish their mandatory chooser.
+pub(super) fn complete_stack_resolution(state: &mut GameState) {
+    state.trigger_order_resume = Some(TriggerOrderResume::AfterResolution);
+    sba::check_state_based_actions(state);
+    if !state.pending_triggers.is_empty() && !triggers::flush_triggers(state) {
+        return;
+    }
+    state.trigger_order_resume = None;
+    restore_priority_after_resolution(state);
+}
+
+fn restore_priority_after_resolution(state: &mut GameState) {
+    if let Some(tutor) = &state.pending_tutor {
+        state.priority_player = tutor.controller;
+    } else if state.pending_copy_order.is_none() && state.pending_triggers.is_empty() {
+        state.priority_player = state.active_player;
+    }
+}
+
 /// Discard random cards from a player's hand.
 fn discard_random(state: &mut GameState, player: PlayerIndex, count: usize) {
     let mut rng = rand::thread_rng();
@@ -912,6 +952,10 @@ fn fast_forward_end_of_turn(state: &mut GameState) {
         && safety < MAX_SAFETY
     {
         safety += 1;
+
+        // EndTurn can be chosen by a human. A mandatory ordering choice ends
+        // this shortcut so the normal action loop can present it.
+        if state.pending_copy_order.is_some() { break; }
 
         // Auto-order pending triggers (push in existing order)
         if !state.pending_triggers.is_empty() {
@@ -978,6 +1022,15 @@ fn fast_forward_end_of_turn(state: &mut GameState) {
 ///
 /// Returns the number of internal actions taken (for action-count tracking).
 pub fn fast_forward_goldfish_turn(state: &mut GameState) -> u32 {
+    fast_forward_goldfish_turn_inner(state, None)
+}
+
+/// TUI path: pause when the human must order copies during an opponent turn.
+pub fn fast_forward_goldfish_turn_until_copy_choice(state: &mut GameState, human: PlayerIndex) -> u32 {
+    fast_forward_goldfish_turn_inner(state, Some(human))
+}
+
+fn fast_forward_goldfish_turn_inner(state: &mut GameState, pause_for: Option<PlayerIndex>) -> u32 {
     let goldfish_player = state.active_player;
     let mut actions = 0u32;
     let mut safety = 0u32;
@@ -985,6 +1038,19 @@ pub fn fast_forward_goldfish_turn(state: &mut GameState) -> u32 {
 
     while state.active_player == goldfish_player && !state.game_over && safety < MAX_SAFETY {
         safety += 1;
+
+        if let Some(pending) = &state.pending_copy_order {
+            if pause_for == Some(pending.controller()) { break; }
+            let Some(index) = (0..pending.items().len())
+                .find(|index| !pending.selected_order().contains(index)) else { break; };
+            let before = pending.selected_order().len();
+            apply_action(state, &Action::ChooseNextCopy { item_index: index });
+            if state.pending_copy_order.as_ref().is_some_and(|pending| pending.selected_order().len() == before) {
+                break;
+            }
+            actions += 1;
+            continue;
+        }
 
         // Handle pending triggers that need ordering — auto-order them
         if !state.pending_triggers.is_empty() {

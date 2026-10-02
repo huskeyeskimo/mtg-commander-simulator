@@ -13,7 +13,8 @@ pub(super) fn resolve_effect(
     targets: &[Target],
     source_id: Option<ObjectId>,
 ) {
-    resolve_effect_inner(state, effect, controller, targets, source_id, None);
+    if state.pending_copy_order.is_some() { return; }
+    resolve_effect_inner(state, effect, controller, targets, source_id, None, true);
 }
 
 /// Use captured source data only when resolving a trigger whose original
@@ -26,7 +27,8 @@ pub(super) fn resolve_effect_with_last_known_source(
     source_id: Option<ObjectId>,
     last_known_source_card_id: CardId,
 ) {
-    resolve_effect_inner(state, effect, controller, targets, source_id, Some(last_known_source_card_id));
+    if state.pending_copy_order.is_some() { return; }
+    resolve_effect_inner(state, effect, controller, targets, source_id, Some(last_known_source_card_id), true);
 }
 
 fn resolve_effect_inner(
@@ -36,7 +38,9 @@ fn resolve_effect_inner(
     targets: &[Target],
     source_id: Option<ObjectId>,
     last_known_source_card_id: Option<CardId>,
+    terminal: bool,
 ) {
+    let previous_terminal = state.effect_terminal_position.replace(terminal);
     // Spell targets and untargeted recipients are different. Interpret each
     // leaf's declaration, including leaves nested inside Multiple, before its
     // handler runs. NoTarget retains the handler's existing untargeted behavior.
@@ -54,6 +58,20 @@ fn resolve_effect_inner(
     let targets = recipients.as_deref().unwrap_or(targets);
 
     match effect {
+        #[cfg(test)]
+        Effect::TestCopyBatch { copies } => {
+            let id = source_id.expect("test spell has a physical source");
+            let mut definition = state.card_db().get(state.objects[&id].card_def_id).unwrap().clone();
+            definition.spell_effect = Some(Effect::GainLife { amount: 1 });
+            let snapshot = crate::game::CastSpellSnapshot {
+                stack_id: 0, definition: Box::new(definition), controller,
+                targets: vec![], target_generations: vec![], historical_object_targets: vec![],
+            };
+            let items = (0..*copies).map(|_| super::spell_copy::prepare_spell_copy(
+                state, &snapshot, controller, super::spell_copy::CopyTargetPolicy::Preserve).unwrap()
+            ).collect();
+            let _ = super::spell_copy::begin_terminal_copy_batch(state, items, terminal);
+        }
         Effect::DealDamage { amount, target: target_spec } => {
             // For untargeted effects, auto-generate targets from the spec.
             let effective_targets: Vec<Target> = if targets.is_empty() {
@@ -453,8 +471,9 @@ fn resolve_effect_inner(
         }
 
         Effect::Multiple(effects) => {
-            for e in effects {
-                resolve_effect_inner(state, e, controller, targets, source_id, last_known_source_card_id);
+            for (index, e) in effects.iter().enumerate() {
+                resolve_effect_inner(state, e, controller, targets, source_id, last_known_source_card_id,
+                    terminal && index + 1 == effects.len());
             }
         }
 
@@ -800,17 +819,19 @@ fn resolve_effect_inner(
 
         Effect::Modal { choices, choose_count } => {
             // Simplified: for goldfish/AI, always choose the first N choices
-            for effect in choices.iter().take(*choose_count as usize) {
-                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id);
+            let selected_count = choices.len().min(*choose_count as usize);
+            for (index, effect) in choices.iter().take(selected_count).enumerate() {
+                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id,
+                    terminal && index + 1 == selected_count);
             }
         }
 
         Effect::Conditional { condition, if_true, if_false } => {
             let met = evaluate_condition(state, condition, controller);
             if met {
-                resolve_effect_inner(state, if_true, controller, targets, source_id, last_known_source_card_id);
+                resolve_effect_inner(state, if_true, controller, targets, source_id, last_known_source_card_id, terminal);
             } else if let Some(else_effect) = if_false {
-                resolve_effect_inner(state, else_effect, controller, targets, source_id, last_known_source_card_id);
+                resolve_effect_inner(state, else_effect, controller, targets, source_id, last_known_source_card_id, terminal);
             }
         }
 
@@ -825,8 +846,9 @@ fn resolve_effect_inner(
                 &|id| db.get(id),
                 Some(&ctx),
             );
-            for _ in 0..n.max(0) {
-                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id);
+            for iteration in 0..n.max(0) {
+                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id,
+                    terminal && iteration + 1 == n.max(0));
             }
         }
 
@@ -1003,6 +1025,7 @@ fn resolve_effect_inner(
             let _ = super::triggers::flush_triggers(state);
         }
     }
+    state.effect_terminal_position = previous_terminal;
 }
 
 /// Evaluate a condition in the current game state.

@@ -22,6 +22,9 @@ pub enum CombatAbstraction {
 /// An action a player can take when they have priority.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Action {
+    /// Append this prepared copy to the bottom-to-top stack order. The last
+    /// remaining copy is appended automatically, so two copies need one choice.
+    ChooseNextCopy { item_index: usize },
     /// Pass priority.
     PassPriority,
 
@@ -148,6 +151,7 @@ pub enum Action {
 impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Action::ChooseNextCopy { item_index } => write!(f, "Place copy {} next (bottom to top)", item_index),
             Action::PassPriority => write!(f, "Pass"),
             Action::Discard { object_id } => write!(f, "Discard (obj {})", object_id),
             Action::PlayLand { object_id } => write!(f, "Play land (obj {})", object_id),
@@ -224,6 +228,14 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
 
     let player = state.priority_player;
     let mut actions = Vec::new();
+
+    if let Some(pending) = &state.pending_copy_order {
+        if player != pending.controller() { return actions; }
+        return (0..pending.items().len())
+            .filter(|index| !pending.selected_order().contains(index))
+            .map(|item_index| Action::ChooseNextCopy { item_index })
+            .collect();
+    }
 
     // ---- Mulligan phase ----
     if state.phase == Phase::Mulligan {

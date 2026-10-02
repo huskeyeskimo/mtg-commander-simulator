@@ -5,6 +5,7 @@ use crate::layers::StaticAbility;
 
 /// Handle when priority is passed (may resolve stack or advance phase).
 pub(super) fn handle_priority_pass(state: &mut GameState) {
+    if state.pending_copy_order.is_some() { return; }
     let num_players = state.players.len() as u32;
 
     if state.consecutive_passes >= num_players {
@@ -27,6 +28,7 @@ pub(super) fn handle_priority_pass(state: &mut GameState) {
 /// Each Phase variant represents a step or phase boundary. Mana empties when
 /// crossing it (CR 106.4), never merely when passing priority or resolving.
 pub(super) fn transition_to_phase(state: &mut GameState, next: Phase) {
+    if state.pending_copy_order.is_some() { return; }
     if state.phase != next {
         for player in &mut state.players {
             player.mana_pool.drain();
@@ -37,6 +39,7 @@ pub(super) fn transition_to_phase(state: &mut GameState, next: Phase) {
 
 /// Advance to the next phase.
 pub(super) fn advance_phase(state: &mut GameState) {
+    if state.pending_copy_order.is_some() { return; }
     let current_idx = Phase::TURN_ORDER
         .iter()
         .position(|&p| p == state.phase)
@@ -72,6 +75,7 @@ pub(super) fn execute_phase_entry_public(state: &mut GameState) {
 
 /// Execute actions when entering a new phase.
 pub(super) fn execute_phase_entry(state: &mut GameState) {
+    if state.pending_copy_order.is_some() { return; }
     let active = state.active_player;
 
     match state.phase {
@@ -147,8 +151,12 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
             let has_first_strike = super::combat::has_first_strike_creatures(state);
             if has_first_strike {
                 super::combat::resolve_combat_damage(state, true);
+                state.trigger_order_resume = Some(crate::game::TriggerOrderResume::AfterResolution);
                 super::sba::check_state_based_actions(state);
-                state.priority_player = active;
+                if state.pending_triggers.is_empty() {
+                    state.trigger_order_resume = None;
+                    state.priority_player = active;
+                }
             } else {
                 // Skip first strike damage step
                 advance_phase(state);
@@ -157,8 +165,12 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
 
         Phase::CombatDamage => {
             super::combat::resolve_combat_damage(state, false);
+            state.trigger_order_resume = Some(crate::game::TriggerOrderResume::AfterResolution);
             super::sba::check_state_based_actions(state);
-            state.priority_player = active;
+            if state.pending_triggers.is_empty() {
+                state.trigger_order_resume = None;
+                state.priority_player = active;
+            }
         }
 
         Phase::EndOfCombat => {
@@ -189,6 +201,7 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
 }
 
 pub(super) fn finalize_cleanup(state: &mut GameState) {
+    if state.pending_copy_order.is_some() { return; }
     // Remove end-of-turn continuous effects (layer engine)
     state.cleanup_eot_effects();
     // Remove legacy EoT effects on instances

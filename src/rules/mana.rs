@@ -231,6 +231,7 @@ pub(super) fn auto_tap_lands_excluding(
     cost: &crate::mana::ManaCost,
     reserved: Option<ObjectId>,
 ) {
+    if state.pending_copy_order.is_some() { return; }
     let mut decisions: Vec<TapDecision> = Vec::new();
 
     // Pre-compute legendary colors for Mox Amber (needs immutable borrow)

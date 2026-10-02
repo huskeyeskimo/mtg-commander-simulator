@@ -295,11 +295,17 @@ fn test_mcfr_strategy_vs_greedy() {
 
 #[test]
 fn test_mcfr_mirror_match_convergence() {
-    // Acceptance criterion #15: MCCFR mirror match converges to ~50% win rate.
-    // In a symmetric matchup with trained policies on both sides,
-    // the expected win rate should approach 50%.
+    // A symmetric trained matchup should show neither extreme seat bias nor
+    // extreme policy bias when both trained tables take each seat.
     let db = sample::build_sample_db();
-    let state = setup_mini_game();
+    // 8 lands + 6 Bolts + 1 Shock = 15 cards and 20 possible damage.
+    let mut deck = vec![sample::ids::MOUNTAIN; 8];
+    deck.extend(vec![sample::ids::LIGHTNING_BOLT; 6]);
+    deck.push(sample::ids::SHOCK);
+
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db.clone()));
+    rules::setup_game_seeded(&mut state, &deck, &deck, 0);
     let config = McfrConfig {
         max_depth: 8,
         max_actions: 300,
@@ -310,37 +316,46 @@ fn test_mcfr_mirror_match_convergence() {
     let mcfr_p0 = McfrStrategy::new(tables[0].clone());
     let mcfr_p1 = McfrStrategy::new(tables[1].clone());
 
-    let deck0 = sample::mini_red_burn();
-    let deck1 = deck0.clone(); // mirror match: same deck
+    let mut seat_wins = [0u32; 2];
+    let mut policy_wins = [0u32; 2];
+    let mut draws = 0u32;
+    let pairs = 100;
+    for seed in 0..pairs {
+        // Normal setup keeps player 0 as the starter. Swap policies on the
+        // same shuffle seed rather than using the unsupported P1-start path.
+        for swapped in [false, true] {
+            let (seat0, seat1) = if swapped {
+                (&mcfr_p1, &mcfr_p0)
+            } else {
+                (&mcfr_p0, &mcfr_p1)
+            };
+            let result = simulation::run_game_seeded(&db, &deck, &deck, seat0, seat1, seed);
+            match result.winner {
+                Some(winner) => {
+                    assert!(winner < 2);
+                    seat_wins[winner] += 1;
+                    policy_wins[if swapped { 1 - winner } else { winner }] += 1;
+                }
+                None => draws += 1,
+            }
+        }
+    }
 
-    let results = simulation::simulate(
-        &db,
-        &deck0,
-        &deck1,
-        &mcfr_p0,
-        &mcfr_p1,
-        100,
-    );
-
-    let p0_win_rate = results.win_rate(0);
+    let games = (pairs * 2) as f64;
     eprintln!(
-        "MCCFR Mirror: P0 {:.1}% win rate ({} games, P0={}, P1={}, draws={})",
-        p0_win_rate * 100.0,
-        results.total_games,
-        results.player0_wins,
-        results.player1_wins,
-        results.draws,
+        "MCCFR Mirror: {} games; seat wins={:?}; policy wins={:?}; draws={}",
+        pairs * 2, seat_wins, policy_wins, draws,
     );
 
-    // In a symmetric game, first-player advantage exists in MTG, so we
-    // expect roughly 50% but with some bias toward the player who goes first.
-    // Tolerance: 15-85% to account for variance with limited iterations.
-    assert_eq!(results.total_games, 100);
-    assert!(
-        p0_win_rate >= 0.15 && p0_win_rate <= 0.85,
-        "Mirror match should be roughly balanced (got {:.1}%)",
-        p0_win_rate * 100.0,
-    );
+    assert_eq!(seat_wins.iter().sum::<u32>() + draws, (pairs * 2) as u32);
+    // Retain the generous 15%-85% bounds, now checking both starting-seat
+    // outcomes and policy outcomes under the two assignments.
+    for (label, wins) in [("seat 0", seat_wins[0]), ("seat 1", seat_wins[1]),
+        ("policy 0", policy_wins[0]), ("policy 1", policy_wins[1])] {
+        let rate = wins as f64 / games;
+        assert!((0.15..=0.85).contains(&rate),
+            "{} has an extreme mirror win rate: {:.1}%", label, rate * 100.0);
+    }
 }
 
 #[test]

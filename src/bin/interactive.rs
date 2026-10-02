@@ -93,8 +93,9 @@ fn main() {
 
     while !state.game_over && state.turn_number <= MAX_TURNS && actions_taken < MAX_ACTIONS {
         // Fast-forward the goldfish's entire turn without prompting
-        if state.active_player != 0 {
-            let ff_actions = rules::fast_forward_goldfish_turn(&mut state);
+        if state.active_player != 0
+            && state.pending_copy_order.as_ref().is_none_or(|pending| pending.controller() != 0) {
+            let ff_actions = rules::fast_forward_goldfish_turn_until_copy_choice(&mut state, 0);
             actions_taken += ff_actions;
             continue;
         }
@@ -414,6 +415,12 @@ fn display_game_state(state: &GameState, db: &CardDatabase) {
 /// Rich description of an action for the menu display.
 fn format_action_rich(state: &GameState, action: &Action, db: &CardDatabase) -> String {
     match action {
+        Action::ChooseNextCopy { item_index } => {
+            let item = &state.pending_copy_order.as_ref().unwrap().items()[*item_index];
+            let target = format_copy_targets(state, item.targets(), db);
+            format!("Place {} copy next (bottom to top){}", item.definition().name,
+                if target.is_empty() { String::new() } else { format!(" -> {}", target) })
+        }
         Action::PassPriority => "Pass priority".into(),
         Action::PlayLand { object_id } => {
             let name = card_name(state, *object_id, db);
@@ -585,6 +592,22 @@ fn format_targets(state: &GameState, targets: &[Target], db: &CardDatabase) -> S
             }).unwrap_or_else(|| format!("Stack #{} (gone)", id)),
     }).collect();
     descs.join(", ")
+}
+
+fn format_copy_targets(state: &GameState, targets: &[Target], db: &CardDatabase) -> String {
+    targets.iter().map(|target| match target {
+        Target::Object(id) => {
+            let name = card_name(state, *id, db);
+            let Some(inst) = state.objects.get(id) else { return format!("{name} (gone)"); };
+            let mut details = vec![if inst.tapped { "tapped".to_string() } else { "untapped".to_string() },
+                if inst.summoning_sick { "summoning sick".to_string() } else { "ready".to_string() }];
+            if inst.damage_marked > 0 { details.push(format!("{} damage", inst.damage_marked)); }
+            if inst.plus_counters != 0 { details.push(format!("{} +1/+1 counters", inst.plus_counters)); }
+            if inst.minus_counters != 0 { details.push(format!("{} -1/-1 counters", inst.minus_counters)); }
+            format!("{name} #{} (P{}, {})", id, inst.controller + 1, details.join(", "))
+        }
+        _ => format_targets(state, std::slice::from_ref(target), db),
+    }).collect::<Vec<_>>().join(", ")
 }
 
 fn format_card_type(def: &mtg_gto::card::CardDef) -> String {

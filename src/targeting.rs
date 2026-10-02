@@ -20,6 +20,8 @@ pub fn spell_targeting(def: &CardDef) -> SpellTargeting {
 pub(crate) fn effect_targeting(effect: &Effect) -> SpellTargeting {
     use Effect::*;
     match effect {
+        #[cfg(test)]
+        TestCopyBatch { copies: _ } => SpellTargeting::Untargeted,
         Multiple(effects) => {
             // Multiple executes instructions on one shared target vector. Repeated
             // identical restrictions describe that same target, not extra targets.
@@ -78,6 +80,8 @@ pub(crate) fn effect_recipients(effect: &Effect) -> EffectRecipients<'_> {
     use Effect::*;
     use EffectRecipients::*;
     match effect {
+        #[cfg(test)]
+        TestCopyBatch { copies: _ } => Independent,
         DealDamage { amount: _, target }
         | LoseLife { amount: _, target }
         | DestroyTarget { target }

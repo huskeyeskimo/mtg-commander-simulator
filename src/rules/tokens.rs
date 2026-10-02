@@ -88,6 +88,7 @@ pub(super) fn build_dynamic_context(state: &GameState, controller: PlayerIndex) 
 /// which clones only if needed) and creates a CardInstance marked as a token.
 /// Fires ETB triggers for the token.
 pub(super) fn create_token(state: &mut GameState, token_def: &TokenDef, controller: PlayerIndex) {
+    if state.pending_copy_order.is_some() { return; }
     let card_id = token_card_id(token_def);
 
     // Register token CardDef in the database if not already present
@@ -130,6 +131,7 @@ pub(crate) fn create_token_from_combo(
     token_def: &TokenDef,
     controller: PlayerIndex,
 ) {
+    if state.pending_copy_order.is_some() { return; }
     let card_id = token_card_id(token_def);
 
     let needs_registration = state.card_db().get(card_id).is_none();

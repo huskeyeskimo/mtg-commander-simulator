@@ -3,14 +3,16 @@ use crate::game::{GameState, PlayerIndex, StackSource, Target};
 
 /// Resolve the top entry on the stack.
 pub(super) fn resolve_top_of_stack(state: &mut GameState) {
+    if state.pending_copy_order.is_some() { return; }
     let entry = match state.stack.pop() {
         Some(e) => e,
         None => return,
     };
+    state.trigger_order_resume = Some(crate::game::TriggerOrderResume::AfterResolution);
 
-    match entry.source {
+    match &entry.source {
         StackSource::Spell(obj_id) => {
-            resolve_spell(state, obj_id, &entry.targets, &entry.target_generations, entry.controller);
+            resolve_spell(state, *obj_id, &entry.targets, &entry.target_generations, entry.controller);
         }
         StackSource::SpellCopy { definition } => {
             resolve_spell_effect(state, &definition, &entry.targets, &entry.target_generations,
@@ -20,19 +22,27 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
             source_id,
             ability_index,
         } => {
-            resolve_activated_ability(state, source_id, ability_index, &entry.targets, entry.controller);
+            resolve_activated_ability(state, *source_id, *ability_index, &entry.targets, entry.controller);
         }
         StackSource::TriggeredAbility {
             source_id,
             ability_index: _,
             context,
         } => {
-            resolve_triggered_ability(state, source_id, &context, &entry.targets, entry.controller);
+            resolve_triggered_ability(state, *source_id, context, &entry.targets, entry.controller);
         }
     }
 
     // Check state-based actions after resolution
-    super::sba::check_state_based_actions(state);
+    if let Some(pending) = state.pending_copy_order.as_mut() {
+        pending.resolving_source_generation = match entry.source {
+            StackSource::Spell(id) => state.objects.get(&id).map(|inst| inst.zone_change_count),
+            _ => None,
+        };
+        pending.resolving_entry = Some(Box::new(entry));
+    } else {
+        super::complete_stack_resolution(state);
+    }
 }
 
 /// Resolve a spell.
@@ -100,6 +110,23 @@ fn resolve_spell(
         // CR 608.2b: an illegal sole target stops the whole spell, including
         // untargeted instructions such as drawing. Check only before execution.
         resolve_spell_effect(state, &def, targets, generations, controller, Some(obj_id));
+        if state.pending_copy_order.is_some() { return; }
+        finish_physical_spell(state, obj_id, &def);
+    }
+}
+
+/// Complete movement of a physical spell after any terminal ordering choice.
+pub(super) fn finish_deferred_resolution(state: &mut GameState, entry: &crate::game::StackEntry) {
+    if let StackSource::Spell(obj_id) = entry.source {
+        let def = {
+            let inst = &state.objects[&obj_id];
+            state.card_db().get(inst.card_def_id).unwrap().clone()
+        };
+        finish_physical_spell(state, obj_id, &def);
+    }
+}
+
+fn finish_physical_spell(state: &mut GameState, obj_id: ObjectId, def: &crate::card::CardDef) {
         // Commander redirect: non-permanent commander spells go to command zone
         if state.is_commander(obj_id) {
             state.move_object(obj_id, ZoneType::Stack, ZoneType::Command);
@@ -109,7 +136,6 @@ fn resolve_spell(
         } else {
             state.move_object(obj_id, ZoneType::Stack, ZoneType::Graveyard);
         }
-    }
 }
 
 /// Execute the shared instant/sorcery portion; card movement belongs to the
@@ -171,4 +197,155 @@ fn resolve_triggered_ability(
     super::effects::resolve_effect_with_last_known_source(
         state, &context.effect, controller, targets, live_source, context.source_card_id,
     );
+}
+
+#[cfg(test)]
+mod terminal_copy_lock_tests {
+    use super::*;
+    use crate::card::{CardDef, Effect};
+    use crate::game::{CastSpellSnapshot, Phase, StackEntry};
+    use crate::rules::{begin_terminal_copy_batch, prepare_spell_copy, CopyTargetPolicy};
+
+    #[test]
+    fn direct_resolution_phase_sba_and_trigger_flush_defer_to_order_choice() {
+        let mut state = GameState::new(2);
+        state.phase = Phase::PreCombatMain;
+        let definition = CardDef { id: 982001, name: "Synthetic".into(),
+            card_types: vec![CardType::Instant],
+            spell_effect: Some(Effect::GainLife { amount: 5 }), ..Default::default() };
+        state.stack.push(StackEntry { id: 1,
+            source: StackSource::SpellCopy { definition: Box::new(definition.clone()) },
+            controller: 0, targets: vec![], target_generations: vec![] });
+        state.next_stack_id = 2;
+        let snapshot = CastSpellSnapshot { stack_id: 1, definition: Box::new(definition),
+            controller: 0, targets: vec![], target_generations: vec![],
+            historical_object_targets: vec![] };
+        let item = prepare_spell_copy(&state, &snapshot, 0, CopyTargetPolicy::Preserve).unwrap();
+        begin_terminal_copy_batch(&mut state, vec![item.clone(), item], true).unwrap();
+        state.players[0].life = 0;
+        let before = serde_json::to_value(&state).unwrap();
+        resolve_top_of_stack(&mut state);
+        crate::rules::phases::handle_priority_pass(&mut state);
+        crate::rules::phases::advance_phase(&mut state);
+        crate::rules::sba::check_state_based_actions(&mut state);
+        assert!(!crate::rules::triggers::flush_triggers(&mut state));
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod terminal_copy_integration_tests {
+    use super::*;
+    use std::sync::Arc;
+    use crate::action::Action;
+    use crate::card::{CardDef, Effect, TriggerCondition, TriggeredAbility};
+    use crate::card::effects::{Condition, DynamicValue};
+    use crate::game::{CardDatabase, Phase};
+
+    const SPELL: u64 = 982100;
+
+    fn resolve_fixture(effect: Effect) -> (GameState, ObjectId) {
+        resolve_fixture_with(effect, |_| {})
+    }
+
+    fn resolve_fixture_with(effect: Effect, setup: impl FnOnce(&mut GameState)) -> (GameState, ObjectId) {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: SPELL, name: "Test batch spell".into(),
+            card_types: vec![CardType::Instant], spell_effect: Some(effect),
+            ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::PreCombatMain;
+        let object = state.create_card_in_zone(SPELL, 0, ZoneType::Hand);
+        super::super::apply_action(&mut state, &Action::CastSpell { object_id: object, targets: vec![] });
+        setup(&mut state);
+        super::super::apply_action(&mut state, &Action::PassPriority);
+        super::super::apply_action(&mut state, &Action::PassPriority);
+        (state, object)
+    }
+
+    #[test]
+    fn nested_terminal_position_controls_real_batch_creation() {
+        let batch = || Effect::TestCopyBatch { copies: 2 };
+        let life = || Effect::GainLife { amount: 7 };
+        let conditional = |child| Effect::Conditional { condition: Condition::Always,
+            if_true: Box::new(child), if_false: None };
+        let cases = [
+            (Effect::Multiple(vec![batch(), life()]), false),
+            (Effect::Multiple(vec![life(), batch(), life()]), false),
+            (Effect::Multiple(vec![life(), batch()]), true),
+            (Effect::Multiple(vec![conditional(batch()), life()]), false),
+            (Effect::Multiple(vec![life(), conditional(Effect::Multiple(vec![life(), batch()]))]), true),
+            (Effect::Modal { choices: vec![batch(), life()], choose_count: 2 }, false),
+            (Effect::Modal { choices: vec![life(), batch()], choose_count: 2 }, true),
+            (Effect::Multiple(vec![Effect::ForEach { count: DynamicValue::Fixed(2),
+                effect: Box::new(batch()) }, life()]), false),
+            (Effect::ForEach { count: DynamicValue::Fixed(2), effect: Box::new(batch()) }, true),
+        ];
+        for (effect, should_pause) in cases {
+            let (state, object) = resolve_fixture(effect);
+            assert_eq!(state.pending_copy_order.is_some(), should_pause);
+            assert_eq!(state.players[0].graveyard.contains(&object), !should_pause);
+            if should_pause {
+                assert!(state.pending_copy_order.as_ref().unwrap().resolving_entry().is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn real_stack_resolution_suspends_and_cleans_up_original_exactly_once() {
+        let (mut state, object) = resolve_fixture(Effect::TestCopyBatch { copies: 2 });
+        let pending = state.pending_copy_order.as_ref().expect("batch pauses resolution");
+        assert_eq!(pending.items().len(), 2);
+        assert!(pending.resolving_entry().is_some());
+        assert!(!state.players[0].graveyard.contains(&object));
+        assert!(state.stack.is_empty());
+        super::super::apply_action(&mut state, &Action::ChooseNextCopy { item_index: 1 });
+        assert!(state.pending_copy_order.is_none());
+        assert_eq!(state.players[0].graveyard.iter().filter(|&&id| id == object).count(), 1);
+        assert_eq!(state.stack.len(), 2);
+        assert_eq!(state.priority_player, state.active_player);
+        super::super::apply_action(&mut state, &Action::PassPriority);
+        super::super::apply_action(&mut state, &Action::PassPriority);
+        assert_eq!(state.players[0].life, 21);
+        super::super::apply_action(&mut state, &Action::PassPriority);
+        super::super::apply_action(&mut state, &Action::PassPriority);
+        assert_eq!(state.players[0].life, 22);
+        assert_eq!(state.players[0].graveyard.iter().filter(|&&id| id == object).count(), 1);
+    }
+
+    #[test]
+    fn real_suspended_resolution_runs_sba_and_nonactive_trigger_order_after_commit() {
+        const WATCHER: u64 = 982101;
+        const DOOMED: u64 = 982102;
+        let (mut state, object) = resolve_fixture_with(Effect::TestCopyBatch { copies: 2 }, |state| {
+            let watcher = CardDef { id: WATCHER, name: "Watcher".into(),
+                card_types: vec![CardType::Enchantment],
+                triggered_abilities: (0..2).map(|i| TriggeredAbility {
+                    trigger: TriggerCondition::ACreatureDies,
+                    effect: Effect::GainLife { amount: i + 1 }, description: format!("Death {i}")
+                }).collect(), ..Default::default() };
+            let doomed = CardDef { id: DOOMED, name: "Doomed".into(),
+                card_types: vec![CardType::Creature], power: Some(1), toughness: Some(1),
+                ..Default::default() };
+            let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+            db.insert(watcher);
+            db.insert(doomed);
+            state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield);
+            let dying = state.create_card_in_zone(DOOMED, 0, ZoneType::Battlefield);
+            state.objects.get_mut(&dying).unwrap().damage_marked = 1;
+        });
+        assert_eq!(state.pending_triggers.len(), 0);
+        assert!(state.pending_copy_order.is_some());
+        super::super::apply_action(&mut state, &Action::ChooseNextCopy { item_index: 0 });
+        assert_eq!(state.players[0].graveyard.iter().filter(|&&id| id == object).count(), 1);
+        assert_eq!(state.pending_triggers.len(), 2);
+        assert_eq!(state.priority_player, 1);
+        let order = crate::action::legal_actions(&state).into_iter()
+            .find(|action| matches!(action, Action::OrderTriggers { .. })).unwrap();
+        super::super::apply_action(&mut state, &order);
+        assert_eq!(state.priority_player, 0);
+        assert!(state.pending_triggers.is_empty());
+        assert_eq!(state.stack.len(), 4);
+    }
 }

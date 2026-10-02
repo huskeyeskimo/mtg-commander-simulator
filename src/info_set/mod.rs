@@ -20,7 +20,22 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use crate::card::CardInstance;
-use crate::game::{CardDatabase, PlayerView, StackEntry, StackSource};
+use crate::game::{CardDatabase, CopyTargetDescription, PlayerView, StackEntry, StackSource, TriggerOrderResume};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PendingCopyInfo {
+    pub controller: usize,
+    pub items: Vec<PreparedCopyInfo>,
+    pub selected_order: Vec<usize>,
+    pub resolving_entry: Option<StackInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PreparedCopyInfo {
+    pub definition: String,
+    pub controller: usize,
+    pub targets: Vec<CopyTargetDescription>,
+}
 
 /// A compact representation of everything a player can observe.
 ///
@@ -56,6 +71,8 @@ pub struct InformationSet {
     pub stack_entries: Vec<StackInfo>,
     /// Cast relationships retained by triggers waiting for APNAP ordering.
     pub pending_cast_spells: Vec<Option<CastSpellInfo>>,
+    pub trigger_order_resume: Option<TriggerOrderResume>,
+    pub pending_copy_order: Option<PendingCopyInfo>,
 
     /// Our graveyard as sorted CardIds.
     pub my_graveyard: Vec<u64>,
@@ -158,6 +175,17 @@ impl InformationSet {
             .map(|trigger| trigger.context.cast_spell.as_ref()
                 .map(|spell| cast_spell_to_info(spell, &view.objects, view.stack)))
             .collect();
+        let pending_copy_order = view.pending_copy_order.map(|pending| PendingCopyInfo {
+            controller: pending.controller(),
+            items: pending.items().iter().map(|item| PreparedCopyInfo {
+                definition: item.definition_description.clone(),
+                controller: item.controller(),
+                targets: item.target_descriptions.clone(),
+            }).collect(),
+            selected_order: pending.selected_order().to_vec(),
+            resolving_entry: pending.resolving_entry()
+                .map(|entry| stack_entry_to_info(entry, &view.objects, view.stack)),
+        });
 
         // Graveyards: sorted CardIds
         let mut my_graveyard: Vec<u64> = view
@@ -228,6 +256,8 @@ impl InformationSet {
             battlefield,
             stack_entries,
             pending_cast_spells,
+            trigger_order_resume: view.trigger_order_resume,
+            pending_copy_order,
             my_graveyard,
             opp_graveyard,
             my_exile,
@@ -259,6 +289,8 @@ impl InformationSet {
         self.battlefield.hash(&mut hasher);
         self.stack_entries.hash(&mut hasher);
         self.pending_cast_spells.hash(&mut hasher);
+        self.trigger_order_resume.hash(&mut hasher);
+        self.pending_copy_order.hash(&mut hasher);
         self.my_graveyard.hash(&mut hasher);
         self.opp_graveyard.hash(&mut hasher);
         self.my_exile.hash(&mut hasher);
@@ -528,6 +560,8 @@ impl InfoSetAbstraction for BucketedAbstraction {
         // Stack: just hash whether stack is empty or has items
         let stack_nonempty = !info_set.stack_entries.is_empty();
         stack_nonempty.hash(&mut hasher);
+        info_set.pending_copy_order.hash(&mut hasher);
+        info_set.trigger_order_resume.hash(&mut hasher);
 
         // Mana availability: total mana (bucketed)
         let total_mana: u32 = info_set.my_mana.iter().sum();
@@ -669,6 +703,8 @@ impl<'a> InfoSetAbstraction for CardAwareBucketedAbstraction<'a> {
         // Stack size bucket
         let stack_size = info_set.stack_entries.len().min(3) as u8;
         stack_size.hash(&mut hasher);
+        info_set.pending_copy_order.hash(&mut hasher);
+        info_set.trigger_order_resume.hash(&mut hasher);
 
         // Total mana bucket
         let total_mana: u32 = info_set.my_mana.iter().sum();

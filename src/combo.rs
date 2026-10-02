@@ -364,6 +364,7 @@ pub fn apply_combo_effect(
     player: PlayerIndex,
     combo: &ComboDef,
 ) {
+    if state.pending_copy_order.is_some() { return; }
     // Tap any piece that has a PieceUntapped precondition (it was tapped
     // as part of the combo loop).
     for precond in &combo.preconditions {

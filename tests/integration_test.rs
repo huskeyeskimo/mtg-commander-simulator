@@ -2092,6 +2092,9 @@ fn test_sba_recurrence_in_full_game_context() {
         "Elemental should be on the battlefield"
     );
 
+    // After resolution, active player 0 receives priority; pass to player 1.
+    rules::apply_action(&mut state, &Action::PassPriority);
+
     // Player 1 casts Lightning Bolt targeting the Elemental
     rules::apply_action(
         &mut state,
@@ -3448,6 +3451,8 @@ fn test_multi_phase_abstraction() {
         battlefield: vec![],
         stack_entries: vec![],
         pending_cast_spells: vec![],
+        trigger_order_resume: None,
+        pending_copy_order: None,
         my_graveyard: vec![],
         opp_graveyard: vec![],
         my_exile: vec![],

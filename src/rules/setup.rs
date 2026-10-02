@@ -13,6 +13,7 @@ use crate::game::{GameState, Phase};
 /// 2. If current player is done → advance to next player who hasn't decided
 /// 3. If all players are done deciding and bottoming → transition to Turn 1
 pub(super) fn advance_mulligan(state: &mut GameState) {
+    if state.pending_copy_order.is_some() { return; }
     let player = state.priority_player;
     let ps = &state.players[player];
 
@@ -54,6 +55,7 @@ pub fn setup_game(
     deck0: &[crate::card::CardId],
     deck1: &[crate::card::CardId],
 ) {
+    if state.pending_copy_order.is_some() { return; }
     let mut rng = rand::thread_rng();
 
     // Create card instances for player 0
@@ -96,6 +98,7 @@ pub fn setup_game_seeded(
     deck1: &[crate::card::CardId],
     seed: u64,
 ) {
+    if state.pending_copy_order.is_some() { return; }
     let mut rng = StdRng::seed_from_u64(seed);
 
     let mut lib0: Vec<ObjectId> = deck0
@@ -131,6 +134,7 @@ pub fn setup_commander_game_seeded(
     commander1: crate::card::CardId,
     seed: u64,
 ) {
+    if state.pending_copy_order.is_some() { return; }
     let mut rng = StdRng::seed_from_u64(seed);
 
     state.players[0].commander_card_id = Some(commander0);
@@ -187,6 +191,7 @@ pub fn setup_commander_game(
     commander0: crate::card::CardId,
     commander1: crate::card::CardId,
 ) {
+    if state.pending_copy_order.is_some() { return; }
     let mut rng = rand::thread_rng();
 
     // Record commander designations
@@ -249,6 +254,7 @@ pub fn setup_commander_game_with_partners(
     commander1: crate::card::CardId,
     partner1: Option<crate::card::CardId>,
 ) {
+    if state.pending_copy_order.is_some() { return; }
     let mut rng = rand::thread_rng();
 
     // Record commander designations
@@ -325,6 +331,7 @@ pub fn set_tutor_targets(
     player: crate::game::PlayerIndex,
     targets: &[crate::card::CardId],
 ) {
+    if state.pending_copy_order.is_some() { return; }
     state.players[player].tutor_targets = targets.to_vec();
 }
 
@@ -334,6 +341,7 @@ pub fn set_tutor_targets(
 /// and redraws 7-card opening hands. Resets turn/phase/mana state so the
 /// game starts cleanly from Turn 1.
 pub fn reshuffle_opening_hand(state: &mut GameState) {
+    if state.pending_copy_order.is_some() { return; }
     let mut rng = rand::thread_rng();
 
     for player in 0..state.players.len() {

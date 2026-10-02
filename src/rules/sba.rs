@@ -51,6 +51,7 @@ fn find_duplicates_to_remove(
 /// // only now grant priority
 /// ```
 pub fn check_state_based_actions(state: &mut GameState) {
+    if state.pending_copy_order.is_some() { return; }
     // Outer CR 704.3 loop: interleave SBA checks with trigger checks
     loop {
         // --- Inner SBA loop: perform all SBAs until stable ---

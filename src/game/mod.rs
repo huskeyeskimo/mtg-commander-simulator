@@ -396,6 +396,18 @@ pub struct GameState {
     /// in APNAP order (active player's triggers first) before priority is given.
     pub pending_triggers: Vec<PendingTrigger>,
 
+    /// Where priority resumes after a mandatory trigger-order choice.
+    #[serde(default)]
+    pub trigger_order_resume: Option<TriggerOrderResume>,
+
+    /// Mandatory choice inside a still-resolving terminal copy batch.
+    pub pending_copy_order: Option<PendingCopyOrder>,
+
+    /// Transient structural position in recursive effect resolution. A terminal
+    /// copy batch cannot be started from a child with instructions after it.
+    #[serde(skip)]
+    pub(crate) effect_terminal_position: Option<bool>,
+
     /// Active continuous effects on the battlefield (Phase 2A.1).
     ///
     /// Continuous effects from static abilities are regenerated when the
@@ -489,6 +501,89 @@ pub struct CastSpellSnapshot {
     pub historical_object_targets: Vec<Option<(crate::card::CardId, PlayerIndex)>>,
 }
 
+/// A validated copy with no final stack identity yet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreparedSpellCopy {
+    pub(crate) definition: Box<CardDef>,
+    pub(crate) controller: PlayerIndex,
+    pub(crate) targets: Vec<Target>,
+    pub(crate) target_generations: Vec<Option<u32>>,
+    pub(crate) target_descriptions: Vec<CopyTargetDescription>,
+    pub(crate) definition_description: String,
+}
+
+impl PreparedSpellCopy {
+    pub fn controller(&self) -> PlayerIndex { self.controller }
+    pub fn definition(&self) -> &CardDef { &self.definition }
+    pub fn targets(&self) -> &[Target] { &self.targets }
+    pub fn target_generations(&self) -> &[Option<u32>] { &self.target_generations }
+}
+
+/// Public meaning of a prepared target without a runtime object or stack ID.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CopyTargetDescription {
+    Player(PlayerIndex),
+    StackPosition(Option<usize>),
+    Permanent {
+        card_id: Option<crate::card::CardId>,
+        controller: Option<PlayerIndex>,
+        observable: Option<ObservablePermanentKey>,
+        occurrence: Option<usize>,
+        same_incarnation: bool,
+    },
+}
+
+/// Observable identity used only for a pending copy-order target. Runtime
+/// object IDs and zone-change counters are deliberately absent.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ObservablePermanentKey {
+    pub card_id: crate::card::CardId,
+    pub owner: PlayerIndex,
+    pub controller: PlayerIndex,
+    pub characteristics: String,
+    pub tapped: bool,
+    pub damage_marked: u32,
+    pub summoning_sick: bool,
+    pub plus_counters: i32,
+    pub minus_counters: i32,
+    pub loyalty_counters: u32,
+    pub loyalty_activated_this_turn: bool,
+    pub is_token: bool,
+    pub attached: bool,
+    pub attachment_count: usize,
+}
+
+/// One controller's mandatory bottom-to-top ordering of a terminal copy batch.
+/// The caller must supply the items in a deterministic order across equivalent
+/// states; their vector indices are temporary choice identities.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingCopyOrder {
+    pub(crate) controller: PlayerIndex,
+    pub(crate) items: Vec<PreparedSpellCopy>,
+    pub(crate) selected_order: Vec<usize>,
+    pub(crate) expected_stack_len: usize,
+    pub(crate) expected_next_stack_id: StackId,
+    pub(crate) resolving_entry: Option<Box<StackEntry>>,
+    /// Incarnation of a deferred physical spell when it left the stack.
+    #[serde(default)]
+    pub(crate) resolving_source_generation: Option<u32>,
+}
+
+/// Continuation captured when placing triggers requires controller ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TriggerOrderResume {
+    AfterResolution,
+    Player(PlayerIndex),
+    AfterAttackers,
+}
+
+impl PendingCopyOrder {
+    pub fn controller(&self) -> PlayerIndex { self.controller }
+    pub fn items(&self) -> &[PreparedSpellCopy] { &self.items }
+    pub fn selected_order(&self) -> &[usize] { &self.selected_order }
+    pub fn resolving_entry(&self) -> Option<&StackEntry> { self.resolving_entry.as_deref() }
+}
+
 /// The resolving instruction and public source information owned by a trigger.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerContext {
@@ -571,6 +666,8 @@ pub struct GameStateSnapshot {
     next_object_id: ObjectId,
     next_stack_id: StackId,
     pending_triggers: Vec<PendingTrigger>,
+    trigger_order_resume: Option<TriggerOrderResume>,
+    pending_copy_order: Option<PendingCopyOrder>,
     continuous_effects: Vec<ContinuousEffect>,
     next_timestamp: u32,
     replacement_effects: Vec<ReplacementEffect>,
@@ -613,6 +710,8 @@ pub struct PlayerView<'a> {
     pub combat: &'a CombatState,
     /// Triggered abilities waiting to be placed on the stack.
     pub pending_triggers: &'a [PendingTrigger],
+    pub trigger_order_resume: Option<TriggerOrderResume>,
+    pub pending_copy_order: Option<&'a PendingCopyOrder>,
     /// Which player currently has priority.
     pub priority_player: PlayerIndex,
 
@@ -706,6 +805,11 @@ impl GameState {
                 }
             }
         }
+        if let Some(entry) = self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry) {
+            if let StackSource::Spell(source_id) = &entry.source {
+                if let Some(inst) = self.objects.get(source_id) { visible.insert(*source_id, inst); }
+            }
+        }
         // All graveyards — public
         for p in &self.players {
             for &id in &p.graveyard {
@@ -765,6 +869,8 @@ impl GameState {
             stack: &self.stack,
             combat: &self.combat,
             pending_triggers: &self.pending_triggers,
+            trigger_order_resume: self.trigger_order_resume,
+            pending_copy_order: self.pending_copy_order.as_ref(),
             priority_player: self.priority_player,
 
             my_life: self.players[player].life,
@@ -815,6 +921,9 @@ impl GameState {
             next_object_id: 1,
             next_stack_id: 1,
             pending_triggers: Vec::new(),
+            trigger_order_resume: None,
+            pending_copy_order: None,
+            effect_terminal_position: None,
             continuous_effects: Vec::new(),
             next_timestamp: 1,
             replacement_effects: Vec::new(),
@@ -850,6 +959,9 @@ impl GameState {
             next_object_id: 1,
             next_stack_id: 1,
             pending_triggers: Vec::new(),
+            trigger_order_resume: None,
+            pending_copy_order: None,
+            effect_terminal_position: None,
             continuous_effects: Vec::new(),
             next_timestamp: 1,
             replacement_effects: Vec::new(),
@@ -897,6 +1009,8 @@ impl GameState {
             next_object_id: self.next_object_id,
             next_stack_id: self.next_stack_id,
             pending_triggers: self.pending_triggers.clone(),
+            trigger_order_resume: self.trigger_order_resume,
+            pending_copy_order: self.pending_copy_order.clone(),
             continuous_effects: self.continuous_effects.clone(),
             next_timestamp: self.next_timestamp,
             replacement_effects: self.replacement_effects.clone(),
@@ -926,6 +1040,9 @@ impl GameState {
         self.next_object_id = snap.next_object_id;
         self.next_stack_id = snap.next_stack_id;
         self.pending_triggers = snap.pending_triggers;
+        self.trigger_order_resume = snap.trigger_order_resume;
+        self.pending_copy_order = snap.pending_copy_order;
+        self.effect_terminal_position = None;
         self.continuous_effects = snap.continuous_effects;
         self.next_timestamp = snap.next_timestamp;
         self.replacement_effects = snap.replacement_effects;
@@ -949,7 +1066,7 @@ impl GameState {
     /// Allocate a new stack entry ID.
     pub fn new_stack_id(&mut self) -> StackId {
         let id = self.next_stack_id;
-        self.next_stack_id += 1;
+        self.next_stack_id = self.next_stack_id.checked_add(1).expect("StackId exhausted");
         id
     }
 

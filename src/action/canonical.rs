@@ -45,6 +45,7 @@ pub enum CanonicalTarget {
 /// to the same `CanonicalAction`. MCCFR regret tables key on this type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CanonicalAction {
+    ChooseNextCopy { item_index: usize },
     PassPriority,
 
     PlayLand {
@@ -184,6 +185,7 @@ pub enum CanonicalAction {
 /// incorrect instance indices or panic on missing ObjectIds.
 pub fn canonicalize(action: &Action, state: &GameState) -> CanonicalAction {
     match action {
+        Action::ChooseNextCopy { item_index } => CanonicalAction::ChooseNextCopy { item_index: *item_index },
         Action::PassPriority => CanonicalAction::PassPriority,
         Action::Concede => CanonicalAction::Concede,
 
@@ -426,6 +428,12 @@ pub fn resolve(
     player: PlayerIndex,
 ) -> Option<Action> {
     match canonical {
+        CanonicalAction::ChooseNextCopy { item_index } => {
+            let pending = state.pending_copy_order.as_ref()?;
+            (player == pending.controller() && *item_index < pending.items().len()
+                && !pending.selected_order().contains(item_index))
+                .then_some(Action::ChooseNextCopy { item_index: *item_index })
+        }
         CanonicalAction::PassPriority => Some(Action::PassPriority),
         CanonicalAction::Concede => Some(Action::Concede),
 

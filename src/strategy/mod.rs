@@ -2,8 +2,8 @@ use rand::seq::SliceRandom;
 
 use crate::action::canonical::canonicalize;
 use crate::action::{legal_actions, legal_actions_abstracted, Action};
-use crate::card::ObjectId;
-use crate::game::{GameState, PlayerIndex};
+use crate::card::{Effect, KeywordAbility, ObjectId};
+use crate::game::{GameState, PlayerIndex, Target};
 use crate::info_set::InformationSet;
 use crate::solver::{sample_from_distribution, RegretTable};
 
@@ -38,9 +38,97 @@ impl Strategy for RandomStrategy {
 /// Better than random, serves as a reasonable default opponent.
 pub struct GreedyStrategy;
 
+/// Direction of an effect's value to its selected target. Composite effects
+/// with conflicting directions stay neutral; unrelated children are ignored.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TargetValue {
+    Harmful,
+    Helpful,
+    Neutral,
+    Mixed,
+}
+
+fn effect_target_value(effect: &Effect) -> TargetValue {
+    use TargetValue::*;
+    if let Effect::Multiple(children) = effect {
+        return children.iter().fold(Neutral, |value, child| {
+            let next = effect_target_value(child);
+            match (value, next) {
+                (Mixed, _) | (_, Mixed) => Mixed,
+                (Neutral, other) => other,
+                (other, Neutral) => other,
+                (left, right) if left == right => left,
+                _ => Mixed,
+            }
+        });
+    }
+
+    // Only effects that actually use the spell's selected target contribute.
+    if !matches!(crate::targeting::effect_targeting(effect),
+        crate::targeting::SpellTargeting::Single(_)) {
+        return Neutral;
+    }
+
+    match effect {
+        Effect::DealDamage { .. }
+        | Effect::DealDynamicDamage { .. }
+        | Effect::LoseLife { .. }
+        | Effect::LoseDynamicLife { .. }
+        | Effect::DestroyTarget { .. }
+        | Effect::ExileTarget { .. }
+        | Effect::BounceTo { .. }
+        | Effect::Counter { .. }
+        | Effect::GainControlUntilEOT { .. }
+        | Effect::TapTarget { .. }
+        | Effect::DiscardCards { .. }
+        | Effect::SacrificeCreatures { .. } => Harmful,
+        Effect::Buff { power, toughness, .. } => {
+            if *power >= 0 && *toughness >= 0 && (*power > 0 || *toughness > 0) {
+                Helpful
+            } else if *power <= 0 && *toughness <= 0 && (*power < 0 || *toughness < 0) {
+                Harmful
+            } else {
+                Neutral
+            }
+        }
+        Effect::Debuff { power, toughness, .. } if *power > 0 || *toughness > 0 => Harmful,
+        Effect::PutCounters { count, .. } if *count > 0 => Helpful,
+        Effect::PutCounters { count, .. } if *count < 0 => Harmful,
+        Effect::DoublePowerUntilEOT { .. } | Effect::UntapTarget { .. } => Helpful,
+        Effect::GainKeywordUntilEOT { keyword, .. } if matches!(keyword,
+            KeywordAbility::Haste | KeywordAbility::Flying | KeywordAbility::Vigilance
+            | KeywordAbility::Trample | KeywordAbility::Indestructible
+            | KeywordAbility::Hexproof) => Helpful,
+        _ => Neutral,
+    }
+}
+
+fn spell_target_value(state: &GameState, controller: PlayerIndex, effect: &Effect, targets: &[Target]) -> i32 {
+    let direction = match effect_target_value(effect) {
+        TargetValue::Helpful => 1,
+        TargetValue::Harmful => -1,
+        TargetValue::Neutral | TargetValue::Mixed => return 0,
+    };
+    let target_controller = match targets {
+        [Target::Player(player)] => Some(*player),
+        [Target::Object(id)] if state.battlefield.contains(id) => {
+            state.objects.get(id).map(|object| object.controller)
+        }
+        [Target::StackEntry(id)] => state.stack.iter().find(|entry| entry.id == *id)
+            .map(|entry| entry.controller),
+        _ => None,
+    };
+    match target_controller {
+        Some(player) if player == controller => direction,
+        Some(_) => -direction,
+        None => 0,
+    }
+}
+
 impl Strategy for GreedyStrategy {
     fn choose_action(&self, state: &GameState, _player: PlayerIndex) -> Action {
         let actions = legal_actions(state);
+        if state.pending_copy_order.is_some() { return actions[0].clone(); }
         let db = state.card_db();
 
         // Mulligan heuristic: count "effective mana sources" — lands count
@@ -183,10 +271,12 @@ impl Strategy for GreedyStrategy {
             }
         }
 
-        // Priority 2: Cast the most expensive spell we can afford
+        // Priority 2: Cast the most expensive spell we can afford.
+        // For equally expensive casts, prefer the target favored by the
+        // spell's effect from the current player's perspective.
         // (includes casting commander from command zone)
         let mut best_spell: Option<&Action> = None;
-        let mut best_cmc = 0;
+        let mut best_score = (0, i32::MIN);
         for action in &actions {
             let obj_id = match action {
                 Action::CastSpell { object_id, .. } => Some(object_id),
@@ -196,9 +286,15 @@ impl Strategy for GreedyStrategy {
             if let Some(object_id) = obj_id {
                 let inst = &state.objects[object_id];
                 if let Some(def) = db.get(inst.card_def_id) {
-                    let cmc = def.cmc();
-                    if cmc >= best_cmc {
-                        best_cmc = cmc;
+                    let target_value = match action {
+                        Action::CastSpell { targets, .. } | Action::CastCommander { targets, .. } =>
+                            def.spell_effect.as_ref().map_or(0, |effect|
+                                spell_target_value(state, _player, effect, targets)),
+                        _ => 0,
+                    };
+                    let score = (def.cmc(), target_value);
+                    if score >= best_score {
+                        best_score = score;
                         best_spell = Some(action);
                     }
                 }
@@ -340,8 +436,8 @@ impl Strategy for GreedyStrategy {
 /// looks up the current info set in the regret table, canonicalizes the
 /// available actions, and samples from the average strategy distribution.
 ///
-/// Falls back to uniform random among legal actions when the info set
-/// hasn't been visited during training.
+/// Falls back to GreedyStrategy when the info set hasn't been visited
+/// during training.
 pub struct McfrStrategy {
     /// Trained regret table (read-only during play).
     policy: RegretTable,
@@ -376,11 +472,9 @@ impl Strategy for McfrStrategy {
 
         let distribution = match self.policy.get(info_hash) {
             Some(data) => data.average_strategy(&canonical_actions),
-            None => {
-                // Unseen info set — fall back to uniform random
-                let n = actions.len();
-                vec![1.0 / n as f64; n]
-            }
+            // Greedy chooses from this state's concrete legal actions; no
+            // stored canonical action is reconstructed for an unseen state.
+            None => return GreedyStrategy.choose_action(state, player),
         };
 
         let mut rng = rand::thread_rng();
@@ -472,6 +566,7 @@ pub struct GoldfishStrategy;
 impl Strategy for GoldfishStrategy {
     fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Action {
         let actions = legal_actions(state);
+        if state.pending_copy_order.is_some() { return actions[0].clone(); }
 
         // Mulligan: always keep; bottom first card if forced (shouldn't happen
         // since keeping at mulligan_count=0 means no bottoming, but handle it

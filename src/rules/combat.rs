@@ -29,6 +29,7 @@ struct DamageEvent {
 
 /// Resolve combat damage. Collects all damage events first (read phase), then applies them.
 pub(super) fn resolve_combat_damage(state: &mut GameState, first_strike_only: bool) {
+    if state.pending_copy_order.is_some() { return; }
     let defending_player = state.next_player(state.active_player);
     let mut damage_events: Vec<DamageEvent> = Vec::new();
 

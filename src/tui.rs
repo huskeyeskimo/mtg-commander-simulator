@@ -214,8 +214,9 @@ impl App {
             && passes < 200
         {
             // Fast-forward entire opponent turn without calling legal_actions().
-            if self.state.active_player != 0 {
-                let ff = rules::fast_forward_goldfish_turn(&mut self.state);
+            if self.state.active_player != 0
+                && self.state.pending_copy_order.as_ref().is_none_or(|pending| pending.controller() != 0) {
+                let ff = rules::fast_forward_goldfish_turn_until_copy_choice(&mut self.state, 0);
                 self.actions_taken += ff;
                 passes += ff as usize;
                 continue;
@@ -924,6 +925,12 @@ pub fn format_mana_pool(pool: &crate::mana::ManaPool) -> String {
 
 pub fn format_action_short(state: &GameState, action: &Action, db: &CardDatabase) -> String {
     match action {
+        Action::ChooseNextCopy { item_index } => {
+            let item = &state.pending_copy_order.as_ref().unwrap().items()[*item_index];
+            let target = format_copy_targets(state, item.targets(), db);
+            format!("Place {} copy next (bottom to top){}", item.definition().name,
+                if target.is_empty() { String::new() } else { format!(" -> {}", target) })
+        }
         Action::PassPriority => "Pass priority".into(),
         Action::PlayLand { object_id } => {
             format!("Play land: {}", card_name(state, *object_id, db))
@@ -1040,6 +1047,50 @@ pub fn format_targets(state: &GameState, targets: &[Target], db: &CardDatabase) 
             }).unwrap_or_else(|| format!("Stack #{} (gone)", id)),
     }).collect();
     descs.join(", ")
+}
+
+fn format_copy_targets(state: &GameState, targets: &[Target], db: &CardDatabase) -> String {
+    targets.iter().map(|target| match target {
+        Target::Object(id) => {
+            let name = card_name(state, *id, db);
+            let Some(inst) = state.objects.get(id) else { return format!("{name} (gone)"); };
+            let mut details = vec![if inst.tapped { "tapped".to_string() } else { "untapped".to_string() },
+                if inst.summoning_sick { "summoning sick".to_string() } else { "ready".to_string() }];
+            if inst.damage_marked > 0 { details.push(format!("{} damage", inst.damage_marked)); }
+            if inst.plus_counters != 0 { details.push(format!("{} +1/+1 counters", inst.plus_counters)); }
+            if inst.minus_counters != 0 { details.push(format!("{} -1/-1 counters", inst.minus_counters)); }
+            format!("{name} #{} (P{}, {})", id, inst.controller + 1, details.join(", "))
+        }
+        _ => format_targets(state, std::slice::from_ref(target), db),
+    }).collect::<Vec<_>>().join(", ")
+}
+
+#[cfg(test)]
+mod copy_target_label_tests {
+    use super::*;
+    use crate::card::{CardDef, CardType, ZoneType};
+
+    #[test]
+    fn same_name_targets_show_relevant_state() {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 983000, name: "Goblin".into(),
+            card_types: vec![CardType::Creature], ..Default::default() });
+        let mut state = GameState::new(2);
+        let first = state.create_card_in_zone(983000, 0, ZoneType::Battlefield);
+        let second = state.create_card_in_zone(983000, 0, ZoneType::Battlefield);
+        state.objects.get_mut(&second).unwrap().tapped = true;
+        state.objects.get_mut(&second).unwrap().damage_marked = 1;
+        assert_ne!(format_copy_targets(&state, &[Target::Object(first)], &db),
+            format_copy_targets(&state, &[Target::Object(second)], &db));
+        state.objects.get_mut(&second).unwrap().tapped = false;
+        state.objects.get_mut(&second).unwrap().damage_marked = 0;
+        state.objects.get_mut(&second).unwrap().summoning_sick = false;
+        let first_label = format_copy_targets(&state, &[Target::Object(first)], &db);
+        let second_label = format_copy_targets(&state, &[Target::Object(second)], &db);
+        assert!(first_label.contains("summoning sick"));
+        assert!(second_label.contains("ready"));
+        assert_ne!(first_label, second_label);
+    }
 }
 
 // ---------------------------------------------------------------------------

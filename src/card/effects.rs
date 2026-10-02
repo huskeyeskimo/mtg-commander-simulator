@@ -476,6 +476,11 @@ pub enum Effect {
 
     /// For effects we haven't modeled yet — described textually.
     Unimplemented(String),
+
+    /// Unit-test fixture for exercising terminal copy ordering through the
+    /// real recursive resolver; absent from production card definitions.
+    #[cfg(test)]
+    TestCopyBatch { copies: usize },
 }
 
 /// Conditions that can be checked at runtime for conditional effects.
