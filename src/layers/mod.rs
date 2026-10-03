@@ -92,6 +92,9 @@ pub enum AffectedObjects {
     AttachedTo,
     /// Other creatures of a subtype controlled by the source's current controller.
     OtherCreaturesWithSubtypeControlledBySource(String),
+    /// One battlefield incarnation of an object. Zone changes invalidate the match
+    /// even when the engine reuses the same ObjectId for the returned permanent.
+    SpecificIncarnation { object_id: ObjectId, zone_change_count: u32 },
 }
 
 /// A single modification applied by a continuous effect, keyed to its layer.
@@ -460,6 +463,11 @@ fn effect_applies_to(
         }
         AffectedObjects::Source => obj_id == effect.source_id,
         AffectedObjects::Specific(id) => obj_id == *id,
+        AffectedObjects::SpecificIncarnation { object_id, zone_change_count } => {
+            obj_id == *object_id
+                && battlefield.contains(&obj_id)
+                && inst.zone_change_count == *zone_change_count
+        }
         AffectedObjects::AllCreatures => {
             // We need to check if this object is a creature.
             // At this point we check the base type — layer 4 type changes

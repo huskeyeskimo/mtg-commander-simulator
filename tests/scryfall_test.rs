@@ -282,6 +282,23 @@ fn test_parse_complex_oracle_text_flagged_unimplemented() {
 }
 
 #[test]
+fn test_authored_expedite_definition_precedes_scryfall_fallback() {
+    let mut fetcher = ScryfallFetcher::new("/tmp/mtg_test_cache_unused");
+    let def = fetcher
+        .fetch_card_def("Expedite")
+        .expect("authored Expedite should not need a Scryfall request");
+    assert_eq!(def.id, mtg_gto::card::sample::ids::EXPEDITE);
+    assert_eq!(def.mana_cost, Some(ManaCost::new(0, 0, 0, 0, 1, 0)));
+    assert_eq!(def.spell_effect, Some(Effect::Multiple(vec![
+        Effect::GainKeywordUntilEOT {
+            keyword: KeywordAbility::Haste,
+            target: TargetSpec::AnyCreature,
+        },
+        Effect::DrawCards { count: 1 },
+    ])));
+}
+
+#[test]
 fn test_parse_etb_trigger_draw() {
     let card = mock_card(
         "Elvish Visionary",

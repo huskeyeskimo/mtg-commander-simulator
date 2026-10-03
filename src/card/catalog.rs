@@ -369,9 +369,11 @@ pub mod ids {
     pub const BRIGHTSTONE_RITUAL: u64 = 1154;
     pub const GOBLIN_CHIEFTAIN: u64 = 1155;
     pub const ZADA_HEDRON_GRINDER: u64 = 1156;
+    pub const EXPEDITE: u64 = 1157;
 }
 
 pub const ALL_CARDS: &[CardCatalogEntry] = &[
+    CardCatalogEntry { id: ids::EXPEDITE, key: "EXPEDITE", name: "Expedite" },
     CardCatalogEntry {
         id: ids::ZADA_HEDRON_GRINDER,
         key: "ZADA_HEDRON_GRINDER",

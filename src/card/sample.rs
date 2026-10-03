@@ -1376,6 +1376,23 @@ pub fn build_sample_db() -> CardDatabase {
         ..Default::default()
     });
 
+    // Expedite: R — Target creature gains haste until end of turn. Draw a card.
+    db.insert(CardDef {
+        id: ids::EXPEDITE,
+        name: "Expedite".into(),
+        mana_cost: Some(ManaCost::new(0, 0, 0, 0, 1, 0)),
+        card_types: vec![CardType::Instant],
+        spell_effect: Some(Effect::Multiple(vec![
+            Effect::GainKeywordUntilEOT {
+                keyword: KeywordAbility::Haste,
+                target: TargetSpec::AnyCreature,
+            },
+            Effect::DrawCards { count: 1 },
+        ])),
+        oracle_text: "Target creature gains haste until end of turn. Draw a card.".into(),
+        ..Default::default()
+    });
+
     // Brainstorm: U — Draw 3, then put 2 cards from hand on top (partially simplified: draw 3)
     db.insert(CardDef {
         id: ids::BRAINSTORM,

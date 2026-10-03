@@ -743,13 +743,24 @@ fn resolve_effect_inner(
         // --- Creature/permanent manipulation ---
 
         Effect::GainKeywordUntilEOT { keyword, .. } => {
+            use crate::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
             for target in targets {
                 if let Target::Object(id) = target {
-                    if let Some(inst) = state.objects.get_mut(id) {
-                        if !inst.temp_keywords.contains(keyword) {
-                            inst.temp_keywords.push(*keyword);
-                        }
-                    }
+                    let Some(zone_change_count) = state.objects.get(id)
+                        .filter(|_| state.battlefield.contains(id))
+                        .map(|inst| inst.zone_change_count) else { continue };
+                    let timestamp = state.new_timestamp();
+                    state.continuous_effects.push(ContinuousEffect {
+                        source_id: source_id.unwrap_or(*id),
+                        controller,
+                        timestamp,
+                        duration: Duration::UntilEndOfTurn,
+                        affected: AffectedObjects::SpecificIncarnation {
+                            object_id: *id,
+                            zone_change_count,
+                        },
+                        modification: LayerModification::AddKeyword(*keyword),
+                    });
                 }
             }
             state.invalidate_characteristics_cache();
