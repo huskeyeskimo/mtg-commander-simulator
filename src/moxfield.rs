@@ -386,7 +386,7 @@ pub fn import_moxfield_deck(
 ///
 /// Delegates to `deck_import::load_extra_card_defs` — the canonical implementation
 /// that lives outside the `scryfall` feature gate so `goldfish` can use it too.
-pub fn load_extra_card_defs(json_path: &Path) -> Vec<CardDef> {
+pub fn load_extra_card_defs(json_path: &Path) -> Result<Vec<CardDef>, crate::deck_import::DeckImportError> {
     crate::deck_import::load_extra_card_defs(json_path)
 }
 

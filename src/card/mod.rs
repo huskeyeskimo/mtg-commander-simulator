@@ -32,6 +32,9 @@ pub enum CardType {
     Artifact,
     Planeswalker,
     Land,
+    /// Kindred (formerly tribal) is a card type, not a creature subtype.
+    /// Appended to preserve the existing bincode discriminants.
+    Kindred,
 }
 
 /// Creature subtypes (a small representative set; extensible).

@@ -19,6 +19,7 @@ pub enum DeckImportError {
         line_number: usize,
         name: String,
     },
+    InvalidSidecar { path: String, message: String },
 }
 
 impl fmt::Display for DeckImportError {
@@ -37,6 +38,7 @@ impl fmt::Display for DeckImportError {
             DeckImportError::UnknownCard { line_number, name } => {
                 write!(f, "unknown card on line {line_number}: '{name}'")
             }
+            DeckImportError::InvalidSidecar { path, message } => write!(f, "invalid sidecar '{path}': {message}"),
         }
     }
 }
@@ -94,6 +96,13 @@ fn parse_card_line(
             line_number,
             line: raw_line.to_string(),
             message: "quantity must be greater than zero".to_string(),
+        });
+    }
+    if quantity > 100 {
+        return Err(DeckImportError::InvalidLine {
+            line_number,
+            line: raw_line.to_string(),
+            message: "quantity exceeds Commander deck size".to_string(),
         });
     }
 
@@ -169,8 +178,11 @@ pub fn import_deck_from_file<P: AsRef<Path>>(
                     section = DeckSection::TutorTargets;
                 }
                 _ => {
-                    // Unknown section — treat as mainboard
-                    section = DeckSection::Mainboard;
+                    return Err(DeckImportError::InvalidLine {
+                        line_number,
+                        line: raw_line.to_string(),
+                        message: format!("unknown section '{section_name}'"),
+                    });
                 }
             }
             continue;
@@ -204,11 +216,13 @@ pub fn import_deck_from_file<P: AsRef<Path>>(
 
 /// Load extra `CardDef`s saved by the Moxfield importer's `.cards.json` sidecar.
 ///
-/// Returns an empty vec if the file doesn't exist (all cards were in the sample DB)
-/// or if deserialization fails.
-pub fn load_extra_card_defs(json_path: &Path) -> Vec<CardDef> {
+/// An absent optional sidecar is empty; malformed present sidecars are errors.
+pub fn load_extra_card_defs(json_path: &Path) -> Result<Vec<CardDef>, DeckImportError> {
     match fs::read_to_string(json_path) {
-        Ok(data) => serde_json::from_str::<Vec<CardDef>>(&data).unwrap_or_default(),
-        Err(_) => Vec::new(),
+        Ok(data) => serde_json::from_str::<Vec<CardDef>>(&data).map_err(|e| DeckImportError::InvalidSidecar {
+            path: json_path.display().to_string(), message: e.to_string(),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(DeckImportError::Io(e)),
     }
 }

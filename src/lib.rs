@@ -3,6 +3,7 @@ pub mod card;
 pub mod combo;
 pub mod combo_discovery;
 pub mod deck_import;
+pub mod deck_loader;
 #[cfg(feature = "scryfall")]
 pub mod scryfall;
 #[cfg(feature = "scryfall")]

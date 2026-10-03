@@ -641,7 +641,7 @@ pub fn build_sample_db() -> CardDatabase {
         starting_loyalty: None,
         static_abilities: vec![],
         enters_tapped: false,
-        oracle_text: "When Siege-Gang Commander enters the battlefield, create three 1/1 red Goblin creature tokens.".into(),
+        oracle_text: "When this creature enters, create three 1/1 red Goblin creature tokens.\n{1}{R}, Sacrifice a Goblin: This creature deals 2 damage to any target.".into(),
         ..Default::default()
     });
 
@@ -4867,18 +4867,18 @@ pub fn build_sample_db() -> CardDatabase {
 
     // Roaming Throne {4}
     // Artifact Creature — Golem 4/4
-    // Changeling. As Roaming Throne enters the battlefield, choose a creature type.
-    // If a triggered ability of a creature you control with the chosen type triggers,
+    // Ward {2}. As Roaming Throne enters the battlefield, choose a creature type.
+    // If a triggered ability of another creature you control with the chosen type triggers,
     // it triggers an additional time.
     db.insert(CardDef {
         id: ids::ROAMING_THRONE,
         name: "Roaming Throne".into(),
         mana_cost: Some(ManaCost::new(4, 0, 0, 0, 0, 0)),
         card_types: vec![CardType::Artifact, CardType::Creature],
-        subtypes: vec![Subtype("Golem".into()), Subtype("Rat".into())],
+        subtypes: vec![Subtype("Golem".into())],
         power: Some(4),
         toughness: Some(4),
-        oracle_text: "Changeling. As Roaming Throne enters the battlefield, choose a creature type. If a triggered ability of a creature you control with the chosen type triggers, it triggers an additional time.".into(),
+        oracle_text: "Ward {2}. As Roaming Throne enters the battlefield, choose a creature type. Roaming Throne is the chosen type in addition to its other types. If a triggered ability of another creature you control of the chosen type triggers, it triggers an additional time.".into(),
         ..Default::default()
     });
 

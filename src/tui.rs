@@ -836,6 +836,7 @@ pub fn format_card_type(def: &CardDef) -> String {
         CardType::Enchantment => "Enchantment",
         CardType::Artifact => "Artifact",
         CardType::Land => "Land",
+        CardType::Kindred => "Kindred",
         CardType::Planeswalker => "Planeswalker",
     }).collect::<Vec<_>>().join(" ")
 }
@@ -1103,87 +1104,54 @@ fn get_arg(args: &[String], flag: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
-/// Resolve a preset name to (deck, optional commander, is_commander).
-fn resolve_preset(preset: &str) -> (Vec<crate::card::CardId>, Option<crate::card::CardId>, bool) {
-    match preset {
-        "red" => (sample::red_aggro_deck(), None, false),
-        "green" => (sample::green_stompy_deck(), None, false),
-        "brimaz" => {
-            let (d, c) = sample::brimaz_commander_deck();
-            (d, Some(c), true)
-        }
-        "ashcoat" => {
-            let (d, c) = sample::ashcoat_commander_deck();
-            (d, Some(c), true)
-        }
-        "flubs" => {
-            let (d, c) = sample::flubs_commander_deck();
-            (d, Some(c), true)
-        }
-        "thrun" => {
-            let (d, c) = sample::thrun_commander_deck();
-            (d, Some(c), true)
-        }
-        _ => {
-            let (d, c, _) = sample::kinnan_commander_deck();
-            (d, Some(c), true)
-        }
-    }
-}
-
-/// Build a GameState + CardDatabase from resolved deck components.
-fn build_game(deck: Vec<crate::card::CardId>, commander: Option<crate::card::CardId>, is_commander: bool, db: CardDatabase) -> (GameState, CardDatabase) {
-    let db_arc = Arc::new(db.clone());
-    let state = if is_commander {
-        let mut s = GameState::new_commander(2);
-        s.card_db = Some(db_arc);
-        let cmd = commander.unwrap();
-        rules::setup_commander_game(&mut s, &deck, &deck, cmd, cmd);
-        s
-    } else {
-        let mut s = GameState::new(2);
-        s.card_db = Some(db_arc);
-        rules::setup_game(&mut s, &deck, &deck);
-        s
-    };
+/// Build a GameState from one shared, validated Commander resolution.
+fn build_commander_game(resolved: crate::deck_loader::ResolvedDeck) -> (GameState, CardDatabase) {
+    let crate::deck_loader::ResolvedDeck { db, setup_cards, commander, .. } = resolved;
+    let mut state = GameState::new_commander(2);
+    state.card_db = Some(Arc::new(db.clone()));
+    rules::setup_commander_game(&mut state, &setup_cards, &setup_cards, commander, commander);
     (state, db)
 }
 
-/// Load a game from a preset name (used by the menu selection flow).
+/// Load a menu preset. The menu only exposes recognized built-in names.
 pub fn load_preset(preset: &str) -> (GameState, CardDatabase) {
-    let db = sample::build_sample_db();
-    let (deck, commander, is_commander) = resolve_preset(preset);
-    build_game(deck, commander, is_commander, db)
+    if preset == "red" || preset == "green" {
+        let db = sample::build_sample_db();
+        let deck = if preset == "red" { sample::red_aggro_deck() } else { sample::green_stompy_deck() };
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db.clone()));
+        rules::setup_game(&mut state, &deck, &deck);
+        return (state, db);
+    }
+    let resolved = crate::deck_loader::resolve_preset(preset)
+        .unwrap_or_else(|e| { eprintln!("Error loading preset: {e}"); std::process::exit(1) });
+    if !resolved.benchmark_ready() {
+        eprintln!("Goblin Storm TUI goldfish is blocked: {} uncertified requirements. Use goldfish --coverage for reasons.", resolved.readiness_reasons.len());
+        std::process::exit(2);
+    }
+    build_commander_game(resolved)
 }
 
 pub fn load_game(args: &[String]) -> (GameState, CardDatabase) {
-    let deck_path = get_arg(args, "--deck");
     let preset = get_arg(args, "--preset").unwrap_or_else(|| "kinnan".to_string());
+    if get_arg(args, "--deck").is_none() && (preset == "red" || preset == "green") { return load_preset(&preset); }
+    let resolved = resolve_deck_args(args)
+        .unwrap_or_else(|e| { eprintln!("Error loading deck: {e}"); std::process::exit(1) });
+    if !resolved.benchmark_ready() {
+        eprintln!("Goblin Storm TUI goldfish is blocked: {} uncertified requirements. Use goldfish --coverage for reasons.", resolved.readiness_reasons.len());
+        std::process::exit(2);
+    }
+    build_commander_game(resolved)
+}
 
-    let db = sample::build_sample_db();
-
-    let (deck, commander, is_commander) = if let Some(path) = deck_path {
-        let path = std::path::Path::new(&path);
-        match crate::deck_import::import_deck_from_file(path, &db) {
-            Ok(decklist) => {
-                let commander = if !decklist.commanders.is_empty() {
-                    Some(decklist.commanders[0].card_id)
-                } else {
-                    None
-                };
-                let deck = decklist.expand();
-                (deck, commander, commander.is_some())
-            }
-            Err(e) => {
-                eprintln!("Error loading deck: {}", e);
-                std::process::exit(1);
-            }
-        }
+/// Inspect the same resolved cards as the CLI without starting an uncertified game.
+pub fn resolve_deck_args(args: &[String]) -> Result<crate::deck_loader::ResolvedDeck, String> {
+    if let Some(path) = get_arg(args, "--deck") {
+        crate::deck_loader::resolve_file(std::path::Path::new(&path))
     } else {
-        resolve_preset(&preset)
-    };
-
-    build_game(deck, commander, is_commander, db)
+        let preset = get_arg(args, "--preset").unwrap_or_else(|| "kinnan".to_string());
+        crate::deck_loader::resolve_preset(&preset)
+    }
 }
 
 // ---------------------------------------------------------------------------

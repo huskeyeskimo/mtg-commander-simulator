@@ -618,6 +618,7 @@ fn format_card_type(def: &mtg_gto::card::CardDef) -> String {
         mtg_gto::card::CardType::Enchantment => "Enchantment",
         mtg_gto::card::CardType::Artifact => "Artifact",
         mtg_gto::card::CardType::Land => "Land",
+        mtg_gto::card::CardType::Kindred => "Kindred",
         mtg_gto::card::CardType::Planeswalker => "Planeswalker",
     }).collect();
     types.join(" ")
