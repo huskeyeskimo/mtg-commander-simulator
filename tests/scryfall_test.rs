@@ -573,3 +573,33 @@ fn import_chieftain_prefers_sample_definition() {
     assert_eq!(serde_json::to_value(result.db.get(id)).unwrap(),
                serde_json::to_value(sample.get(id)).unwrap());
 }
+
+#[test]
+fn import_zada_prefers_hand_authored_definition() {
+    use mtg_gto::card::{CardType, Effect, Subtype, Supertype, TriggerCondition};
+    let cache = std::env::temp_dir().join(format!("mtg-zada-import-{}", std::process::id()));
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("zada_hedron_grinder.json"), serde_json::json!({
+        "name": "Zada, Hedron Grinder", "mana_cost": "{3}{R}",
+        "type_line": "Legendary Creature — Goblin Ally", "power": "3", "toughness": "3",
+        "oracle_text": "Whenever you cast an instant or sorcery spell that targets only Zada, Hedron Grinder, copy that spell for each other creature you control that the spell could target. Each copy targets a different one of those creatures."
+    }).to_string()).unwrap();
+    let result = ScryfallFetcher::new(&cache).import_deck(
+        "~~Commanders~~\n1 Zada, Hedron Grinder\n~~Mainboard~~\n99 Mountain\n"
+    ).unwrap();
+    std::fs::remove_dir_all(cache).unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let id = mtg_gto::card::sample::ids::ZADA_HEDRON_GRINDER;
+    assert_eq!(result.commander_id, Some(id));
+    assert_eq!(result.db.find_by_name("Zada, Hedron Grinder"), Some(id));
+    let def = result.db.get(id).unwrap();
+    assert_eq!(def.mana_cost, Some(ManaCost::new(3, 0, 0, 0, 1, 0)));
+    assert_eq!(def.card_types, vec![CardType::Creature]);
+    assert_eq!(def.supertypes, vec![Supertype::Legendary]);
+    assert_eq!(def.subtypes, vec![Subtype("Goblin".into()), Subtype("Ally".into())]);
+    assert_eq!((def.power, def.toughness), (Some(3), Some(3)));
+    assert_eq!(def.triggered_abilities.len(), 1);
+    assert_eq!(def.triggered_abilities[0].trigger,
+        TriggerCondition::YouCastInstantOrSorceryTargetingOnlySelf);
+    assert_eq!(def.triggered_abilities[0].effect, Effect::CopyCastSpellForOtherCreatures);
+}

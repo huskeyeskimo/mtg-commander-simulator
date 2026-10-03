@@ -194,8 +194,8 @@ fn resolve_triggered_ability(
         .filter(|inst| state.battlefield.contains(&source_id)
             && inst.zone_change_count == context.source_generation)
         .map(|_| source_id);
-    super::effects::resolve_effect_with_last_known_source(
-        state, &context.effect, controller, targets, live_source, context.source_card_id,
+    super::effects::resolve_trigger_effect(
+        state, context, controller, targets, live_source, source_id,
     );
 }
 

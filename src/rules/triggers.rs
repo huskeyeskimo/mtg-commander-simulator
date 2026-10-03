@@ -258,18 +258,39 @@ pub(super) fn fire_spell_cast_triggers(state: &mut GameState, caster: PlayerInde
         let db = state.card_db();
         let mut found = Vec::new();
         let mut cast_spell = None;
+        let cast_entry = state.stack.iter().find(|entry| entry.id == spell_stack_id);
+        let cast_is_instant_or_sorcery = cast_entry.is_some_and(|entry| {
+            let StackSource::Spell(object_id) = entry.source else { return false; };
+            state.objects.get(&object_id)
+                .and_then(|inst| db.get(inst.card_def_id))
+                .is_some_and(|def| def.card_types.iter().any(|kind| {
+                    matches!(kind, crate::card::CardType::Instant | crate::card::CardType::Sorcery)
+                }))
+        });
 
         for &obj_id in &state.battlefield {
             let inst = &state.objects[&obj_id];
-            let controller = inst.controller;
             let def = match db.get(inst.card_def_id) {
                 Some(d) => d,
                 None => continue,
             };
 
             for (i, trigger) in def.triggered_abilities.iter().enumerate() {
+                let controller = if trigger.trigger == TriggerCondition::YouCastInstantOrSorceryTargetingOnlySelf {
+                    state.get_characteristics(obj_id).map(|chars| chars.controller)
+                        .unwrap_or(inst.controller)
+                } else {
+                    inst.controller
+                };
                 let matches = match trigger.trigger {
                     TriggerCondition::YouCastSpell => controller == caster,
+                    TriggerCondition::YouCastInstantOrSorceryTargetingOnlySelf => {
+                        controller == caster && cast_is_instant_or_sorcery
+                            && cast_entry.is_some_and(|entry| {
+                                matches!(entry.targets.as_slice(), [crate::game::Target::Object(id)] if *id == obj_id)
+                                    && entry.target_generations.as_slice() == [Some(inst.zone_change_count)]
+                            })
+                    }
                     TriggerCondition::YouCastCreatureSpell => {
                         controller == caster && is_creature
                     }
@@ -566,5 +587,45 @@ pub(super) fn apply_extort(state: &mut GameState, caster: PlayerIndex) {
             state.players[opp].life -= extort_count;
         }
         state.players[caster].life += extort_count * opponents.len() as i32;
+    }
+}
+
+#[cfg(test)]
+mod zada_cast_predicate_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::card::sample::{self, ids};
+    use crate::card::{CardDef, CardType, Effect, KeywordAbility, TargetSpec, ZoneType};
+    use crate::game::Target;
+
+    #[test]
+    fn wrong_source_generation_or_controller_does_not_trigger() {
+        const SPELL: u64 = 990_050;
+        let mut db = sample::build_sample_db();
+        db.insert(CardDef { id: SPELL, name: "Synthetic haste".into(),
+            card_types: vec![CardType::Instant],
+            spell_effect: Some(Effect::GainKeywordUntilEOT {
+                keyword: KeywordAbility::Haste, target: TargetSpec::AnyCreature,
+            }), ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        let zada = state.create_card_in_zone(ids::ZADA_HEDRON_GRINDER, 0, ZoneType::Battlefield);
+        let spell = state.create_card_in_zone(SPELL, 0, ZoneType::Hand);
+        let stack_id = state.new_stack_id();
+        let generation = state.objects[&zada].zone_change_count;
+        state.stack.push(StackEntry { id: stack_id, source: StackSource::Spell(spell),
+            controller: 0, targets: vec![Target::Object(zada)],
+            target_generations: vec![Some(generation + 1)] });
+        fire_spell_cast_triggers(&mut state, 0, false, stack_id);
+        assert_eq!(state.stack.len(), 1);
+        assert!(state.pending_triggers.is_empty());
+
+        state.stack[0].target_generations[0] = Some(generation);
+        state.objects.get_mut(&zada).unwrap().controller = 1;
+        state.invalidate_characteristics_cache();
+        fire_spell_cast_triggers(&mut state, 0, false, stack_id);
+        assert_eq!(state.stack.len(), 1);
+        assert!(state.pending_triggers.is_empty());
     }
 }

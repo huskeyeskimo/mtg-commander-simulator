@@ -181,6 +181,7 @@ pub(crate) fn effect_recipients(effect: &Effect) -> EffectRecipients<'_> {
         | AddManaOfAnyColor { amount: _ }
         | CreateTokenCopyOfSource
         | CreateTokenFromDef { card_def_id: _ }
+        | CopyCastSpellForOtherCreatures
         | Unimplemented(_) => Independent,
     }
 }

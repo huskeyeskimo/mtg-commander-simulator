@@ -481,6 +481,10 @@ pub enum Effect {
     /// real recursive resolver; absent from production card definitions.
     #[cfg(test)]
     TestCopyBatch { copies: usize },
+
+    /// Copy a captured cast spell for each other currently legal creature.
+    /// Requires a cast-trigger snapshot and must be terminal on resolution.
+    CopyCastSpellForOtherCreatures,
 }
 
 /// Conditions that can be checked at runtime for conditional effects.

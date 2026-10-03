@@ -1,6 +1,48 @@
 use crate::card::{CardId, Effect, KeywordAbility, ObjectId, TriggerCondition, ZoneType};
 use crate::events::GameEvent;
-use crate::game::{GameState, PlayerIndex, StackSource, Target};
+use crate::game::{CastSpellSnapshot, GameState, PlayerIndex, StackSource, Target, TriggerContext};
+
+#[derive(Clone, Copy)]
+struct CastEffectContext<'a> {
+    spell: &'a CastSpellSnapshot,
+    source_id: ObjectId,
+    source_generation: u32,
+}
+
+// A copy-order choice suspends resolution. Reject a malformed trigger tree
+// before any earlier or later child can change the game state.
+fn copy_instruction_is_nonterminal(effect: &Effect, terminal: bool) -> bool {
+    match effect {
+        Effect::CopyCastSpellForOtherCreatures => !terminal,
+        Effect::Multiple(children) => children.iter().enumerate().any(|(index, child)|
+            copy_instruction_is_nonterminal(child, terminal && index + 1 == children.len())),
+        Effect::Modal { choices, choose_count } => {
+            let count = choices.len().min(*choose_count as usize);
+            choices.iter().take(count).enumerate().any(|(index, child)|
+                copy_instruction_is_nonterminal(child, terminal && index + 1 == count))
+        }
+        Effect::Conditional { if_true, if_false, .. } =>
+            copy_instruction_is_nonterminal(if_true, terminal)
+                || if_false.as_deref().is_some_and(|child|
+                    copy_instruction_is_nonterminal(child, terminal)),
+        // Dynamic repetition cannot promise a sole final invocation.
+        Effect::ForEach { effect, .. } => contains_copy_instruction(effect),
+        _ => false,
+    }
+}
+
+fn contains_copy_instruction(effect: &Effect) -> bool {
+    match effect {
+        Effect::CopyCastSpellForOtherCreatures => true,
+        Effect::Multiple(children) => children.iter().any(contains_copy_instruction),
+        Effect::Modal { choices, .. } => choices.iter().any(contains_copy_instruction),
+        Effect::Conditional { if_true, if_false, .. } =>
+            contains_copy_instruction(if_true)
+                || if_false.as_deref().is_some_and(contains_copy_instruction),
+        Effect::ForEach { effect, .. } => contains_copy_instruction(effect),
+        _ => false,
+    }
+}
 
 /// Resolve an effect.
 /// `source_id` is the ObjectId of the permanent that generated this effect
@@ -14,21 +56,25 @@ pub(super) fn resolve_effect(
     source_id: Option<ObjectId>,
 ) {
     if state.pending_copy_order.is_some() { return; }
-    resolve_effect_inner(state, effect, controller, targets, source_id, None, true);
+    resolve_effect_inner(state, effect, controller, targets, source_id, None, None, true);
 }
 
-/// Use captured source data only when resolving a trigger whose original
-/// battlefield incarnation is no longer present.
-pub(super) fn resolve_effect_with_last_known_source(
+/// Resolve an owned trigger instruction with its historical cast context.
+pub(super) fn resolve_trigger_effect(
     state: &mut GameState,
-    effect: &Effect,
+    context: &TriggerContext,
     controller: PlayerIndex,
     targets: &[Target],
-    source_id: Option<ObjectId>,
-    last_known_source_card_id: CardId,
+    live_source_id: Option<ObjectId>,
+    original_source_id: ObjectId,
 ) {
     if state.pending_copy_order.is_some() { return; }
-    resolve_effect_inner(state, effect, controller, targets, source_id, Some(last_known_source_card_id), true);
+    if copy_instruction_is_nonterminal(&context.effect, true) { return; }
+    let cast_context = context.cast_spell.as_ref().map(|spell| CastEffectContext {
+        spell, source_id: original_source_id, source_generation: context.source_generation,
+    });
+    resolve_effect_inner(state, &context.effect, controller, targets, live_source_id,
+        Some(context.source_card_id), cast_context, true);
 }
 
 fn resolve_effect_inner(
@@ -38,6 +84,7 @@ fn resolve_effect_inner(
     targets: &[Target],
     source_id: Option<ObjectId>,
     last_known_source_card_id: Option<CardId>,
+    cast_context: Option<CastEffectContext<'_>>,
     terminal: bool,
 ) {
     let previous_terminal = state.effect_terminal_position.replace(terminal);
@@ -58,6 +105,34 @@ fn resolve_effect_inner(
     let targets = recipients.as_deref().unwrap_or(targets);
 
     match effect {
+        Effect::CopyCastSpellForOtherCreatures => {
+            if terminal {
+                if let Some(cast) = cast_context {
+                    let candidates: Vec<_> = state.battlefield.iter().copied()
+                        .filter(|&id| {
+                            let Some(chars) = state.get_characteristics(id) else { return false; };
+                            chars.controller == controller
+                                && chars.card_types.contains(&crate::card::CardType::Creature)
+                                && !(id == cast.source_id && state.objects.get(&id).is_some_and(
+                                    |inst| inst.zone_change_count == cast.source_generation))
+                                && crate::targeting::valid_spell_targets(state, controller,
+                                    &cast.spell.definition, &[Target::Object(id)])
+                        })
+                        .collect();
+                    let prepared: Result<Vec<_>, _> = candidates.into_iter().map(|id| {
+                        super::spell_copy::prepare_spell_copy(state, cast.spell, controller,
+                            super::spell_copy::CopyTargetPolicy::Replace(vec![Target::Object(id)]))
+                    }).collect();
+                    if let Ok(mut items) = prepared {
+                        // Copy-order indices follow public target characteristics;
+                        // identical creatures are equivalent ties, not ID ranks.
+                        items.sort_by_cached_key(|item| serde_json::to_string(&item.target_descriptions)
+                            .expect("copy target descriptions serialize"));
+                        let _ = super::spell_copy::begin_terminal_copy_batch(state, items, terminal);
+                    }
+                }
+            }
+        }
         #[cfg(test)]
         Effect::TestCopyBatch { copies } => {
             let id = source_id.expect("test spell has a physical source");
@@ -472,7 +547,7 @@ fn resolve_effect_inner(
 
         Effect::Multiple(effects) => {
             for (index, e) in effects.iter().enumerate() {
-                resolve_effect_inner(state, e, controller, targets, source_id, last_known_source_card_id,
+                resolve_effect_inner(state, e, controller, targets, source_id, last_known_source_card_id, cast_context,
                     terminal && index + 1 == effects.len());
             }
         }
@@ -821,7 +896,7 @@ fn resolve_effect_inner(
             // Simplified: for goldfish/AI, always choose the first N choices
             let selected_count = choices.len().min(*choose_count as usize);
             for (index, effect) in choices.iter().take(selected_count).enumerate() {
-                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id,
+                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id, cast_context,
                     terminal && index + 1 == selected_count);
             }
         }
@@ -829,9 +904,9 @@ fn resolve_effect_inner(
         Effect::Conditional { condition, if_true, if_false } => {
             let met = evaluate_condition(state, condition, controller);
             if met {
-                resolve_effect_inner(state, if_true, controller, targets, source_id, last_known_source_card_id, terminal);
+                resolve_effect_inner(state, if_true, controller, targets, source_id, last_known_source_card_id, cast_context, terminal);
             } else if let Some(else_effect) = if_false {
-                resolve_effect_inner(state, else_effect, controller, targets, source_id, last_known_source_card_id, terminal);
+                resolve_effect_inner(state, else_effect, controller, targets, source_id, last_known_source_card_id, cast_context, terminal);
             }
         }
 
@@ -847,7 +922,7 @@ fn resolve_effect_inner(
                 Some(&ctx),
             );
             for iteration in 0..n.max(0) {
-                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id,
+                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id, cast_context,
                     terminal && iteration + 1 == n.max(0));
             }
         }

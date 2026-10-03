@@ -561,7 +561,8 @@ fn copy_safe(effect: &Effect) -> bool {
     match effect {
         #[cfg(test)]
         TestCopyBatch { copies: _ } => false,
-        ExileFromHandLinked | ReturnLinkedExileToHand | CreateTokenCopyOfSource => false,
+        ExileFromHandLinked | ReturnLinkedExileToHand | CreateTokenCopyOfSource
+        | CopyCastSpellForOtherCreatures => false,
         DoublePowerUntilEOT { target: _ }
         | BuffOtherSubtype {
             subtype: _,

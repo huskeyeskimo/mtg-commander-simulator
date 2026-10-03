@@ -145,6 +145,8 @@ pub enum TriggerCondition {
     YouPlayALand,
     /// "Whenever you discard a card" (e.g., Monument to Endurance).
     YouDiscardACard,
+    /// Whenever you cast an instant or sorcery targeting only this source.
+    YouCastInstantOrSorceryTargetingOnlySelf,
 }
 
 /// What spells a cost reduction applies to.

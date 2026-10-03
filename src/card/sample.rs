@@ -2679,6 +2679,25 @@ pub fn build_sample_db() -> CardDatabase {
     });
 
     db.insert(CardDef {
+        id: ids::ZADA_HEDRON_GRINDER,
+        name: "Zada, Hedron Grinder".into(),
+        mana_cost: Some(ManaCost::new(3, 0, 0, 0, 1, 0)),
+        card_types: vec![CardType::Creature],
+        supertypes: vec![Supertype::Legendary],
+        subtypes: vec![Subtype("Goblin".into()), Subtype("Ally".into())],
+        power: Some(3),
+        toughness: Some(3),
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::YouCastInstantOrSorceryTargetingOnlySelf,
+            effect: Effect::CopyCastSpellForOtherCreatures,
+            description: "Whenever you cast an instant or sorcery spell that targets only Zada, Hedron Grinder, copy that spell for each other creature you control that the spell could target. Each copy targets a different one of those creatures.".into(),
+        }],
+        enters_tapped: false,
+        oracle_text: "Whenever you cast an instant or sorcery spell that targets only Zada, Hedron Grinder, copy that spell for each other creature you control that the spell could target. Each copy targets a different one of those creatures.".into(),
+        ..Default::default()
+    });
+
+    db.insert(CardDef {
         id: ids::KRENKO_MOB_BOSS,
         name: "Krenko, Mob Boss".into(),
         mana_cost: Some(ManaCost::new(2, 0, 0, 0, 2, 0)),

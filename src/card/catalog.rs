@@ -368,9 +368,15 @@ pub mod ids {
     pub const KRENKO_MOB_BOSS: u64 = 1153;
     pub const BRIGHTSTONE_RITUAL: u64 = 1154;
     pub const GOBLIN_CHIEFTAIN: u64 = 1155;
+    pub const ZADA_HEDRON_GRINDER: u64 = 1156;
 }
 
 pub const ALL_CARDS: &[CardCatalogEntry] = &[
+    CardCatalogEntry {
+        id: ids::ZADA_HEDRON_GRINDER,
+        key: "ZADA_HEDRON_GRINDER",
+        name: "Zada, Hedron Grinder",
+    },
     CardCatalogEntry {
         id: ids::GOBLIN_CHIEFTAIN,
         key: "GOBLIN_CHIEFTAIN",
