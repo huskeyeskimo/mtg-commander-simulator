@@ -19,11 +19,20 @@ use crate::mana::Color;
 
 // Public API re-exports
 pub use mana::{total_cost_reduction, apply_cost_reduction, auto_tap_lands, spell_cost_reduction, total_cost_increase};
+pub(crate) use mana::can_pay_cost;
 pub use spell_copy::{begin_terminal_copy_batch, copy_spell_snapshot, copy_stack_spell, prepare_spell_copy, snapshot_stack_spell, CopyBatchOutcome, CopyError, CopyTargetPolicy};
 pub use sba::check_state_based_actions;
 pub use triggers::fire_triggers;
 pub use setup::{setup_game, setup_game_seeded, setup_commander_game, setup_commander_game_seeded, setup_commander_game_with_partners, set_tutor_targets, reshuffle_opening_hand, validate_commander_deck, validate_commander_deck_with_partner};
 pub(crate) use tokens::create_token_from_combo;
+
+/// Required cleanup discards own the next action until the active hand is legal.
+fn cleanup_discard_required(state: &GameState) -> bool {
+    state.cleanup_discard_in_progress
+        || (state.phase == Phase::Cleanup
+            && !state.cleanup_needs_repeat
+            && state.players[state.active_player].hand.len() > 7)
+}
 
 /// Apply an action to the game state, advancing it.
 pub fn apply_action(state: &mut GameState, action: &Action) {
@@ -34,6 +43,17 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
         return;
     }
     if matches!(action, Action::ChooseNextCopy { .. }) { return; }
+    if cleanup_discard_required(state) {
+        let Action::Discard { object_id } = action else { return; };
+        if state.phase != Phase::Cleanup
+            || state.cleanup_needs_repeat
+            || state.priority_player != state.active_player
+            || state.players[state.active_player].hand.len() <= 7
+            || !state.players[state.active_player].hand.contains(object_id)
+        {
+            return;
+        }
+    }
     // Validate supplied targets before costs, zone changes, or cast events.
     let cast = match action {
         Action::CastSpell { object_id, targets } => Some((*object_id, targets, ZoneType::Hand)),
@@ -63,6 +83,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             }
 
             if state.phase == Phase::Cleanup
+                && !state.cleanup_needs_repeat
                 && state.players[state.active_player].hand.len() > 7
             {
                 debug_assert!(
@@ -79,6 +100,9 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             if state.phase != Phase::Cleanup {
                 return;
             }
+            if state.cleanup_needs_repeat {
+                return;
+            }
             if state.priority_player != state.active_player {
                 return;
             }
@@ -90,15 +114,17 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 return;
             }
 
+            state.cleanup_discard_in_progress = true;
+
             state.move_object(*object_id, ZoneType::Hand, ZoneType::Graveyard);
             state.consecutive_passes = 0;
             state.priority_player = player;
 
             // Fire discard triggers (e.g., Monument to Endurance)
             triggers::check_triggers(state, TriggerCondition::YouDiscardACard, None);
-            let _ = triggers::flush_triggers(state);
 
             if state.players[player].hand.len() <= 7 {
+                state.cleanup_discard_in_progress = false;
                 phases::finalize_cleanup(state);
             }
         }
@@ -115,12 +141,12 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             }
             state.refresh_continuous_effects();
             // Fire ETB triggers on the land itself (e.g., Mystic Sanctuary)
-            let _ = triggers::fire_triggers(state, TriggerCondition::EntersBattlefield, Some(obj_id));
+            triggers::check_triggers(state, TriggerCondition::EntersBattlefield, Some(obj_id));
             // Fire landfall triggers on all permanents
             triggers::check_triggers(state, TriggerCondition::ALandYouControlEnters, None);
             // Fire "whenever you play a land" triggers
             triggers::check_triggers(state, TriggerCondition::YouPlayALand, None);
-            let _ = triggers::flush_triggers(state);
+            sba::check_state_based_actions(state);
             state.consecutive_passes = 0;
         }
 
@@ -135,12 +161,12 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             }
             state.refresh_continuous_effects();
             // Fire ETB triggers on the land itself
-            let _ = triggers::fire_triggers(state, TriggerCondition::EntersBattlefield, Some(obj_id));
+            triggers::check_triggers(state, TriggerCondition::EntersBattlefield, Some(obj_id));
             // Fire landfall triggers on all permanents
             triggers::check_triggers(state, TriggerCondition::ALandYouControlEnters, None);
             // Fire "whenever you play a land" triggers
             triggers::check_triggers(state, TriggerCondition::YouPlayALand, None);
-            let _ = triggers::flush_triggers(state);
+            sba::check_state_based_actions(state);
             state.consecutive_passes = 0;
         }
 
@@ -163,9 +189,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 let mut reduced_cost = mana::apply_cost_reduction(cost, reduction + spell_reduction);
                 reduced_cost.generic += tax;
                 // First, auto-tap lands to generate mana if pool is insufficient
-                mana::auto_tap_lands(state, player, &reduced_cost);
-                // Then pay from pool — if payment fails, abort the cast
-                if !state.players[player].mana_pool.pay(&reduced_cost) {
+                if !mana::pay_cost(state, player, &reduced_cost, None) {
                     return;
                 }
             }
@@ -299,10 +323,8 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                     return;
                 }
                 // Pay mana cost
-                mana::auto_tap_lands_excluding(
-                    state, player, &ability.cost, ability.requires_tap.then_some(obj_id),
-                );
-                if !state.players[player].mana_pool.pay(&ability.cost) {
+                if !mana::pay_cost(state, player, &ability.cost,
+                    ability.requires_tap.then_some(obj_id)) {
                     return;
                 }
 
@@ -427,6 +449,9 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
         }
 
         Action::OrderTriggers { ordering } => {
+            if state.cleanup_discard_in_progress || state.trigger_placement_deferred {
+                return;
+            }
             let player = state.priority_player;
 
             // Place this player's triggers on the stack in the chosen order.
@@ -476,8 +501,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 let mut taxed_cost = cost.clone();
                 taxed_cost.generic += tax * 2;
                 let final_cost = mana::apply_cost_reduction(&taxed_cost, reduction);
-                mana::auto_tap_lands(state, player, &final_cost);
-                if !state.players[player].mana_pool.pay(&final_cost) {
+                if !mana::pay_cost(state, player, &final_cost, None) {
                     return;
                 }
             }
@@ -531,8 +555,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 def.equip_cost.clone()
             };
             if let Some(cost) = equip_cost {
-                mana::auto_tap_lands(state, player, &cost);
-                if !state.players[player].mana_pool.pay(&cost) {
+                if !mana::pay_cost(state, player, &cost, None) {
                     return;
                 }
             }
@@ -619,8 +642,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 if let Some(ref fb_cost) = def.flashback_cost {
                     let reduction = mana::total_cost_reduction(state, player, is_creature);
                     let reduced_cost = mana::apply_cost_reduction(fb_cost, reduction);
-                    mana::auto_tap_lands(state, player, &reduced_cost);
-                    if !state.players[player].mana_pool.pay(&reduced_cost) {
+                    if !mana::pay_cost(state, player, &reduced_cost, None) {
                         return;
                     }
                 }
@@ -629,8 +651,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 if let Some(ref cost) = def.mana_cost {
                     let reduction = mana::total_cost_reduction(state, player, is_creature);
                     let reduced_cost = mana::apply_cost_reduction(cost, reduction);
-                    mana::auto_tap_lands(state, player, &reduced_cost);
-                    if !state.players[player].mana_pool.pay(&reduced_cost) {
+                    if !mana::pay_cost(state, player, &reduced_cost, None) {
                         return;
                     }
                 }
@@ -900,6 +921,7 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
 pub(super) fn complete_stack_resolution(state: &mut GameState) {
     state.trigger_order_resume = Some(TriggerOrderResume::AfterResolution);
     sba::check_state_based_actions(state);
+    state.trigger_placement_deferred = false;
     if !state.pending_triggers.is_empty() && !triggers::flush_triggers(state) {
         return;
     }
@@ -923,11 +945,26 @@ fn discard_random(state: &mut GameState, player: PlayerIndex, count: usize) {
             break;
         }
         let idx = rng.gen_range(0..state.players[player].hand.len());
-        let obj_id = state.players[player].hand.remove(idx);
-        state.players[player].graveyard.push(obj_id);
-        // Fire discard triggers (e.g., Monument to Endurance)
-        triggers::check_triggers(state, TriggerCondition::YouDiscardACard, None);
-        let _ = triggers::flush_triggers(state);
+        let obj_id = state.players[player].hand[idx];
+        apply_action(state, &Action::Discard { object_id: obj_id });
+    }
+}
+
+/// Advance an automated player's mandatory trigger placement using the same
+/// APNAP and ordering actions as normal play. Returns false if the state has
+/// no legal ordering action and must be handed back to the caller.
+fn auto_place_pending_triggers(state: &mut GameState) -> bool {
+    if triggers::flush_triggers(state) {
+        return true;
+    }
+    let order = crate::action::legal_actions(state)
+        .into_iter()
+        .find(|action| matches!(action, Action::OrderTriggers { .. }));
+    if let Some(order) = order {
+        apply_action(state, &order);
+        true
+    } else {
+        false
     }
 }
 
@@ -957,12 +994,23 @@ fn fast_forward_end_of_turn(state: &mut GameState) {
         // this shortcut so the normal action loop can present it.
         if state.pending_copy_order.is_some() { break; }
 
-        // Auto-order pending triggers (push in existing order)
-        if !state.pending_triggers.is_empty() {
-            let pending: Vec<_> = state.pending_triggers.drain(..).collect();
-            for trigger in pending {
-                triggers::push_trigger_to_stack(state, &trigger);
+        // Finish the current cleanup discard sequence before its queued
+        // triggers can enter a placement window.
+        if state.phase == Phase::Cleanup && !state.cleanup_needs_repeat {
+            let before = state.players[turn_player].hand.len();
+            if before > 7 {
+                discard_random(state, turn_player, before - 7);
+                if state.players[turn_player].hand.len() == before { break; }
+                continue;
             }
+        }
+
+        // EndTurn stops for a mandatory order choice by the player.
+        if !state.pending_triggers.is_empty() {
+            if !triggers::flush_triggers(state) {
+                break;
+            }
+            continue;
         }
 
         // Auto fail-to-find any pending tutor
@@ -991,12 +1039,12 @@ fn fast_forward_end_of_turn(state: &mut GameState) {
                 phases::advance_phase(state);
             }
             Phase::Cleanup => {
-                let hand_size = state.players[turn_player].hand.len();
-                if hand_size > 7 {
-                    let to_discard = hand_size - 7;
-                    discard_random(state, turn_player, to_discard);
+                if state.cleanup_needs_repeat {
+                    state.consecutive_passes = state.players.len() as u32;
+                    phases::handle_priority_pass(state);
+                } else {
+                    phases::finalize_cleanup(state);
                 }
-                phases::finalize_cleanup(state);
             }
             _ => {
                 // Normal phase — pass priority to advance
@@ -1052,13 +1100,28 @@ fn fast_forward_goldfish_turn_inner(state: &mut GameState, pause_for: Option<Pla
             continue;
         }
 
-        // Handle pending triggers that need ordering — auto-order them
-        if !state.pending_triggers.is_empty() {
-            // For each player's pending triggers, auto-push in existing order
-            let triggers: Vec<_> = state.pending_triggers.drain(..).collect();
-            for trigger in triggers {
-                triggers::push_trigger_to_stack(state, &trigger);
+        // Pending cleanup-discard triggers are detected but cannot be placed
+        // until every required discard in this step has happened.
+        if state.phase == Phase::Cleanup && !state.cleanup_needs_repeat {
+            let before = state.players[goldfish_player].hand.len();
+            if before > 7 {
+                discard_random(state, goldfish_player, before - 7);
+                if state.players[goldfish_player].hand.len() == before { break; }
+                actions += 1;
+                continue;
             }
+        }
+
+        // Use the ordinary mandatory ordering path, including APNAP.
+        if !state.pending_triggers.is_empty() {
+            if !triggers::flush_triggers(state) && pause_for == Some(state.priority_player) {
+                break;
+            }
+            if !auto_place_pending_triggers(state) {
+                break;
+            }
+            actions += 1;
+            continue;
         }
 
         // Handle pending tutor — auto fail-to-find (goldfish doesn't search)
@@ -1093,13 +1156,12 @@ fn fast_forward_goldfish_turn_inner(state: &mut GameState, pause_for: Option<Pla
                 actions += 1;
             }
             Phase::Cleanup => {
-                // If goldfish needs to discard, do it randomly
-                let hand_size = state.players[goldfish_player].hand.len();
-                if hand_size > 7 {
-                    let to_discard = hand_size - 7;
-                    discard_random(state, goldfish_player, to_discard);
+                if state.cleanup_needs_repeat {
+                    state.consecutive_passes = state.players.len() as u32;
+                    phases::handle_priority_pass(state);
+                } else {
+                    phases::finalize_cleanup(state);
                 }
-                phases::finalize_cleanup(state);
                 actions += 1;
             }
             _ => {

@@ -117,7 +117,7 @@ pub(super) fn check_your_creature_dies_triggers(
 
 /// Flush pending triggers onto the stack in APNAP order
 /// (Active Player first, then clockwise through all non-active players).
-/// When a player controls multiple simultaneous triggers, they must choose
+/// When a player controls multiple triggers in one placement window, they choose
 /// the ordering — this is surfaced as an `Action::OrderTriggers` decision
 /// point for MCCFR to observe.
 ///
@@ -127,7 +127,12 @@ pub(super) fn check_your_creature_dies_triggers(
 /// `false` if paused waiting for a player's ordering decision.
 #[must_use]
 pub(super) fn flush_triggers(state: &mut GameState) -> bool {
-    if state.pending_copy_order.is_some() { return false; }
+    if state.pending_copy_order.is_some()
+        || state.trigger_placement_deferred
+        || state.cleanup_discard_in_progress
+    {
+        return false;
+    }
     if state.pending_triggers.is_empty() {
         return true;
     }

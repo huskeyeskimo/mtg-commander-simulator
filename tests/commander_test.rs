@@ -480,7 +480,7 @@ fn test_commander_simulation_produces_results() {
 
     assert_eq!(results.total_games, 10);
     assert!(
-        results.player0_wins + results.player1_wins + results.draws == 10,
+        results.player0_wins + results.player1_wins + results.draws + results.censored == 10,
         "All games should be accounted for"
     );
 }

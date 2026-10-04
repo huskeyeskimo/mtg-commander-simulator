@@ -23,6 +23,176 @@ fn queue_test_trigger(state: &mut GameState, source_id: u64, ability_index: usiz
 }
 
 #[test]
+fn test_2a_mana_choice_restrictions_and_failed_cast_are_atomic() {
+    use mtg_gto::card::{CardDef, CardType, ManaAbility};
+    use mtg_gto::game::CardDatabase;
+    use mtg_gto::mana::{Color, ManaCost};
+    let mut db = CardDatabase::new();
+    db.insert(CardDef { id: 990801, name: "Blue source".into(),
+        card_types: vec![CardType::Land],
+        mana_abilities: vec![ManaAbility::TapForChoice(vec![Color::Blue])],
+        ..Default::default() });
+    db.insert(CardDef { id: 990802, name: "Blue black spell".into(),
+        card_types: vec![CardType::Sorcery],
+        mana_cost: Some(ManaCost::new(0, 0, 1, 1, 0, 0)),
+        ..Default::default() });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::PreCombatMain;
+    let source = state.create_card_in_zone(990801, 0, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(990802, 0, ZoneType::Hand);
+    let cast = Action::CastSpell { object_id: spell, targets: vec![] };
+    assert!(!legal_actions(&state).contains(&cast), "choice source cannot produce black");
+    let before = bincode::serialize(&state).unwrap();
+    rules::apply_action(&mut state, &cast);
+    assert!(bincode::serialize(&state).unwrap() == before,
+        "failed direct cast must not change serialized game state");
+    assert!(!state.objects[&source].tapped);
+    assert!(state.drain_events().is_empty());
+}
+
+#[test]
+fn test_2a_mana_advertised_casts_pay_across_source_matrix() {
+    use mtg_gto::card::{CardDef, CardType, ManaAbility};
+    use mtg_gto::game::CardDatabase;
+    use mtg_gto::mana::{Color, ManaCost, ManaPool};
+    let cases = [
+        ("restricted choice", vec![ManaAbility::TapForChoice(vec![Color::Blue])],
+            ManaCost::new(0, 0, 0, 1, 0, 0), false, false, 0),
+        ("any plus black", vec![ManaAbility::TapForAny, ManaAbility::TapForColor(Color::Black)],
+            ManaCost::new(0, 0, 1, 1, 0, 0), true, false, 0),
+        ("colorless generic", vec![ManaAbility::TapForColorlessAmount(2)],
+            ManaCost::new(2, 0, 0, 0, 0, 0), true, false, 0),
+        ("colorless cannot pay blue", vec![ManaAbility::TapForColorlessAmount(2)],
+            ManaCost::new(0, 0, 1, 0, 0, 0), false, false, 0),
+        ("tapped source", vec![ManaAbility::TapForColor(Color::Black)],
+            ManaCost::new(0, 0, 0, 1, 0, 0), false, true, 0),
+        ("floating plus choice", vec![ManaAbility::TapForChoice(vec![Color::Blue])],
+            ManaCost::new(0, 0, 1, 1, 0, 0), true, false, 1),
+    ];
+    for (label, abilities, cost, expected, tapped, floating_black) in cases {
+        let mut db = CardDatabase::new();
+        let source_count = abilities.len();
+        for (index, ability) in abilities.into_iter().enumerate() {
+            db.insert(CardDef { id: 991000 + index as u64, name: format!("Source {index}"),
+                card_types: vec![CardType::Land], mana_abilities: vec![ability],
+                ..Default::default() });
+        }
+        db.insert(CardDef { id: 991100, name: "Spell".into(),
+            card_types: vec![CardType::Sorcery], mana_cost: Some(cost),
+            ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::PreCombatMain;
+        state.players[0].mana_pool = ManaPool { black: floating_black, ..ManaPool::empty() };
+        let source_ids: Vec<_> = (0..source_count)
+            .map(|index| state.create_card_in_zone(991000 + index as u64, 0, ZoneType::Battlefield))
+            .collect();
+        if tapped { state.objects.get_mut(&source_ids[0]).unwrap().tapped = true; }
+        let spell = state.create_card_in_zone(991100, 0, ZoneType::Hand);
+        let cast = Action::CastSpell { object_id: spell, targets: vec![] };
+        assert_eq!(legal_actions(&state).contains(&cast), expected, "{label}: advertised");
+        let before = bincode::serialize(&state).unwrap();
+        rules::apply_action(&mut state, &cast);
+        if expected {
+            assert!(state.stack.iter().any(|entry| matches!(entry.source,
+                mtg_gto::game::StackSource::Spell(id) if id == spell)), "{label}: paid cast");
+        } else {
+            assert!(bincode::serialize(&state).unwrap() == before, "{label}: failed cast mutated");
+        }
+    }
+}
+
+#[test]
+fn test_2a_failed_activation_keeps_taps_life_sacrifice_and_stack_unchanged() {
+    use mtg_gto::card::{ActivatedAbility, CardDef, CardType, Effect, ManaAbility, SacrificeCost};
+    use mtg_gto::game::CardDatabase;
+    use mtg_gto::mana::{Color, ManaCost};
+    let mut db = CardDatabase::new();
+    db.insert(CardDef { id: 991201, name: "Blue land".into(),
+        card_types: vec![CardType::Land],
+        mana_abilities: vec![ManaAbility::TapForChoice(vec![Color::Blue])],
+        ..Default::default() });
+    db.insert(CardDef { id: 991202, name: "Activation".into(),
+        card_types: vec![CardType::Artifact],
+        mana_abilities: vec![ManaAbility::TapForAny],
+        activated_abilities: vec![ActivatedAbility {
+            cost: ManaCost::new(0, 0, 0, 1, 0, 0), requires_tap: true,
+            sacrifice_cost: Some(SacrificeCost::SelfSacrifice), life_cost: 1,
+            effect: Effect::GainLife { amount: 1 }, description: "Test".into(),
+        }], ..Default::default() });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::PreCombatMain;
+    let land = state.create_card_in_zone(991201, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(991202, 0, ZoneType::Battlefield);
+    let action = Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] };
+    assert!(!legal_actions(&state).contains(&action));
+    let before = bincode::serialize(&state).unwrap();
+    rules::apply_action(&mut state, &action);
+    assert!(bincode::serialize(&state).unwrap() == before);
+    assert!(!state.objects[&land].tapped && !state.objects[&source].tapped);
+    assert!(state.stack.is_empty());
+    assert!(state.drain_events().is_empty());
+}
+
+#[test]
+fn test_2a_mana_alternative_legendary_and_swamp_bonus_sources() {
+    use mtg_gto::card::{CardDef, CardType, ManaAbility, Subtype, Supertype};
+    use mtg_gto::game::CardDatabase;
+    use mtg_gto::layers::StaticAbility;
+    use mtg_gto::mana::{Color, ManaCost};
+    let mut db = CardDatabase::new();
+    db.insert(CardDef { id: 991301, name: "Alternative land".into(),
+        card_types: vec![CardType::Land],
+        mana_abilities: vec![ManaAbility::TapForColor(Color::Blue),
+            ManaAbility::TapForColor(Color::Black)], ..Default::default() });
+    db.insert(CardDef { id: 991302, name: "Mox".into(),
+        card_types: vec![CardType::Artifact],
+        mana_abilities: vec![ManaAbility::TapForLegendaryColors], ..Default::default() });
+    db.insert(CardDef { id: 991303, name: "Legend".into(),
+        card_types: vec![CardType::Creature], supertypes: vec![Supertype::Legendary],
+        mana_cost: Some(ManaCost::new(0, 0, 0, 1, 0, 0)),
+        power: Some(1), toughness: Some(1), ..Default::default() });
+    db.insert(CardDef { id: 991304, name: "Swamp".into(),
+        card_types: vec![CardType::Land], subtypes: vec![Subtype("Swamp".into())],
+        mana_abilities: vec![ManaAbility::TapForColor(Color::Black)], ..Default::default() });
+    db.insert(CardDef { id: 991305, name: "Swamp amplifier".into(),
+        card_types: vec![CardType::Enchantment],
+        static_abilities: vec![StaticAbility::ManaFromSwampBonus], ..Default::default() });
+    db.insert(CardDef { id: 991306, name: "Black spell".into(),
+        card_types: vec![CardType::Sorcery],
+        mana_cost: Some(ManaCost::new(0, 0, 0, 1, 0, 0)), ..Default::default() });
+    db.insert(CardDef { id: 991307, name: "Double black spell".into(),
+        card_types: vec![CardType::Sorcery],
+        mana_cost: Some(ManaCost::new(0, 0, 0, 2, 0, 0)), ..Default::default() });
+    let db = Arc::new(db);
+    for (source_card, support, spell_card) in [
+        (991301, None, 991306),
+        (991302, Some(991303), 991306),
+        (991304, Some(991305), 991307),
+    ] {
+        let mut state = GameState::new(2);
+        state.card_db = Some(db.clone());
+        state.phase = Phase::PreCombatMain;
+        state.create_card_in_zone(source_card, 0, ZoneType::Battlefield);
+        if let Some(support) = support { state.create_card_in_zone(support, 0, ZoneType::Battlefield); }
+        let spell = state.create_card_in_zone(spell_card, 0, ZoneType::Hand);
+        let cast = Action::CastSpell { object_id: spell, targets: vec![] };
+        assert!(legal_actions(&state).contains(&cast), "source {source_card} should pay");
+        rules::apply_action(&mut state, &cast);
+        assert!(state.stack.iter().any(|entry| matches!(entry.source,
+            mtg_gto::game::StackSource::Spell(id) if id == spell)));
+    }
+    let mut no_legend = GameState::new(2);
+    no_legend.card_db = Some(db);
+    no_legend.phase = Phase::PreCombatMain;
+    no_legend.create_card_in_zone(991302, 0, ZoneType::Battlefield);
+    let spell = no_legend.create_card_in_zone(991306, 0, ZoneType::Hand);
+    assert!(!legal_actions(&no_legend).contains(&Action::CastSpell { object_id: spell, targets: vec![] }));
+}
+
+#[test]
 fn test_sample_db_builds() {
     let db = sample::build_sample_db();
     assert!(db.get(sample::ids::MOUNTAIN).is_some());
@@ -130,7 +300,7 @@ fn test_simulation_produces_results() {
 
     assert_eq!(results.total_games, 100);
     assert_eq!(
-        results.player0_wins + results.player1_wins + results.draws,
+        results.player0_wins + results.player1_wins + results.draws + results.censored,
         100
     );
     assert!(results.avg_turns > 0.0);
@@ -489,6 +659,774 @@ fn test_cleanup_multiple_discards() {
     assert_eq!(state.players[0].hand.len(), 7);
     assert_eq!(state.turn_number, 2);
     assert_eq!(state.phase, mtg_gto::game::Phase::Upkeep);
+}
+
+#[test]
+fn test_2a_cleanup_discard_triggers_before_next_turn() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+
+    let mut db = CardDatabase::new();
+    db.insert(CardDef {
+        id: 90_001,
+        name: "Cleanup observer".into(),
+        card_types: vec![CardType::Enchantment],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::YouDiscardACard,
+            effect: Effect::GainLife { amount: 1 },
+            description: "Observe discard".into(),
+        }],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 90_002,
+        name: "Filler".into(),
+        card_types: vec![CardType::Land],
+        ..Default::default()
+    });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::Cleanup;
+    let observer = state.create_card_in_zone(90_001, 0, ZoneType::Battlefield);
+    for _ in 0..8 {
+        state.create_card_in_zone(90_002, 0, ZoneType::Hand);
+    }
+    let card = state.players[0].hand[0];
+    rules::apply_action(&mut state, &Action::Discard { object_id: card });
+    assert_eq!(
+        (state.active_player, state.turn_number, state.phase),
+        (0, 1, Phase::Cleanup)
+    );
+    assert!(state.pending_triggers.is_empty());
+    assert_eq!(state.stack.len(), 1);
+    assert!(matches!(state.stack[0].source,
+        mtg_gto::game::StackSource::TriggeredAbility { source_id, .. } if source_id == observer));
+    assert_eq!(state.priority_player, 0);
+
+    for _ in 0..2 {
+        rules::apply_action(&mut state, &Action::PassPriority);
+    }
+    assert_eq!(
+        (state.active_player, state.turn_number, state.phase),
+        (0, 1, Phase::Cleanup)
+    );
+    assert_eq!(state.players[0].life, 21);
+    for _ in 0..2 {
+        rules::apply_action(&mut state, &Action::PassPriority);
+    }
+    assert_eq!(state.active_player, 1);
+    assert_eq!(state.turn_number, 2);
+}
+
+#[test]
+fn test_2a_cleanup_multiple_discards_order_and_restore() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    use mtg_gto::info_set::InformationSet;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef {
+        id: 90_011,
+        name: "Observer".into(),
+        card_types: vec![CardType::Enchantment],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::YouDiscardACard,
+            effect: Effect::GainLife { amount: 1 },
+            description: "Observe".into(),
+        }],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 90_012,
+        name: "Filler".into(),
+        card_types: vec![CardType::Land],
+        ..Default::default()
+    });
+    let db = Arc::new(db);
+    let mut state = GameState::new(2);
+    state.card_db = Some(db.clone());
+    state.phase = Phase::Cleanup;
+    for _ in 0..2 {
+        state.create_card_in_zone(90_011, 0, ZoneType::Battlefield);
+    }
+    for _ in 0..9 {
+        state.create_card_in_zone(90_012, 0, ZoneType::Hand);
+    }
+    let first = state.players[0].hand[0];
+    rules::apply_action(&mut state, &Action::Discard { object_id: first });
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert!(state.stack.is_empty());
+    assert!(legal_actions(&state)
+        .iter()
+        .all(|a| matches!(a, Action::Discard { .. })));
+    let second = state.players[0].hand[0];
+    rules::apply_action(&mut state, &Action::Discard { object_id: second });
+    assert_eq!(state.pending_triggers.len(), 4);
+    assert!(state.stack.is_empty());
+    assert_eq!(
+        (state.active_player, state.turn_number, state.phase),
+        (0, 1, Phase::Cleanup)
+    );
+    assert!(state.cleanup_needs_repeat);
+    assert!(legal_actions(&state)
+        .iter()
+        .all(|a| matches!(a, Action::OrderTriggers { .. } | Action::Concede)));
+
+    let mut no_continuation = state.clone();
+    no_continuation.cleanup_needs_repeat = false;
+    assert_ne!(
+        InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value(),
+        InformationSet::from_view(&no_continuation.visible_state(0), no_continuation.card_db())
+            .hash_value()
+    );
+
+    let snapshot = state.snapshot();
+    let json = serde_json::to_vec(&state).unwrap();
+    let bin = bincode::serialize(&state).unwrap();
+    let mut restored = state.clone();
+    restored.restore(snapshot);
+    let mut variants = [
+        restored,
+        serde_json::from_slice::<GameState>(&json).unwrap(),
+        bincode::deserialize::<GameState>(&bin).unwrap(),
+    ];
+    for variant in &mut variants {
+        variant.card_db = Some(db.clone());
+        assert!(variant.cleanup_needs_repeat);
+        assert_eq!(variant.pending_triggers.len(), 4);
+        assert_eq!(
+            InformationSet::from_view(&variant.visible_state(0), variant.card_db()).hash_value(),
+            InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value()
+        );
+        let order = legal_actions(variant)
+            .into_iter()
+            .find(|a| matches!(a, Action::OrderTriggers { .. }))
+            .unwrap();
+        rules::apply_action(variant, &order);
+        assert!(variant.pending_triggers.is_empty());
+        assert_eq!(variant.stack.len(), 4);
+        assert_eq!((variant.active_player, variant.phase), (0, Phase::Cleanup));
+        for _ in 0..4 {
+            rules::apply_action(variant, &Action::PassPriority);
+            rules::apply_action(variant, &Action::PassPriority);
+        }
+        assert_eq!(variant.players[0].life, 24);
+        assert_eq!(
+            (variant.active_player, variant.turn_number, variant.phase),
+            (0, 1, Phase::Cleanup)
+        );
+        rules::apply_action(variant, &Action::PassPriority);
+        rules::apply_action(variant, &Action::PassPriority);
+        assert_eq!((variant.active_player, variant.turn_number), (1, 2));
+    }
+}
+
+#[test]
+fn test_2a_cleanup_auto_paths_settle_discard_trigger() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef {
+        id: 90_021,
+        name: "Observer".into(),
+        card_types: vec![CardType::Enchantment],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::YouDiscardACard,
+            effect: Effect::GainLife { amount: 1 },
+            description: "Observe".into(),
+        }],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 90_022,
+        name: "Filler".into(),
+        card_types: vec![CardType::Land],
+        ..Default::default()
+    });
+    let db = Arc::new(db);
+    for automated in [false, true] {
+        let mut state = GameState::new(2);
+        state.card_db = Some(db.clone());
+        let active = usize::from(automated);
+        state.active_player = active;
+        state.priority_player = active;
+        state.phase = if automated {
+            Phase::Cleanup
+        } else {
+            Phase::EndStep
+        };
+        state.create_card_in_zone(90_021, active, ZoneType::Battlefield);
+        for _ in 0..if automated { 9 } else { 8 } {
+            state.create_card_in_zone(90_022, active, ZoneType::Hand);
+        }
+        if automated {
+            rules::fast_forward_goldfish_turn(&mut state);
+        } else {
+            rules::apply_action(&mut state, &Action::EndTurn);
+        }
+        assert_eq!(state.turn_number, 2);
+        assert_eq!(state.active_player, 1 - active);
+        assert_eq!(state.players[active].life, if automated { 22 } else { 21 });
+        assert_eq!(state.players[active].graveyard.len(), if automated { 2 } else { 1 });
+        assert!(state.pending_triggers.is_empty());
+        assert!(state.stack.is_empty());
+        assert!(!state.cleanup_needs_repeat);
+    }
+
+    // EndTurn and the TUI goldfish shortcut must expose a human order choice.
+    for goldfish in [false, true] {
+        let mut state = GameState::new(2);
+        state.card_db = Some(db.clone());
+        state.active_player = usize::from(goldfish);
+        state.priority_player = state.active_player;
+        state.phase = if goldfish {
+            Phase::Cleanup
+        } else {
+            Phase::EndStep
+        };
+        let controller = if goldfish { 0 } else { state.active_player };
+        for _ in 0..2 {
+            state.create_card_in_zone(90_021, controller, ZoneType::Battlefield);
+        }
+        for _ in 0..8 {
+            state.create_card_in_zone(90_022, state.active_player, ZoneType::Hand);
+        }
+        if goldfish {
+            rules::fast_forward_goldfish_turn_until_copy_choice(&mut state, 0);
+        } else {
+            rules::apply_action(&mut state, &Action::EndTurn);
+        }
+        assert_eq!((state.turn_number, state.phase), (1, Phase::Cleanup));
+        assert_eq!(state.priority_player, controller);
+        assert!(state.stack.is_empty());
+        assert_eq!(state.pending_triggers.len(), 2);
+        assert!(legal_actions(&state)
+            .iter()
+            .any(|a| matches!(a, Action::OrderTriggers { .. })));
+    }
+}
+
+#[test]
+fn test_2a_cleanup_sba_death_settles_before_next_turn() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::{CardDatabase, StackSource};
+    let mut db = CardDatabase::new();
+    db.insert(CardDef {
+        id: 90_031,
+        name: "Dying observer".into(),
+        card_types: vec![CardType::Creature],
+        power: Some(0),
+        toughness: Some(0),
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::Dies,
+            effect: Effect::GainLife { amount: 1 },
+            description: "Dies".into(),
+        }],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 90_032,
+        name: "Filler".into(),
+        card_types: vec![CardType::Land],
+        ..Default::default()
+    });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::Cleanup;
+    let creature = state.create_card_in_zone(90_031, 0, ZoneType::Battlefield);
+    for _ in 0..8 {
+        state.create_card_in_zone(90_032, 0, ZoneType::Hand);
+    }
+    let card = state.players[0].hand[0];
+    rules::apply_action(&mut state, &Action::Discard { object_id: card });
+    assert_eq!(
+        (state.active_player, state.turn_number, state.phase),
+        (0, 1, Phase::Cleanup)
+    );
+    assert!(!state.battlefield.contains(&creature));
+    assert!(state.players[0].graveyard.contains(&creature));
+    assert_eq!(state.stack.len(), 1);
+    assert!(
+        matches!(state.stack[0].source, StackSource::TriggeredAbility { source_id, .. }
+        if source_id == creature)
+    );
+    assert!(state.cleanup_needs_repeat);
+}
+
+#[test]
+fn test_2a_cleanup_repeats_when_trigger_refills_hand() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef { id: 90_041, name: "Draw observer".into(),
+        card_types: vec![CardType::Enchantment],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::YouDiscardACard,
+            effect: Effect::DrawCards { count: 1 }, description: "Draw".into(),
+        }], ..Default::default() });
+    db.insert(CardDef { id: 90_042, name: "Filler".into(),
+        card_types: vec![CardType::Land], ..Default::default() });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::Cleanup;
+    state.create_card_in_zone(90_041, 0, ZoneType::Battlefield);
+    for _ in 0..8 { state.create_card_in_zone(90_042, 0, ZoneType::Hand); }
+    state.create_card_in_zone(90_042, 0, ZoneType::Library);
+    let card = state.players[0].hand[0];
+    rules::apply_action(&mut state, &Action::Discard { object_id: card });
+    assert_eq!(state.players[0].hand.len(), 7);
+    for _ in 0..2 { rules::apply_action(&mut state, &Action::PassPriority); }
+    assert_eq!(state.players[0].hand.len(), 8);
+    assert!(legal_actions(&state).contains(&Action::PassPriority));
+    assert!(!legal_actions(&state).iter().any(|a| matches!(a, Action::Discard { .. })));
+    for _ in 0..2 { rules::apply_action(&mut state, &Action::PassPriority); }
+    assert_eq!((state.active_player, state.turn_number, state.phase), (0, 1, Phase::Cleanup));
+    assert!(legal_actions(&state).iter().all(|a| matches!(a, Action::Discard { .. })));
+}
+
+#[test]
+fn test_2a_partial_cleanup_external_sba_and_restored_continuation() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::{CardDatabase, StackSource};
+    use mtg_gto::info_set::InformationSet;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef { id: 90_051, name: "Discard observer".into(),
+        card_types: vec![CardType::Enchantment],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::YouDiscardACard,
+            effect: Effect::GainLife { amount: 1 }, description: "Discard".into(),
+        }], ..Default::default() });
+    db.insert(CardDef { id: 90_052, name: "Death observer".into(),
+        card_types: vec![CardType::Enchantment],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::ACreatureDies,
+            effect: Effect::GainLife { amount: 1 }, description: "Death".into(),
+        }], ..Default::default() });
+    db.insert(CardDef { id: 90_053, name: "Dying creature".into(),
+        card_types: vec![CardType::Creature], power: Some(1), toughness: Some(1),
+        ..Default::default() });
+    db.insert(CardDef { id: 90_054, name: "Filler".into(),
+        card_types: vec![CardType::Land], ..Default::default() });
+    let db = Arc::new(db);
+    let mut state = GameState::new(2);
+    state.card_db = Some(db.clone());
+    state.phase = Phase::Cleanup;
+    for _ in 0..2 { state.create_card_in_zone(90_051, 0, ZoneType::Battlefield); }
+    for _ in 0..2 { state.create_card_in_zone(90_052, 1, ZoneType::Battlefield); }
+    let dying = state.create_card_in_zone(90_053, 0, ZoneType::Battlefield);
+    for _ in 0..9 { state.create_card_in_zone(90_054, 0, ZoneType::Hand); }
+    let first = state.players[0].hand[0];
+    rules::apply_action(&mut state, &Action::Discard { object_id: first });
+    assert_eq!(state.players[0].hand.len(), 8);
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert!(state.stack.is_empty());
+    assert!(state.cleanup_discard_in_progress);
+    let mut premature_order = state.clone();
+    let ordering = premature_order.pending_triggers.iter()
+        .map(|trigger| (trigger.source_id, trigger.ability_index)).collect();
+    rules::apply_action(&mut premature_order, &Action::OrderTriggers { ordering });
+    assert_eq!(premature_order.pending_triggers.len(), 2);
+    assert!(premature_order.stack.is_empty());
+    let mut outside_discard = state.clone();
+    outside_discard.cleanup_discard_in_progress = false;
+    assert_ne!(
+        InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value(),
+        InformationSet::from_view(&outside_discard.visible_state(0), outside_discard.card_db())
+            .hash_value()
+    );
+
+    let snapshot = state.snapshot();
+    let json = serde_json::to_vec(&state).unwrap();
+    let bin = bincode::serialize(&state).unwrap();
+    let mut restored = state.clone();
+    restored.restore(snapshot);
+    let mut variants = [state, restored, serde_json::from_slice::<GameState>(&json).unwrap(),
+        bincode::deserialize::<GameState>(&bin).unwrap()];
+    for variant in &mut variants {
+        variant.card_db = Some(db.clone());
+        assert!(variant.cleanup_discard_in_progress);
+        variant.objects.get_mut(&dying).unwrap().damage_marked = 1;
+        rules::check_state_based_actions(variant);
+        assert_eq!(variant.players[0].hand.len(), 8);
+        assert_eq!(variant.pending_triggers.len(), 4);
+        assert!(variant.stack.is_empty(), "external SBA must not place mid-discard");
+        assert!(variant.trigger_order_resume.is_none(), "external SBA must not start ordering mid-discard");
+        assert!(legal_actions(variant).iter().all(|a| matches!(a, Action::Discard { .. })));
+        let second = variant.players[0].hand[0];
+        rules::apply_action(variant, &Action::Discard { object_id: second });
+        assert!(!variant.cleanup_discard_in_progress);
+        assert_eq!((variant.active_player, variant.turn_number, variant.phase), (0, 1, Phase::Cleanup));
+        assert_eq!(variant.pending_triggers.len(), 6);
+        assert!(variant.stack.is_empty());
+        assert_eq!(variant.priority_player, 0);
+        let ap_order = legal_actions(variant).into_iter()
+            .find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+        rules::apply_action(variant, &ap_order);
+        assert_eq!(variant.priority_player, 1);
+        assert_eq!(variant.stack.len(), 4);
+        assert!(variant.stack.iter().all(|entry| entry.controller == 0));
+        let nap_order = legal_actions(variant).into_iter()
+            .find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+        rules::apply_action(variant, &nap_order);
+        assert_eq!(variant.stack.len(), 6);
+        assert!(variant.stack[..4].iter().all(|entry| entry.controller == 0));
+        assert!(variant.stack[4..].iter().all(|entry| entry.controller == 1));
+        assert!(variant.stack.iter().any(|entry| matches!(entry.source,
+            StackSource::TriggeredAbility { .. })));
+        assert!(variant.pending_triggers.is_empty());
+        assert_eq!(variant.priority_player, 0);
+    }
+    let expected = serde_json::to_value(&variants[0]).unwrap();
+    for variant in &variants[1..] {
+        assert_eq!(serde_json::to_value(variant).unwrap(), expected);
+    }
+}
+
+#[test]
+fn test_2a_partial_cleanup_single_trigger_external_sba() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef { id: 90_061, name: "Observer".into(),
+        card_types: vec![CardType::Enchantment],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::YouDiscardACard,
+            effect: Effect::GainLife { amount: 1 }, description: "Discard".into(),
+        }], ..Default::default() });
+    db.insert(CardDef { id: 90_062, name: "Filler".into(),
+        card_types: vec![CardType::Land], ..Default::default() });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::Cleanup;
+    state.create_card_in_zone(90_061, 0, ZoneType::Battlefield);
+    for _ in 0..9 { state.create_card_in_zone(90_062, 0, ZoneType::Hand); }
+    let first = state.players[0].hand[0];
+    rules::apply_action(&mut state, &Action::Discard { object_id: first });
+    rules::check_state_based_actions(&mut state);
+    assert_eq!(state.pending_triggers.len(), 1);
+    assert!(state.stack.is_empty());
+    let second = state.players[0].hand[0];
+    rules::apply_action(&mut state, &Action::Discard { object_id: second });
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert!(state.stack.is_empty());
+    assert!(legal_actions(&state).iter().any(|a| matches!(a, Action::OrderTriggers { .. })));
+}
+
+#[cfg(feature = "tui")]
+#[test]
+fn test_2a_tui_human_order_pause_and_resume_on_opponent_turn() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    use mtg_gto::tui::App;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let mut db = CardDatabase::new();
+    for (id, trigger) in [(90_071, TriggerCondition::OpponentDrawsCard),
+        (90_072, TriggerCondition::EndOfTurn)] {
+        db.insert(CardDef { id, name: format!("Observer {id}"),
+            card_types: vec![CardType::Enchantment],
+            triggered_abilities: vec![TriggeredAbility {
+                trigger, effect: Effect::GainLife { amount: 1 },
+                description: "Observe".into(),
+            }], ..Default::default() });
+    }
+    db.insert(CardDef { id: 90_073, name: "Filler".into(),
+        card_types: vec![CardType::Land], ..Default::default() });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db.clone()));
+    state.active_player = 1;
+    state.priority_player = 1;
+    state.phase = Phase::Upkeep;
+    state.turn_number = 2;
+    for id in [90_071, 90_072] {
+        for _ in 0..2 { state.create_card_in_zone(id, 0, ZoneType::Battlefield); }
+    }
+    state.create_card_in_zone(90_073, 1, ZoneType::Library);
+    state.create_card_in_zone(90_073, 0, ZoneType::Library);
+
+    // A timeout bounds the regression even if auto_advance stops making progress.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut app = App::new(state, db);
+        app.auto_advance();
+        assert_eq!((app.state.active_player, app.state.priority_player), (1, 0));
+        assert!(app.cached_actions.iter().any(|a| matches!(a, Action::OrderTriggers { .. })));
+        let first = app.cached_actions.iter().position(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+        app.execute_action(first);
+        assert_eq!((app.state.active_player, app.state.priority_player), (1, 0));
+        assert!(app.cached_actions.iter().any(|a| matches!(a, Action::OrderTriggers { .. })));
+        let second = app.cached_actions.iter().position(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+        app.execute_action(second);
+        tx.send((app.state.active_player, app.state.turn_number, app.state.players[0].life,
+            app.state.pending_triggers.len())).unwrap();
+    });
+    let outcome = rx.recv_timeout(Duration::from_secs(3))
+        .expect("TUI auto_advance must return for each human mandatory choice");
+    assert_eq!(outcome, (0, 3, 24, 0));
+}
+
+#[cfg(feature = "tui")]
+#[test]
+fn test_2a_tui_two_cleanup_discards_keep_one_placement_window() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    use mtg_gto::tui::App;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef { id: 90_081, name: "Observer".into(),
+        card_types: vec![CardType::Enchantment],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::YouDiscardACard,
+            effect: Effect::GainLife { amount: 1 }, description: "Discard".into(),
+        }], ..Default::default() });
+    db.insert(CardDef { id: 90_082, name: "Filler".into(),
+        card_types: vec![CardType::Land], ..Default::default() });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db.clone()));
+    state.phase = Phase::Cleanup;
+    state.create_card_in_zone(90_081, 0, ZoneType::Battlefield);
+    for _ in 0..9 { state.create_card_in_zone(90_082, 0, ZoneType::Hand); }
+    let mut app = App::new(state, db);
+    let first = app.cached_actions.iter().position(|a| matches!(a, Action::Discard { .. })).unwrap();
+    app.execute_action(first);
+    assert!(app.state.cleanup_discard_in_progress);
+    assert_eq!(app.state.pending_triggers.len(), 1);
+    assert!(app.state.stack.is_empty());
+    assert!(app.cached_actions.iter().all(|a| matches!(a, Action::Discard { .. })));
+    let second = app.cached_actions.iter().position(|a| matches!(a, Action::Discard { .. })).unwrap();
+    app.execute_action(second);
+    assert!(!app.state.cleanup_discard_in_progress);
+    assert_eq!(app.state.pending_triggers.len(), 2);
+    assert!(app.state.stack.is_empty());
+    assert_eq!((app.state.active_player, app.state.turn_number, app.state.phase), (0, 1, Phase::Cleanup));
+    assert!(app.cached_actions.iter().any(|a| matches!(a, Action::OrderTriggers { .. })));
+}
+
+#[cfg(feature = "tui")]
+#[test]
+fn test_2a_tui_human_pending_copy_order_still_pauses() {
+    use mtg_gto::card::{CardDef, CardType, Effect};
+    use mtg_gto::game::CardDatabase;
+    use mtg_gto::rules::{begin_terminal_copy_batch, prepare_spell_copy,
+        snapshot_stack_spell, CopyBatchOutcome, CopyTargetPolicy};
+    use mtg_gto::tui::App;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef { id: 90_091, name: "Copy source".into(),
+        card_types: vec![CardType::Instant], spell_effect: Some(Effect::GainLife { amount: 1 }),
+        ..Default::default() });
+    db.insert(CardDef { id: 90_092, name: "Filler".into(),
+        card_types: vec![CardType::Land], ..Default::default() });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db.clone()));
+    state.active_player = 1;
+    state.priority_player = 0;
+    state.turn_number = 2;
+    state.phase = Phase::Upkeep;
+    state.create_card_in_zone(90_092, 1, ZoneType::Library);
+    let spell = state.create_card_in_zone(90_091, 0, ZoneType::Hand);
+    rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![] });
+    let snapshot = snapshot_stack_spell(&state, state.stack.last().unwrap().id).unwrap();
+    let item = prepare_spell_copy(&state, &snapshot, 0, CopyTargetPolicy::Preserve).unwrap();
+    assert!(matches!(begin_terminal_copy_batch(&mut state, vec![item.clone(), item], true).unwrap(),
+        CopyBatchOutcome::Pending));
+    let mut app = App::new(state, db);
+    app.auto_advance();
+    assert_eq!((app.state.active_player, app.state.priority_player), (1, 0));
+    assert!(app.state.pending_copy_order.is_some());
+    assert!(app.cached_actions.iter().all(|a| matches!(a, Action::ChooseNextCopy { .. })));
+    let index = app.cached_actions.iter().position(|a| matches!(a, Action::ChooseNextCopy { .. })).unwrap();
+    app.execute_action(index);
+    assert!(app.state.pending_copy_order.is_none());
+}
+
+#[test]
+fn test_2a_interrupted_cleanup_goldfish_fast_forward_restores() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef { id: 90_101, name: "Discard observer".into(),
+        card_types: vec![CardType::Enchantment],
+        triggered_abilities: vec![TriggeredAbility { trigger: TriggerCondition::YouDiscardACard,
+            effect: Effect::GainLife { amount: 1 }, description: "Discard".into() }],
+        ..Default::default() });
+    db.insert(CardDef { id: 90_102, name: "Filler".into(),
+        card_types: vec![CardType::Land], ..Default::default() });
+    let db = Arc::new(db);
+    let mut state = GameState::new(2);
+    state.card_db = Some(db.clone());
+    state.active_player = 1;
+    state.priority_player = 1;
+    state.phase = Phase::Cleanup;
+    state.create_card_in_zone(90_101, 1, ZoneType::Battlefield);
+    for _ in 0..9 { state.create_card_in_zone(90_102, 1, ZoneType::Hand); }
+    let first = state.players[1].hand[0];
+    rules::apply_action(&mut state, &Action::Discard { object_id: first });
+    assert!(state.cleanup_discard_in_progress);
+    assert_eq!(state.pending_triggers.len(), 1);
+    let snapshot = state.snapshot();
+    let json = serde_json::to_vec(&state).unwrap();
+    let bin = bincode::serialize(&state).unwrap();
+    let mut restored = state.clone();
+    restored.restore(snapshot);
+    let mut variants = [state, restored, serde_json::from_slice::<GameState>(&json).unwrap(),
+        bincode::deserialize::<GameState>(&bin).unwrap()];
+    for variant in &mut variants {
+        variant.card_db = Some(db.clone());
+        rules::check_state_based_actions(variant); // simulation/TUI external SBA caller
+        assert!(variant.cleanup_discard_in_progress);
+        assert_eq!(variant.pending_triggers.len(), 1);
+        assert!(variant.stack.is_empty());
+        let actions = rules::fast_forward_goldfish_turn(variant);
+        assert!(actions > 0, "automated continuation must make progress");
+        assert_eq!((variant.active_player, variant.turn_number), (0, 2));
+        assert_eq!(variant.players[1].hand.len(), 7);
+        assert_eq!(variant.players[1].graveyard.len(), 2);
+        assert_eq!(variant.players[1].life, 22);
+        assert!(variant.pending_triggers.is_empty());
+        assert!(variant.stack.is_empty());
+        assert!(!variant.cleanup_discard_in_progress);
+        assert!(!variant.cleanup_needs_repeat);
+    }
+    let outcome = |variant: &GameState| (variant.active_player, variant.turn_number,
+        variant.phase, variant.players[1].hand.len(), variant.players[1].graveyard.len(),
+        variant.players[1].life, variant.pending_triggers.len(), variant.stack.len());
+    for variant in &variants[1..] { assert_eq!(outcome(variant), outcome(&variants[0])); }
+}
+
+#[test]
+fn test_2a_required_cleanup_discards_reject_unrelated_direct_actions() {
+    use mtg_gto::card::{ActivatedAbility, CardDef, CardType, Effect, ManaAbility};
+    use mtg_gto::game::CardDatabase;
+    use mtg_gto::mana::ManaCost;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef { id: 90_111, name: "Free spell".into(),
+        card_types: vec![CardType::Instant], spell_effect: Some(Effect::GainLife { amount: 1 }),
+        ..Default::default() });
+    db.insert(CardDef { id: 90_112, name: "Land".into(),
+        card_types: vec![CardType::Land], ..Default::default() });
+    db.insert(CardDef { id: 90_113, name: "Ability source".into(),
+        card_types: vec![CardType::Artifact],
+        mana_abilities: vec![ManaAbility::TapForColorless],
+        activated_abilities: vec![ActivatedAbility {
+            cost: ManaCost::zero(), requires_tap: false, sacrifice_cost: None,
+            life_cost: 0, effect: Effect::GainLife { amount: 1 },
+            description: "Activate".into(),
+        }], ..Default::default() });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::Cleanup;
+    let source = state.create_card_in_zone(90_113, 0, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(90_111, 0, ZoneType::Hand);
+    let land = state.create_card_in_zone(90_112, 0, ZoneType::Hand);
+    for _ in 0..7 { state.create_card_in_zone(90_112, 0, ZoneType::Hand); }
+    let opponent_card = state.create_card_in_zone(90_112, 1, ZoneType::Hand);
+    let first = state.players[0].hand[2];
+    rules::apply_action(&mut state, &Action::Discard { object_id: first });
+    assert!(state.cleanup_discard_in_progress);
+    assert_eq!(state.players[0].hand.len(), 8);
+    state.drain_events();
+    let unrelated = [
+        Action::CastSpell { object_id: spell, targets: vec![] },
+        Action::PlayLand { object_id: land },
+        Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] },
+        Action::ActivateManaAbility { object_id: source, ability_index: 0 },
+        Action::PassPriority,
+        Action::DeclareAttackers { attackers: vec![] },
+        Action::EndTurn,
+        Action::Concede,
+    ];
+    for action in unrelated {
+        let mut candidate = state.clone();
+        let before = format!("{candidate:?}");
+        rules::apply_action(&mut candidate, &action);
+        assert!(format!("{candidate:?}") == before, "invalid action {action:?} changed state");
+        assert!(candidate.drain_events().is_empty());
+    }
+    for (priority, card) in [(0, opponent_card), (0, u64::MAX), (1, land)] {
+        let mut candidate = state.clone();
+        candidate.priority_player = priority;
+        let before = format!("{candidate:?}");
+        rules::apply_action(&mut candidate, &Action::Discard { object_id: card });
+        assert!(format!("{candidate:?}") == before, "illegal discard changed state");
+        assert!(candidate.drain_events().is_empty());
+    }
+    assert!(legal_actions(&state).iter().all(|a| matches!(a, Action::Discard { .. })));
+}
+
+#[test]
+fn test_2a_interrupted_cleanup_manual_tui_goldfish_apnap_agree() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    let mut db = CardDatabase::new();
+    for (id, trigger) in [(90_131, TriggerCondition::YouDiscardACard),
+        (90_132, TriggerCondition::ACreatureDies)] {
+        db.insert(CardDef { id, name: format!("Observer {id}"),
+            card_types: vec![CardType::Enchantment],
+            triggered_abilities: vec![TriggeredAbility {
+                trigger, effect: Effect::GainLife { amount: 1 },
+                description: "Observe".into(),
+            }], ..Default::default() });
+    }
+    db.insert(CardDef { id: 90_133, name: "Dying creature".into(),
+        card_types: vec![CardType::Creature], power: Some(1), toughness: Some(1),
+        ..Default::default() });
+    db.insert(CardDef { id: 90_134, name: "Filler".into(),
+        card_types: vec![CardType::Land], ..Default::default() });
+    let mut base = GameState::new(2);
+    base.card_db = Some(Arc::new(db));
+    base.active_player = 1;
+    base.priority_player = 1;
+    base.phase = Phase::Cleanup;
+    for _ in 0..2 { base.create_card_in_zone(90_131, 1, ZoneType::Battlefield); }
+    for _ in 0..2 { base.create_card_in_zone(90_132, 0, ZoneType::Battlefield); }
+    let dying = base.create_card_in_zone(90_133, 1, ZoneType::Battlefield);
+    for _ in 0..9 { base.create_card_in_zone(90_134, 1, ZoneType::Hand); }
+    let first = base.players[1].hand[0];
+    rules::apply_action(&mut base, &Action::Discard { object_id: first });
+    base.objects.get_mut(&dying).unwrap().damage_marked = 1;
+    rules::check_state_based_actions(&mut base);
+    assert_eq!(base.pending_triggers.len(), 4);
+    assert!(base.cleanup_discard_in_progress);
+    assert!(base.stack.is_empty());
+
+    let mut manual = base.clone();
+    let second = manual.players[1].hand[0];
+    rules::apply_action(&mut manual, &Action::Discard { object_id: second });
+    for controller in [1, 0] {
+        assert_eq!(manual.priority_player, controller);
+        let order = legal_actions(&manual).into_iter()
+            .find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+        rules::apply_action(&mut manual, &order);
+    }
+    assert_eq!(manual.stack.iter().map(|entry| entry.controller).collect::<Vec<_>>(),
+        vec![1, 1, 1, 1, 0, 0]);
+    for _ in 0..6 {
+        rules::apply_action(&mut manual, &Action::PassPriority);
+        rules::apply_action(&mut manual, &Action::PassPriority);
+    }
+    rules::apply_action(&mut manual, &Action::PassPriority);
+    rules::apply_action(&mut manual, &Action::PassPriority);
+
+    let mut automated = base.clone();
+    assert!(rules::fast_forward_goldfish_turn(&mut automated) > 0);
+    let mut tui = base;
+    assert!(rules::fast_forward_goldfish_turn_until_copy_choice(&mut tui, 0) > 0);
+    assert_eq!((tui.active_player, tui.turn_number, tui.phase), (1, 1, Phase::Cleanup));
+    assert_eq!(tui.priority_player, 0);
+    assert_eq!(tui.stack.iter().map(|entry| entry.controller).collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]);
+    assert_eq!(tui.pending_triggers.len(), 2);
+    let human_order = legal_actions(&tui).into_iter()
+        .find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+    rules::apply_action(&mut tui, &human_order);
+    assert!(rules::fast_forward_goldfish_turn_until_copy_choice(&mut tui, 0) > 0);
+
+    let outcome = |state: &GameState| (state.active_player, state.turn_number, state.phase,
+        state.players[0].life, state.players[1].life,
+        state.players[1].hand.len(), state.players[1].graveyard.len(),
+        state.stack.len(), state.pending_triggers.len(), state.cleanup_discard_in_progress);
+    assert_eq!(outcome(&manual), outcome(&automated));
+    assert_eq!(outcome(&manual), outcome(&tui));
+    assert_eq!(outcome(&manual), (0, 2, Phase::Upkeep, 22, 24, 7, 3, 0, 0, false));
 }
 
 #[test]
@@ -3452,6 +4390,8 @@ fn test_multi_phase_abstraction() {
         stack_entries: vec![],
         pending_cast_spells: vec![],
         trigger_order_resume: None,
+        cleanup_needs_repeat: false,
+        cleanup_discard_in_progress: false,
         pending_copy_order: None,
         my_graveyard: vec![],
         opp_graveyard: vec![],
@@ -4147,7 +5087,7 @@ fn test_goldfish_simulation_produces_valid_results() {
 
     assert_eq!(results.total_games, 200);
     assert_eq!(
-        results.wins + results.losses + results.draws,
+        results.wins + results.losses + results.draws + results.censored,
         200,
         "wins + losses + draws should equal total games"
     );
@@ -5016,9 +5956,10 @@ fn test_mcts_goldfish_simulation_produces_valid_results() {
 
     assert_eq!(results.total_games, 10);
     assert_eq!(
-        results.wins + results.losses + results.draws,
+        results.wins + results.losses + results.draws + results.censored
+            + results.stalled + results.invalid + results.legacy_unknown,
         10,
-        "wins + losses + draws should equal total games"
+        "every attempt must have exactly one explicit outcome"
     );
 }
 
@@ -5058,9 +5999,9 @@ fn test_mcts_goldfish_kill_turn_distribution_consistent() {
 
         // Average kill turn should be between fastest and slowest
         assert!(
-            results.avg_kill_turn >= results.fastest_kill as f64
-                && results.avg_kill_turn <= results.slowest_kill as f64,
-            "Avg kill turn ({:.2}) should be between T{} and T{}",
+            results.avg_kill_turn.unwrap() >= results.fastest_kill as f64
+                && results.avg_kill_turn.unwrap() <= results.slowest_kill as f64,
+            "Avg kill turn ({:?}) should be between T{} and T{}",
             results.avg_kill_turn,
             results.fastest_kill,
             results.slowest_kill,
@@ -5183,9 +6124,10 @@ fn test_mcts_parallel_goldfish_produces_valid_results() {
 
     assert_eq!(results.total_games, 5);
     assert_eq!(
-        results.wins + results.losses + results.draws,
+        results.wins + results.losses + results.draws + results.censored
+            + results.stalled + results.invalid + results.legacy_unknown,
         5,
-        "wins + losses + draws should equal total games"
+        "every attempt must have exactly one explicit outcome"
     );
     // Sanity: parallel path should still find wins with a reasonable deck
     assert!(results.wins > 0, "Parallel MCTS should win at least one goldfish game");
@@ -6689,4 +7631,680 @@ fn test_stack_target_cleanup_stale_composite_skips_counter_and_draw() {
     assert_eq!(state.players[0].hand, hand);
     assert_eq!(state.players[0].library, library);
     assert_eq!(state.players[0].graveyard, vec![counter]);
+}
+
+// Milestone 2A: these tests deliberately use the existing trigger payload.
+// Subject identity and simultaneous transition batches belong to 2B.
+fn settlement_fixture(effect: mtg_gto::card::Effect) -> GameState {
+    use mtg_gto::card::{CardDef, CardType, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef {
+        id: 990001,
+        name: "Settlement spell".into(),
+        card_types: vec![CardType::Sorcery],
+        spell_effect: Some(effect),
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 990002,
+        name: "Draw observer".into(),
+        card_types: vec![CardType::Creature],
+        power: Some(1),
+        toughness: Some(1),
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::OpponentDrawsCard,
+            effect: mtg_gto::card::Effect::GainLife { amount: 1 },
+            description: "Observed draw".into(),
+        }],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 990003,
+        name: "Library card".into(),
+        card_types: vec![CardType::Land],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 990004,
+        name: "Death observer".into(),
+        card_types: vec![CardType::Creature],
+        power: Some(0),
+        toughness: Some(0),
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::Dies,
+            effect: mtg_gto::card::Effect::GainLife { amount: 1 },
+            description: "Observed death".into(),
+        }],
+        ..Default::default()
+    });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::PreCombatMain;
+    for _ in 0..10 {
+        state.create_card_in_zone(990003, 0, ZoneType::Library);
+    }
+    state
+}
+
+fn settlement_resolve(state: &mut GameState) -> u64 {
+    let spell = state.create_card_in_zone(990001, 0, ZoneType::Hand);
+    rules::apply_action(
+        state,
+        &Action::CastSpell {
+            object_id: spell,
+            targets: vec![],
+        },
+    );
+    state.drain_events();
+    rules::apply_action(state, &Action::PassPriority);
+    rules::apply_action(state, &Action::PassPriority);
+    spell
+}
+
+#[test]
+fn test_2a_multiple_children_finish_before_draw_trigger_placement() {
+    use mtg_gto::card::Effect;
+    let mut state = settlement_fixture(Effect::Multiple(vec![
+        Effect::DrawCards { count: 1 },
+        Effect::GainLife { amount: 3 },
+    ]));
+    let observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield);
+    let spell = settlement_resolve(&mut state);
+    let events = state.drain_events();
+    let later_effect = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                GameEvent::LifeChanged {
+                    player: 0,
+                    new: 23,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    let cleanup = events.iter().position(|event| matches!(event,
+        GameEvent::ZoneChange { object, from: Zone::Stack, to: Zone::Graveyard } if *object == spell)).unwrap();
+    let placement = events
+        .iter()
+        .position(|event| {
+            matches!(event,
+        GameEvent::AbilityTriggered { source, .. } if *source == observer)
+        })
+        .unwrap();
+    assert!(later_effect < cleanup && cleanup < placement);
+    assert_eq!(state.stack.len(), 1);
+}
+
+#[test]
+fn test_2a_successive_draw_events_wait_and_remain_two_occurrences() {
+    use mtg_gto::card::Effect;
+    let mut state = settlement_fixture(Effect::Multiple(vec![
+        Effect::DrawCards { count: 1 },
+        Effect::DrawCards { count: 1 },
+    ]));
+    let observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield);
+    settlement_resolve(&mut state);
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert!(state
+        .pending_triggers
+        .iter()
+        .all(|trigger| trigger.source_id == observer));
+    assert!(state.stack.is_empty());
+    assert_eq!(state.priority_player, 1);
+    assert!(legal_actions(&state)
+        .iter()
+        .all(|action| matches!(action, Action::OrderTriggers { .. } | Action::Concede)));
+    // J: the currently supported pending-trigger representation survives all
+    // save/restore paths before the mandatory ordering decision.
+    let snap = state.snapshot();
+    let json = serde_json::to_vec(&state).unwrap();
+    let bin = bincode::serialize(&state).unwrap();
+    let mut restored = state.clone();
+    restored.restore(snap);
+    for candidate in [
+        restored,
+        serde_json::from_slice::<GameState>(&json).unwrap(),
+        bincode::deserialize::<GameState>(&bin).unwrap(),
+    ] {
+        assert_eq!(candidate.pending_triggers.len(), 2);
+        assert_eq!(candidate.priority_player, 1);
+    }
+    // The two draw events are successive. No batch or richer subject identity is inferred here.
+}
+
+#[test]
+fn test_2a_seven_pending_exposes_existing_ordering_limit() {
+    use mtg_gto::card::{Effect, TriggeredAbility};
+    let mut state = settlement_fixture(Effect::DrawCards { count: 1 });
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut observer = db.get(990002).unwrap().clone();
+    observer.triggered_abilities = (0..7)
+        .map(|index| TriggeredAbility {
+            trigger: mtg_gto::card::TriggerCondition::OpponentDrawsCard,
+            effect: Effect::GainLife { amount: index + 1 },
+            description: format!("Observer {index}"),
+        })
+        .collect();
+    db.insert(observer);
+    state.create_card_in_zone(990002, 1, ZoneType::Battlefield);
+    settlement_resolve(&mut state);
+    assert_eq!(state.pending_triggers.len(), 7);
+    assert!(state.stack.is_empty());
+    // The one FIFO choice above six remains a documented 2E limitation.
+    assert_eq!(
+        legal_actions(&state)
+            .iter()
+            .filter(|action| matches!(action, Action::OrderTriggers { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn test_2a_resolution_and_sba_triggers_share_later_placement_window() {
+    use mtg_gto::card::Effect;
+    let mut state = settlement_fixture(Effect::DrawCards { count: 1 });
+    let draw_observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield);
+    let doomed = state.create_card_in_zone(990004, 0, ZoneType::Battlefield);
+    state.effective_toughness(doomed); // warm the characteristic cache
+    let spell = settlement_resolve(&mut state);
+    assert!(!state.battlefield.contains(&doomed));
+    let events = state.drain_events();
+    let death = events.iter().position(|event| matches!(event,
+        GameEvent::ZoneChange { object, from: Zone::Battlefield, to: Zone::Graveyard } if *object == doomed)).unwrap();
+    let cleanup = events.iter().position(|event| matches!(event,
+        GameEvent::ZoneChange { object, from: Zone::Stack, to: Zone::Graveyard } if *object == spell)).unwrap();
+    let placements: Vec<_> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| {
+            matches!(event, GameEvent::AbilityTriggered { .. }).then_some(index)
+        })
+        .collect();
+    assert_eq!(placements.len(), 2);
+    assert!(placements
+        .iter()
+        .all(|&index| index > death && index > cleanup));
+    assert_eq!(state.stack.len(), 2);
+    assert_eq!(state.stack[0].controller, 0);
+    assert_eq!(state.stack[1].controller, 1);
+    assert!(state.stack.iter().any(|entry| matches!(entry.source,
+        mtg_gto::game::StackSource::TriggeredAbility { source_id, .. } if source_id == draw_observer)));
+}
+
+#[test]
+fn test_2a_deferred_source_survives_departure_and_state_roundtrips() {
+    use mtg_gto::card::Effect;
+    let mut state = settlement_fixture(Effect::Multiple(vec![
+        Effect::DrawCards { count: 1 },
+        Effect::DestroyAll,
+    ]));
+    let observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield);
+    settlement_resolve(&mut state);
+    assert!(!state.battlefield.contains(&observer));
+    assert!(state.stack.iter().any(|entry| matches!(entry.source,
+        mtg_gto::game::StackSource::TriggeredAbility { source_id, .. } if source_id == observer)));
+    let snap = state.snapshot();
+    let json = serde_json::to_vec(&state).unwrap();
+    let bin = bincode::serialize(&state).unwrap();
+    let mut restored = state.clone();
+    restored.restore(snap);
+    for candidate in [
+        restored,
+        serde_json::from_slice::<GameState>(&json).unwrap(),
+        bincode::deserialize::<GameState>(&bin).unwrap(),
+    ] {
+        assert_eq!(candidate.stack.len(), 1);
+        assert!(candidate.pending_triggers.is_empty());
+    }
+}
+
+#[test]
+fn test_2a_restored_copy_completion_keeps_sba_triggers_deferred() {
+    use mtg_gto::card::{
+        CardDef, CardType, Effect, TargetSpec, TriggerCondition, TriggeredAbility,
+    };
+    use mtg_gto::game::CardDatabase;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef {
+        id: 990201,
+        name: "Target spell".into(),
+        card_types: vec![CardType::Instant],
+        spell_effect: Some(Effect::DealDamage {
+            amount: 0,
+            target: TargetSpec::AnyCreature,
+        }),
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 990202,
+        name: "Copy watcher".into(),
+        card_types: vec![CardType::Creature],
+        power: Some(3),
+        toughness: Some(3),
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::YouCastInstantOrSorceryTargetingOnlySelf,
+            effect: Effect::Multiple(vec![
+                Effect::DealDamage {
+                    amount: 1,
+                    target: TargetSpec::EachCreature,
+                },
+                Effect::CopyCastSpellForOtherCreatures,
+            ]),
+            description: "Copy".into(),
+        }],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 990203,
+        name: "Persist creature".into(),
+        card_types: vec![CardType::Creature],
+        power: Some(1),
+        toughness: Some(1),
+        keywords: vec![KeywordAbility::Persist],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::EntersBattlefield,
+            effect: Effect::GainLife { amount: 1 },
+            description: "ETB".into(),
+        }],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 990204,
+        name: "Other creature".into(),
+        card_types: vec![CardType::Creature],
+        power: Some(3),
+        toughness: Some(3),
+        ..Default::default()
+    });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::PreCombatMain;
+    let source = state.create_card_in_zone(990202, 0, ZoneType::Battlefield);
+    let persist = state.create_card_in_zone(990203, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(990204, 0, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(990201, 0, ZoneType::Hand);
+    rules::apply_action(
+        &mut state,
+        &Action::CastSpell {
+            object_id: spell,
+            targets: vec![Target::Object(source)],
+        },
+    );
+    rules::apply_action(&mut state, &Action::PassPriority);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert!(state.pending_copy_order.is_some());
+    state.drain_events();
+    let snapshot = state.snapshot();
+    let json = serde_json::to_vec(&state).unwrap();
+    let bin = bincode::serialize(&state).unwrap();
+    let mut restored = state.clone();
+    restored.restore(snapshot);
+    let mut candidates = vec![
+        state,
+        restored,
+        serde_json::from_slice::<GameState>(&json).unwrap(),
+        bincode::deserialize::<GameState>(&bin).unwrap(),
+    ];
+    let db = candidates[0].card_db.clone();
+    for candidate in &mut candidates {
+        candidate.card_db = db.clone();
+    }
+    let mut outcomes = Vec::new();
+    for candidate in &mut candidates {
+        candidate.invalidate_characteristics_cache();
+        rules::apply_action(candidate, &Action::ChooseNextCopy { item_index: 0 });
+        let events = candidate.drain_events();
+        let ordering: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::ZoneChange {
+                    object,
+                    from: Zone::Battlefield,
+                    to: Zone::Graveyard,
+                } if *object == persist => Some("death"),
+                GameEvent::ZoneChange {
+                    object,
+                    from: Zone::Graveyard,
+                    to: Zone::Battlefield,
+                } if *object == persist => Some("return"),
+                GameEvent::AbilityTriggered { source, .. } if *source == persist => {
+                    Some("placement")
+                }
+                _ => None,
+            })
+            .collect();
+        outcomes.push((
+            ordering,
+            candidate.stack.len(),
+            candidate.pending_triggers.len(),
+            candidate.priority_player,
+        ));
+    }
+    assert_eq!(outcomes[0].0, vec!["death", "return", "death", "placement"]);
+    assert!(
+        outcomes.iter().all(|outcome| outcome == &outcomes[0]),
+        "{outcomes:?}"
+    );
+}
+
+#[test]
+fn test_2a_fast_forward_preserves_apnap_for_pending_window() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef {
+        id: 990301,
+        name: "Draw two".into(),
+        card_types: vec![CardType::Instant],
+        spell_effect: Some(Effect::DrawCards { count: 2 }),
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 990302,
+        name: "Draw observer".into(),
+        card_types: vec![CardType::Enchantment],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::OpponentDrawsCard,
+            effect: Effect::GainLife { amount: 1 },
+            description: "Draw".into(),
+        }],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 990303,
+        name: "Library card".into(),
+        card_types: vec![CardType::Land],
+        ..Default::default()
+    });
+    let mut state = GameState::new(3);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::PreCombatMain;
+    for player in 0..3 {
+        for _ in 0..20 {
+            state.create_card_in_zone(990303, player, ZoneType::Library);
+        }
+    }
+    let observer2 = state.create_card_in_zone(990302, 2, ZoneType::Battlefield);
+    let observer1 = state.create_card_in_zone(990302, 1, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(990301, 0, ZoneType::Hand);
+    rules::apply_action(
+        &mut state,
+        &Action::CastSpell {
+            object_id: spell,
+            targets: vec![],
+        },
+    );
+    state.drain_events();
+    let mut manual = state.clone();
+    for _ in 0..3 {
+        rules::apply_action(&mut manual, &Action::PassPriority);
+    }
+    for controller in [1, 2] {
+        assert_eq!(manual.priority_player, controller);
+        let order = legal_actions(&manual)
+            .into_iter()
+            .find(|action| matches!(action, Action::OrderTriggers { .. }))
+            .expect("legal order");
+        rules::apply_action(&mut manual, &order);
+    }
+    let manual_order: Vec<_> = manual
+        .drain_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            GameEvent::AbilityTriggered { source, .. } if source == observer1 => Some(1),
+            GameEvent::AbilityTriggered { source, .. } if source == observer2 => Some(2),
+            _ => None,
+        })
+        .collect();
+    rules::fast_forward_goldfish_turn(&mut state);
+    let order: Vec<_> = state
+        .drain_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            GameEvent::AbilityTriggered { source, .. } if source == observer1 => Some(1),
+            GameEvent::AbilityTriggered { source, .. } if source == observer2 => Some(2),
+            _ => None,
+        })
+        .take(4)
+        .collect();
+    assert_eq!(order, vec![1, 1, 2, 2]);
+    assert_eq!(order, manual_order);
+}
+
+#[test]
+fn test_2a_draw_step_preserves_mandatory_trigger_chooser() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef {
+        id: 990401,
+        name: "Observer".into(),
+        card_types: vec![CardType::Enchantment],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::OpponentDrawsCard,
+            effect: Effect::GainLife { amount: 1 },
+            description: "Draw".into(),
+        }],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 990402,
+        name: "Library".into(),
+        card_types: vec![CardType::Land],
+        ..Default::default()
+    });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::Upkeep;
+    state.turn_number = 2;
+    state.create_card_in_zone(990402, 0, ZoneType::Library);
+    state.create_card_in_zone(990401, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(990401, 1, ZoneType::Battlefield);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert_eq!(state.phase, Phase::Draw);
+    assert_eq!(state.priority_player, 1);
+    assert_eq!(state.pending_triggers.len(), 2);
+    let order = legal_actions(&state)
+        .into_iter()
+        .find(|action| matches!(action, Action::OrderTriggers { .. }))
+        .expect("mandatory order");
+    rules::apply_action(&mut state, &order);
+    assert_eq!(state.priority_player, 0);
+    assert_eq!(state.stack.len(), 2);
+}
+
+#[test]
+fn test_2a_land_play_collects_self_etb_and_landfall_before_choice() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    let mut db = CardDatabase::new();
+    db.insert(CardDef {
+        id: 990501,
+        name: "Double trigger land".into(),
+        card_types: vec![CardType::Land],
+        triggered_abilities: vec![
+            TriggeredAbility {
+                trigger: TriggerCondition::EntersBattlefield,
+                effect: Effect::GainLife { amount: 1 },
+                description: "Self ETB".into(),
+            },
+            TriggeredAbility {
+                trigger: TriggerCondition::ALandYouControlEnters,
+                effect: Effect::GainLife { amount: 2 },
+                description: "Landfall".into(),
+            },
+        ],
+        ..Default::default()
+    });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::PreCombatMain;
+    state.players[0].land_plays_remaining = 1;
+    let land = state.create_card_in_zone(990501, 0, ZoneType::Hand);
+    rules::apply_action(&mut state, &Action::PlayLand { object_id: land });
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert!(state.stack.is_empty());
+    assert_eq!(state.priority_player, 0);
+    assert!(legal_actions(&state)
+        .iter()
+        .any(|action| matches!(action, Action::OrderTriggers { .. })));
+
+    let mut graveyard_state = GameState::new(2);
+    graveyard_state.card_db = state.card_db.clone();
+    graveyard_state.phase = Phase::PreCombatMain;
+    graveyard_state.players[0].land_plays_remaining = 1;
+    let graveyard_land = graveyard_state.create_card_in_zone(990501, 0, ZoneType::Graveyard);
+    rules::apply_action(
+        &mut graveyard_state,
+        &Action::PlayLandFromGraveyard {
+            object_id: graveyard_land,
+        },
+    );
+    assert_eq!(graveyard_state.pending_triggers.len(), 2);
+    assert!(graveyard_state.stack.is_empty());
+    assert!(legal_actions(&graveyard_state)
+        .iter()
+        .any(|action| matches!(action, Action::OrderTriggers { .. })));
+}
+
+fn sba_window_fixture() -> GameState {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::CardDatabase;
+    use mtg_gto::layers::{AffectedObjects, StaticAbility};
+    let mut db = CardDatabase::new();
+    db.insert(CardDef {
+        id: 990601,
+        name: "Negative land".into(),
+        card_types: vec![CardType::Land],
+        static_abilities: vec![StaticAbility::Anthem {
+            power: 0,
+            toughness: -1,
+            affected: AffectedObjects::AllCreatures,
+        }],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 990602,
+        name: "Persist creature".into(),
+        card_types: vec![CardType::Creature],
+        power: Some(1),
+        toughness: Some(1),
+        keywords: vec![KeywordAbility::Persist],
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::EntersBattlefield,
+            effect: Effect::GainLife { amount: 1 },
+            description: "Returned ETB".into(),
+        }],
+        ..Default::default()
+    });
+    db.insert(CardDef {
+        id: 990603,
+        name: "Damage spell".into(),
+        card_types: vec![CardType::Instant],
+        spell_effect: Some(Effect::DealDamage {
+            amount: 1,
+            target: mtg_gto::card::TargetSpec::AnyCreature,
+        }),
+        ..Default::default()
+    });
+    let mut state = GameState::new(2);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::PreCombatMain;
+    state.players[0].land_plays_remaining = 1;
+    state
+}
+
+fn sba_window_events(state: &mut GameState, creature: u64) -> Vec<&'static str> {
+    state
+        .drain_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            GameEvent::ZoneChange {
+                object,
+                from: Zone::Battlefield,
+                to: Zone::Graveyard,
+            } if object == creature => Some("death"),
+            GameEvent::ZoneChange {
+                object,
+                from: Zone::Graveyard,
+                to: Zone::Battlefield,
+            } if object == creature => Some("return"),
+            GameEvent::AbilityTriggered { source, .. } if source == creature => Some("placement"),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn test_2a_shared_sba_stabilizes_before_placing_persist_etb() {
+    for land_play in [false, true] {
+        let mut state = sba_window_fixture();
+        let creature = state.create_card_in_zone(990602, 0, ZoneType::Battlefield);
+        let land = state.create_card_in_zone(990601, 0, ZoneType::Hand);
+        if land_play {
+            rules::apply_action(&mut state, &Action::PlayLand { object_id: land });
+        } else {
+            state.objects.get_mut(&creature).unwrap().damage_marked = 1;
+            rules::check_state_based_actions(&mut state);
+        }
+        assert_eq!(
+            sba_window_events(&mut state, creature),
+            vec!["death", "return", "death", "placement"]
+        );
+        assert_eq!(state.stack.len(), 1);
+        assert!(state.pending_triggers.is_empty());
+    }
+}
+
+#[test]
+fn test_2a_sba_multiple_passes_keep_all_occurrences_pending_for_choice() {
+    let mut state = sba_window_fixture();
+    let first = state.create_card_in_zone(990602, 0, ZoneType::Battlefield);
+    let second = state.create_card_in_zone(990602, 0, ZoneType::Battlefield);
+    let land = state.create_card_in_zone(990601, 0, ZoneType::Hand);
+    rules::apply_action(&mut state, &Action::PlayLand { object_id: land });
+    let events = state.drain_events();
+    let last_death = events
+        .iter()
+        .rposition(|event| {
+            matches!(event,
+        GameEvent::ZoneChange { object, from: Zone::Battlefield, to: Zone::Graveyard }
+            if *object == first || *object == second)
+        })
+        .unwrap();
+    assert!(!events[..=last_death]
+        .iter()
+        .any(|event| matches!(event, GameEvent::AbilityTriggered { .. })));
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert!(state.stack.is_empty());
+    assert!(legal_actions(&state)
+        .iter()
+        .any(|action| matches!(action, Action::OrderTriggers { .. })));
+}
+
+#[test]
+fn test_2a_enclosing_resolution_retains_sba_placement_deferral() {
+    let mut state = sba_window_fixture();
+    let creature = state.create_card_in_zone(990602, 0, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(990603, 0, ZoneType::Hand);
+    rules::apply_action(
+        &mut state,
+        &Action::CastSpell {
+            object_id: spell,
+            targets: vec![Target::Object(creature)],
+        },
+    );
+    state.drain_events();
+    rules::apply_action(&mut state, &Action::PassPriority);
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert_eq!(
+        sba_window_events(&mut state, creature),
+        vec!["death", "return", "death", "placement"]
+    );
+    assert_eq!(state.stack.len(), 1);
 }

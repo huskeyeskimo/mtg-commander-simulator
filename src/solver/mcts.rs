@@ -678,10 +678,63 @@ impl Strategy for MctsStrategy {
 // ---------------------------------------------------------------------------
 
 /// Result of a single MCTS goldfish game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MctsOutcome {
+    Win,
+    Loss,
+    Draw,
+    Censored,
+    Stalled,
+    Invalid,
+    /// An old record with no trustworthy nonwin termination reason.
+    LegacyUnknown,
+}
+
+impl From<crate::simulation::GameOutcome> for MctsOutcome {
+    fn from(outcome: crate::simulation::GameOutcome) -> Self {
+        use crate::simulation::GameOutcome;
+        match outcome {
+            GameOutcome::Win(0) => Self::Win,
+            GameOutcome::Win(_) => Self::Loss,
+            GameOutcome::Draw => Self::Draw,
+            GameOutcome::Censored(_) => Self::Censored,
+            GameOutcome::Stalled(_) => Self::Stalled,
+            GameOutcome::Invalid(_) => Self::Invalid,
+        }
+    }
+}
+
+fn apply_mcts_game_action(
+    state: &mut GameState,
+    action: &Action,
+    legal: &[Action],
+    actions_taken: &mut u32,
+    rejected_in_row: &mut u32,
+) -> Result<bool, crate::simulation::GameOutcome> {
+    use crate::simulation::{GameOutcome, TerminationReason};
+    match crate::simulation::apply_counted_action(state, action, legal) {
+        Ok(true) => {
+            *actions_taken += 1;
+            *rejected_in_row = 0;
+            Ok(true)
+        }
+        Ok(false) => {
+            *rejected_in_row += 1;
+            if *rejected_in_row >= crate::simulation::MAX_REJECTED_IN_ROW {
+                Err(GameOutcome::Stalled(TerminationReason::RejectedAction))
+            } else {
+                Ok(false)
+            }
+        }
+        Err(reason) => Err(GameOutcome::Invalid(reason)),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MctsGameResult {
     /// Whether player 0 won.
     pub won: bool,
+    pub outcome: MctsOutcome,
     /// Turn the game ended.
     pub kill_turn: u32,
     /// Total actions taken.
@@ -724,27 +777,45 @@ pub fn run_mcts_goldfish_game(
     let mut actions_taken: u32 = 0;
     let mut decision_stats = Vec::new();
     let mut trace_lines: Vec<String> = Vec::new();
+    let mut interrupted = None;
+    let mut rejected_in_row = 0u32;
 
     while !state.game_over
+        && state.winner.is_none()
         && state.turn_number <= GOLDFISH_MAX_TURNS
         && actions_taken < GOLDFISH_MAX_ACTIONS
     {
+        if crate::simulation::invalid_cleanup_state(state) {
+            interrupted = Some(crate::simulation::GameOutcome::Invalid(
+                crate::simulation::TerminationReason::IncompleteCleanup));
+            break;
+        }
         let player = state.priority_player;
         let actions = legal_actions(state);
 
         if actions.is_empty()
             || (actions.len() == 1 && actions[0] == Action::PassPriority)
         {
-            rules::apply_action(state, &Action::PassPriority);
-            actions_taken += 1;
+            if actions.is_empty() {
+                interrupted = Some(crate::simulation::no_progress_outcome(state));
+                break;
+            }
+            match apply_mcts_game_action(state, &Action::PassPriority, &actions,
+                &mut actions_taken, &mut rejected_in_row) {
+                Ok(_) => {}
+                Err(outcome) => { interrupted = Some(outcome); break; }
+            }
             continue;
         }
 
         if player != 0 {
             // Goldfish — deterministic, no search needed
             let action = goldfish.choose_action(state, player);
-            rules::apply_action(state, &action);
-            actions_taken += 1;
+            match apply_mcts_game_action(state, &action, &actions,
+                &mut actions_taken, &mut rejected_in_row) {
+                Ok(_) => {}
+                Err(outcome) => { interrupted = Some(outcome); break; }
+            }
             continue;
         }
 
@@ -765,8 +836,11 @@ pub fn run_mcts_goldfish_game(
                     format_action(&action, state),
                 ));
             }
-            rules::apply_action(state, &action);
-            actions_taken += 1;
+            match apply_mcts_game_action(state, &action, &actions,
+                &mut actions_taken, &mut rejected_in_row) {
+                Ok(_) => {}
+                Err(outcome) => { interrupted = Some(outcome); break; }
+            }
             continue;
         }
 
@@ -822,16 +896,23 @@ pub fn run_mcts_goldfish_game(
             counter.fetch_add(1, Ordering::Relaxed);
         }
 
-        rules::apply_action(state, &action);
-        actions_taken += 1;
+        match apply_mcts_game_action(state, &action, &actions,
+            &mut actions_taken, &mut rejected_in_row) {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(outcome) => { interrupted = Some(outcome); break; }
+        }
 
         if actions_taken % 10 == 0 {
             rules::check_state_based_actions(state);
         }
     }
 
+    let outcome = MctsOutcome::from(crate::simulation::classify_outcome(
+        state, GOLDFISH_MAX_TURNS, GOLDFISH_MAX_ACTIONS, actions_taken, interrupted));
     MctsGameResult {
-        won: state.winner == Some(0),
+        won: outcome == MctsOutcome::Win,
+        outcome,
         kill_turn: state.turn_number,
         actions_taken,
         final_life: [state.players[0].life, state.players[1].life],
@@ -853,42 +934,232 @@ fn format_action(action: &Action, state: &GameState) -> String {
 /// Aggregate results from many MCTS goldfish games.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MctsGoldfishResults {
+    pub schema_version: u32,
     pub total_games: u64,
     pub wins: u64,
     pub losses: u64,
     pub draws: u64,
-    pub avg_kill_turn: f64,
+    pub censored: u64,
+    pub stalled: u64,
+    pub invalid: u64,
+    pub legacy_unknown: u64,
+    pub avg_kill_turn: Option<f64>,
+    pub kill_turn_samples: u64,
     pub fastest_kill: u32,
     pub slowest_kill: u32,
-    pub avg_actions: f64,
-    pub avg_decisions_per_game: f64,
-    pub avg_best_reward: f64,
+    pub avg_actions: Option<f64>,
+    pub actions_samples: u64,
+    pub avg_decisions_per_game: Option<f64>,
+    pub decision_samples: u64,
+    pub avg_best_reward: Option<f64>,
+    pub reward_samples: u64,
     /// Kill-turn distribution: index = turn number, value = number of wins.
     pub kill_turn_distribution: Vec<u64>,
     /// Decision sequence from the fastest winning game.
     pub fastest_sequence: Vec<DecisionStat>,
 }
 
+/// The pre-outcome checkpoint layout. It is decoded only during migration;
+/// its nonwin counters cannot distinguish losses, rules draws, and timeouts.
+///
+/// Historical aggregate provenance (individual records can prove more):
+///
+/// | Metric | V1 aggregate | V2 aggregate | V3 |
+/// |---|---|---|---|
+/// | Actions/decisions | Mean over all attempts: known for all-win; otherwise unknown | Potential compatibility default: unknown | Explicit mean and sample count |
+/// | Reward | Empty decisions defaulted to zero: known only for a single completed game with decisions; otherwise unknown | Potential compatibility default: unknown | Explicit mean and sample count |
+/// | Kill turn | Mean over wins: known when wins exist | Preserved mean over wins: known when wins exist | Explicit mean and sample count |
+///
+/// V1/V2 per-game records recover completed-game actions and decisions and
+/// rewards with nonempty decision lists; absent records prove nothing.
+#[derive(Serialize, Deserialize)]
+struct LegacyMctsGoldfishResults {
+    total_games: u64,
+    wins: u64,
+    losses: u64,
+    draws: u64,
+    avg_kill_turn: f64,
+    fastest_kill: u32,
+    slowest_kill: u32,
+    avg_actions: f64,
+    avg_decisions_per_game: f64,
+    avg_best_reward: f64,
+    kill_turn_distribution: Vec<u64>,
+    fastest_sequence: Vec<DecisionStat>,
+}
+
+impl From<LegacyMctsGoldfishResults> for MctsGoldfishResults {
+    fn from(old: LegacyMctsGoldfishResults) -> Self {
+        let _ambiguous_old_counts = (old.losses, old.draws);
+        // V1 averaged actions and decisions over every attempt. They are
+        // completed-game means only when every attempt is a known win.
+        let all_attempts_won = old.total_games > 0 && old.wins == old.total_games;
+        // Both V1 writers contributed a default zero only for a game with no
+        // decisions. A single known win with decisions has one measured
+        // per-game reward, including when its measured value is zero.
+        let reward_is_measured = all_attempts_won && old.total_games == 1
+            && old.avg_decisions_per_game > 0.0;
+        Self {
+            schema_version: 3,
+            total_games: old.total_games,
+            wins: old.wins,
+            losses: 0,
+            draws: 0,
+            censored: 0,
+            stalled: 0,
+            invalid: 0,
+            legacy_unknown: old.total_games.saturating_sub(old.wins),
+            avg_kill_turn: (old.wins > 0).then_some(old.avg_kill_turn),
+            kill_turn_samples: old.wins,
+            fastest_kill: old.fastest_kill,
+            slowest_kill: old.slowest_kill,
+            avg_actions: all_attempts_won.then_some(old.avg_actions),
+            actions_samples: if all_attempts_won { old.total_games } else { 0 },
+            avg_decisions_per_game: all_attempts_won.then_some(old.avg_decisions_per_game),
+            decision_samples: if all_attempts_won { old.total_games } else { 0 },
+            avg_best_reward: reward_is_measured.then_some(old.avg_best_reward),
+            reward_samples: u64::from(reward_is_measured),
+            kill_turn_distribution: old.kill_turn_distribution,
+            fastest_sequence: old.fastest_sequence,
+        }
+    }
+}
+
+/// Version 2 knew outcomes but did not persist which averages had actual
+/// measurements. An aggregate containing migrated legacy records cannot
+/// recover completed-game action, decision, or reward samples.
+#[derive(Serialize, Deserialize)]
+struct MctsGoldfishResultsV2 {
+    schema_version: u32,
+    total_games: u64,
+    wins: u64,
+    losses: u64,
+    draws: u64,
+    censored: u64,
+    stalled: u64,
+    invalid: u64,
+    legacy_unknown: u64,
+    avg_kill_turn: f64,
+    fastest_kill: u32,
+    slowest_kill: u32,
+    avg_actions: f64,
+    avg_decisions_per_game: f64,
+    avg_best_reward: f64,
+    kill_turn_distribution: Vec<u64>,
+    fastest_sequence: Vec<DecisionStat>,
+}
+
+impl From<MctsGoldfishResultsV2> for MctsGoldfishResults {
+    fn from(old: MctsGoldfishResultsV2) -> Self {
+        let _unproven_aggregate_means = (old.avg_actions, old.avg_decisions_per_game,
+            old.avg_best_reward);
+        Self {
+            schema_version: 3,
+            total_games: old.total_games,
+            wins: old.wins,
+            losses: old.losses,
+            draws: old.draws,
+            censored: old.censored,
+            stalled: old.stalled,
+            invalid: old.invalid,
+            legacy_unknown: old.legacy_unknown,
+            avg_kill_turn: (old.wins > 0).then_some(old.avg_kill_turn),
+            kill_turn_samples: old.wins,
+            fastest_kill: old.fastest_kill,
+            slowest_kill: old.slowest_kill,
+            // V2 had no persisted measurement counts or provenance. Even with
+            // known outcomes, these fields could include V1 compatibility
+            // zeros, so neither zero nor a nonzero mean proves availability.
+            avg_actions: None,
+            actions_samples: 0,
+            avg_decisions_per_game: None,
+            decision_samples: 0,
+            avg_best_reward: None,
+            reward_samples: 0,
+            kill_turn_distribution: old.kill_turn_distribution,
+            fastest_sequence: old.fastest_sequence,
+        }
+    }
+}
+
+fn add_measurement(mean: &mut Option<f64>, samples: &mut u64, value: f64) {
+    let previous = mean.unwrap_or(value);
+    *samples += 1;
+    *mean = Some(previous + (value - previous) / *samples as f64);
+}
+
+fn merge_measurement(a: Option<f64>, a_count: u64, b: Option<f64>, b_count: u64) -> (Option<f64>, u64) {
+    let a_count = if a.is_some() { a_count } else { 0 };
+    let b_count = if b.is_some() { b_count } else { 0 };
+    let count = a_count + b_count;
+    if count == 0 { return (None, 0); }
+    let sum = a.unwrap_or(0.0) * a_count as f64 + b.unwrap_or(0.0) * b_count as f64;
+    (Some(sum / count as f64), count)
+}
+
+/// Recover only measurements explicitly present in historical per-game
+/// records. Aggregate outcome and kill-turn counts remain authoritative.
+fn recover_record_measurements(results: &mut MctsGoldfishResults, records: &[MctsGameResult]) {
+    let mut actions = None;
+    let mut actions_samples = 0;
+    let mut decisions = None;
+    let mut decision_samples = 0;
+    let mut rewards = None;
+    let mut reward_samples = 0;
+    for record in records {
+        if !matches!(record.outcome, MctsOutcome::Win | MctsOutcome::Loss | MctsOutcome::Draw) {
+            continue;
+        }
+        add_measurement(&mut actions, &mut actions_samples, record.actions_taken as f64);
+        add_measurement(&mut decisions, &mut decision_samples, record.decision_stats.len() as f64);
+        if !record.decision_stats.is_empty() {
+            let reward = record.decision_stats.iter()
+                .map(|decision| decision.best_action_avg_reward).sum::<f64>()
+                / record.decision_stats.len() as f64;
+            add_measurement(&mut rewards, &mut reward_samples, reward);
+        }
+    }
+    // A direct V1 all-win aggregate already has a documented action/decision
+    // mean for every game; present records add evidence only for missing means.
+    if results.actions_samples == 0 {
+        results.avg_actions = actions;
+        results.actions_samples = actions_samples;
+    }
+    if results.decision_samples == 0 {
+        results.avg_decisions_per_game = decisions;
+        results.decision_samples = decision_samples;
+    }
+    if results.reward_samples == 0 {
+        results.avg_best_reward = rewards;
+        results.reward_samples = reward_samples;
+    }
+}
+
 impl MctsGoldfishResults {
+    pub fn completed_games(&self) -> u64 {
+        self.wins + self.losses + self.draws
+    }
+
     pub fn win_rate(&self) -> f64 {
-        if self.total_games == 0 {
+        if self.completed_games() == 0 {
             return 0.0;
         }
-        self.wins as f64 / self.total_games as f64
+        self.wins as f64 / self.completed_games() as f64
     }
 
     pub fn display(&self) {
         println!("=== MCTS Goldfish Results ===");
         println!("Total games: {}", self.total_games);
         println!("Wins: {} ({:.1}%)", self.wins, self.win_rate() * 100.0);
-        println!("Draws (timeout): {}", self.draws);
+        println!("Rules draws: {}", self.draws);
+        println!("Censored: {}, stalled: {}, invalid: {}, legacy unknown: {}",
+            self.censored, self.stalled, self.invalid, self.legacy_unknown);
         if self.wins > 0 {
-            println!("Avg kill turn: {:.2}", self.avg_kill_turn);
+            println!("Avg kill turn: {} ({} measured)",
+                self.avg_kill_turn.map_or_else(|| "unavailable".into(), |v| format!("{v:.2}")),
+                self.kill_turn_samples);
             println!("Fastest kill: T{}", self.fastest_kill);
             println!("Slowest kill: T{}", self.slowest_kill);
-            println!("Avg actions/game: {:.1}", self.avg_actions);
-            println!("Avg decisions/game: {:.1}", self.avg_decisions_per_game);
-            println!("Avg best-action reward: {:.4}", self.avg_best_reward);
             println!("Kill turn distribution:");
             for (turn, &count) in self.kill_turn_distribution.iter().enumerate() {
                 if count > 0 {
@@ -914,6 +1185,15 @@ impl MctsGoldfishResults {
                 }
             }
         }
+        println!("Avg actions/measured game: {} ({} measured)",
+            self.avg_actions.map_or_else(|| "unavailable".into(), |v| format!("{v:.1}")),
+            self.actions_samples);
+        println!("Avg decisions/measured game: {} ({} measured)",
+            self.avg_decisions_per_game.map_or_else(|| "unavailable".into(), |v| format!("{v:.1}")),
+            self.decision_samples);
+        println!("Avg best-action reward/measured game: {} ({} measured)",
+            self.avg_best_reward.map_or_else(|| "unavailable".into(), |v| format!("{v:.4}")),
+            self.reward_samples);
     }
 
     /// Merge another set of results into this one, combining statistics
@@ -927,39 +1207,21 @@ impl MctsGoldfishResults {
         let wins = self.wins + other.wins;
         let losses = self.losses + other.losses;
         let draws = self.draws + other.draws;
-
-        // Reconstruct totals from averages, then recompute combined averages.
-        let total_kill_turns =
-            self.avg_kill_turn * self.wins as f64 + other.avg_kill_turn * other.wins as f64;
-        let avg_kill_turn = if wins > 0 {
-            total_kill_turns / wins as f64
-        } else {
-            0.0
-        };
-
-        let total_actions =
-            self.avg_actions * self.total_games as f64 + other.avg_actions * other.total_games as f64;
-        let avg_actions = if total_games > 0 {
-            total_actions / total_games as f64
-        } else {
-            0.0
-        };
-
-        let total_decisions = self.avg_decisions_per_game * self.total_games as f64
-            + other.avg_decisions_per_game * other.total_games as f64;
-        let avg_decisions_per_game = if total_games > 0 {
-            total_decisions / total_games as f64
-        } else {
-            0.0
-        };
-
-        let total_reward = self.avg_best_reward * self.total_games as f64
-            + other.avg_best_reward * other.total_games as f64;
-        let avg_best_reward = if total_games > 0 {
-            total_reward / total_games as f64
-        } else {
-            0.0
-        };
+        let censored = self.censored + other.censored;
+        let stalled = self.stalled + other.stalled;
+        let invalid = self.invalid + other.invalid;
+        let legacy_unknown = self.legacy_unknown + other.legacy_unknown;
+        let (avg_kill_turn, kill_turn_samples) = merge_measurement(
+            self.avg_kill_turn, self.kill_turn_samples,
+            other.avg_kill_turn, other.kill_turn_samples);
+        let (avg_actions, actions_samples) = merge_measurement(
+            self.avg_actions, self.actions_samples, other.avg_actions, other.actions_samples);
+        let (avg_decisions_per_game, decision_samples) = merge_measurement(
+            self.avg_decisions_per_game, self.decision_samples,
+            other.avg_decisions_per_game, other.decision_samples);
+        let (avg_best_reward, reward_samples) = merge_measurement(
+            self.avg_best_reward, self.reward_samples,
+            other.avg_best_reward, other.reward_samples);
 
         // Min/max across both runs (handle 0 = no wins).
         let fastest_kill = match (self.wins > 0, other.wins > 0) {
@@ -998,16 +1260,25 @@ impl MctsGoldfishResults {
         };
 
         MctsGoldfishResults {
+            schema_version: 3,
             total_games,
             wins,
             losses,
             draws,
+            censored,
+            stalled,
+            invalid,
+            legacy_unknown,
             avg_kill_turn,
+            kill_turn_samples,
             fastest_kill,
             slowest_kill,
             avg_actions,
+            actions_samples,
             avg_decisions_per_game,
+            decision_samples,
             avg_best_reward,
+            reward_samples,
             kill_turn_distribution,
             fastest_sequence,
         }
@@ -1025,9 +1296,65 @@ impl MctsGoldfishResults {
     pub fn load_checkpoint(path: &std::path::Path) -> Result<MctsGoldfishResults, String> {
         let data = std::fs::read_to_string(path)
             .map_err(|e| format!("read {}: {}", path.display(), e))?;
-        serde_json::from_str(&data)
-            .map_err(|e| format!("deserialize {}: {}", path.display(), e))
+        let value: serde_json::Value = serde_json::from_str(&data)
+            .map_err(|e| format!("deserialize {}: {}", path.display(), e))?;
+        match value.get("schema_version").and_then(|v| v.as_u64()) {
+            Some(3) => serde_json::from_value(value)
+                .map_err(|e| format!("deserialize {}: {}", path.display(), e)),
+            Some(2) => serde_json::from_value::<MctsGoldfishResultsV2>(value)
+                .map(Into::into)
+                .map_err(|e| format!("deserialize v2 {}: {}", path.display(), e)),
+            None | Some(1) => serde_json::from_value::<LegacyMctsGoldfishResults>(value)
+                .map(Into::into)
+                .map_err(|e| format!("deserialize legacy {}: {}", path.display(), e)),
+            Some(version) => Err(format!("unsupported MCTS result schema {version}")),
+        }
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct LegacyMctsGameResult {
+    won: bool,
+    kill_turn: u32,
+    actions_taken: u32,
+    final_life: [i32; 2],
+    decision_stats: Vec<DecisionStat>,
+    #[serde(skip)]
+    trace_lines: Vec<String>,
+}
+
+impl From<LegacyMctsGameResult> for MctsGameResult {
+    fn from(old: LegacyMctsGameResult) -> Self {
+        Self {
+            won: old.won,
+            outcome: if old.won { MctsOutcome::Win } else { MctsOutcome::LegacyUnknown },
+            kill_turn: old.kill_turn,
+            actions_taken: old.actions_taken,
+            final_life: old.final_life,
+            decision_stats: old.decision_stats,
+            trace_lines: old.trace_lines,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct LegacyMctsCampaignCheckpoint {
+    config: MctsConfig,
+    deck_name: String,
+    total_games_planned: u64,
+    games_completed: u64,
+    results: LegacyMctsGoldfishResults,
+    game_results: Vec<LegacyMctsGameResult>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MctsCampaignCheckpointV2 {
+    config: MctsConfig,
+    deck_name: String,
+    total_games_planned: u64,
+    games_completed: u64,
+    results: MctsGoldfishResultsV2,
+    game_results: Vec<MctsGameResult>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1065,16 +1392,25 @@ impl MctsCampaignCheckpoint {
             total_games_planned: total_games,
             games_completed: 0,
             results: MctsGoldfishResults {
+                schema_version: 3,
                 total_games: 0,
                 wins: 0,
                 losses: 0,
                 draws: 0,
-                avg_kill_turn: 0.0,
+                censored: 0,
+                stalled: 0,
+                invalid: 0,
+                legacy_unknown: 0,
+                avg_kill_turn: None,
+                kill_turn_samples: 0,
                 fastest_kill: 0,
                 slowest_kill: 0,
-                avg_actions: 0.0,
-                avg_decisions_per_game: 0.0,
-                avg_best_reward: 0.0,
+                avg_actions: None,
+                actions_samples: 0,
+                avg_decisions_per_game: None,
+                decision_samples: 0,
+                avg_best_reward: None,
+                reward_samples: 0,
                 kill_turn_distribution: vec![0u64; max_turn + 1],
                 fastest_sequence: Vec::new(),
             },
@@ -1088,33 +1424,23 @@ impl MctsCampaignCheckpoint {
         r.total_games += 1;
         self.games_completed += 1;
 
-        // Running averages: accumulate totals, compute averages at display time
-        let n = r.total_games as f64;
+        let completed = matches!(result.outcome, MctsOutcome::Win | MctsOutcome::Loss | MctsOutcome::Draw);
+        if completed {
+            add_measurement(&mut r.avg_actions, &mut r.actions_samples, result.actions_taken as f64);
+            add_measurement(&mut r.avg_decisions_per_game, &mut r.decision_samples,
+                result.decision_stats.len() as f64);
+            if !result.decision_stats.is_empty() {
+                let avg_reward = result.decision_stats.iter()
+                    .map(|decision| decision.best_action_avg_reward).sum::<f64>()
+                    / result.decision_stats.len() as f64;
+                add_measurement(&mut r.avg_best_reward, &mut r.reward_samples, avg_reward);
+            }
+        }
 
-        let avg_reward: f64 = if result.decision_stats.is_empty() {
-            0.0
-        } else {
-            result
-                .decision_stats
-                .iter()
-                .map(|d| d.best_action_avg_reward)
-                .sum::<f64>()
-                / result.decision_stats.len() as f64
-        };
-
-        // Update running averages using incremental formula:
-        // new_avg = old_avg + (value - old_avg) / n
-        r.avg_actions += (result.actions_taken as f64 - r.avg_actions) / n;
-        r.avg_decisions_per_game +=
-            (result.decision_stats.len() as f64 - r.avg_decisions_per_game) / n;
-        r.avg_best_reward += (avg_reward - r.avg_best_reward) / n;
-
-        if result.won {
+        if result.outcome == MctsOutcome::Win {
             r.wins += 1;
             let turn = result.kill_turn;
-            // Update avg kill turn (running average over wins only)
-            let nw = r.wins as f64;
-            r.avg_kill_turn += (turn as f64 - r.avg_kill_turn) / nw;
+            add_measurement(&mut r.avg_kill_turn, &mut r.kill_turn_samples, turn as f64);
 
             if (turn as usize) < r.kill_turn_distribution.len() {
                 r.kill_turn_distribution[turn as usize] += 1;
@@ -1126,10 +1452,16 @@ impl MctsCampaignCheckpoint {
             if turn > r.slowest_kill {
                 r.slowest_kill = turn;
             }
-        } else if result.final_life[0] <= 0 {
-            r.losses += 1;
         } else {
-            r.draws += 1;
+            match result.outcome {
+                MctsOutcome::Loss => r.losses += 1,
+                MctsOutcome::Draw => r.draws += 1,
+                MctsOutcome::Censored => r.censored += 1,
+                MctsOutcome::Stalled => r.stalled += 1,
+                MctsOutcome::Invalid => r.invalid += 1,
+                MctsOutcome::LegacyUnknown => r.legacy_unknown += 1,
+                MctsOutcome::Win => unreachable!(),
+            }
         }
 
         self.game_results.push(result);
@@ -1140,7 +1472,8 @@ impl MctsCampaignCheckpoint {
         let path = Path::new(dir);
         std::fs::create_dir_all(path).map_err(|e| format!("mkdir: {}", e))?;
         let filename = path.join("mcts_campaign.bin");
-        let bytes = bincode::serialize(self).map_err(|e| format!("serialize: {}", e))?;
+        let mut bytes = b"MCTSCAMP3".to_vec();
+        bytes.extend(bincode::serialize(self).map_err(|e| format!("serialize: {}", e))?);
         std::fs::write(&filename, bytes).map_err(|e| format!("write: {}", e))?;
         // Also write a human-readable summary
         let summary = path.join("mcts_campaign_summary.txt");
@@ -1150,7 +1483,7 @@ impl MctsCampaignCheckpoint {
              Deck: {}\n\
              Games: {}/{}\n\
              Win rate: {:.1}%\n\
-             Avg kill turn: {:.2}\n\
+             Avg kill turn: {} ({} measured)\n\
              Fastest: T{}\n\
              Slowest: T{}\n\
              Config: {} iters, C={:.2}, depth={}\n",
@@ -1158,7 +1491,8 @@ impl MctsCampaignCheckpoint {
             self.games_completed,
             self.total_games_planned,
             self.results.win_rate() * 100.0,
-            self.results.avg_kill_turn,
+            self.results.avg_kill_turn.map_or_else(|| "unavailable".into(), |v| format!("{v:.2}")),
+            self.results.kill_turn_samples,
             self.results.fastest_kill,
             self.results.slowest_kill,
             self.config.iterations_per_move,
@@ -1173,7 +1507,47 @@ impl MctsCampaignCheckpoint {
     pub fn load(dir: &str) -> Result<Self, String> {
         let path = Path::new(dir).join("mcts_campaign.bin");
         let bytes = std::fs::read(&path).map_err(|e| format!("read: {}", e))?;
-        bincode::deserialize(&bytes).map_err(|e| format!("deserialize: {}", e))
+        if let Some(payload) = bytes.strip_prefix(b"MCTSCAMP3") {
+            let checkpoint: Self = bincode::deserialize(payload)
+                .map_err(|e| format!("deserialize v3: {}", e))?;
+            if checkpoint.results.schema_version != 3 {
+                return Err(format!("unsupported MCTS campaign schema {}", checkpoint.results.schema_version));
+            }
+            return Ok(checkpoint);
+        }
+        if let Some(payload) = bytes.strip_prefix(b"MCTSCAMP2") {
+            let old: MctsCampaignCheckpointV2 = bincode::deserialize(payload)
+                .map_err(|e| format!("deserialize v2: {}", e))?;
+            if old.results.schema_version != 2 {
+                return Err(format!("unsupported MCTS campaign schema {}", old.results.schema_version));
+            }
+            let complete_records = old.game_results.len() as u64 == old.results.total_games
+                && old.results.total_games == old.games_completed;
+            let mut migrated = Self::new(old.config, old.deck_name, old.total_games_planned);
+            if complete_records {
+                for record in old.game_results { migrated.add_game(record); }
+            } else {
+                migrated.games_completed = old.games_completed;
+                migrated.results = old.results.into();
+                migrated.game_results = old.game_results;
+                recover_record_measurements(&mut migrated.results, &migrated.game_results);
+            }
+            return Ok(migrated);
+        }
+        let old: LegacyMctsCampaignCheckpoint = bincode::deserialize(&bytes)
+            .map_err(|e| format!("deserialize legacy: {}", e))?;
+        let complete_records = old.game_results.len() as u64 == old.results.total_games
+            && old.results.total_games == old.games_completed;
+        let mut migrated = Self::new(old.config, old.deck_name, old.total_games_planned);
+        if complete_records {
+            for record in old.game_results { migrated.add_game(record.into()); }
+        } else {
+            migrated.games_completed = old.games_completed;
+            migrated.results = old.results.into();
+            migrated.game_results = old.game_results.into_iter().map(Into::into).collect();
+            recover_record_measurements(&mut migrated.results, &migrated.game_results);
+        }
+        Ok(migrated)
     }
 
     /// How many games remain.
@@ -1185,6 +1559,644 @@ impl MctsCampaignCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_json_cleanup_owner_mismatch_matches_normal_invalid() {
+        use crate::card::{CardDef, CardType, ZoneType};
+        use crate::game::CardDatabase;
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 90_123, name: "Filler".into(),
+            card_types: vec![CardType::Land], ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(std::sync::Arc::new(db));
+        state.phase = Phase::Cleanup;
+        state.turn_number = GOLDFISH_MAX_TURNS;
+        state.cleanup_discard_in_progress = true;
+        state.active_player = 1;
+        state.priority_player = 0;
+        for player in 0..2 {
+            for _ in 0..8 { state.create_card_in_zone(90_123, player, ZoneType::Hand); }
+        }
+        let json = serde_json::to_string(&state).unwrap();
+        let mut restored: GameState = serde_json::from_str(&json).unwrap();
+        restored.card_db = state.card_db.clone();
+        assert!(crate::simulation::invalid_cleanup_state(&restored));
+        let result = run_mcts_goldfish_game(&mut restored, &MctsConfig::default(), false, None);
+        assert_eq!(result.outcome, MctsOutcome::Invalid);
+        assert_eq!(result.actions_taken, 0);
+    }
+
+    #[test]
+    fn legacy_unknown_actions_do_not_reduce_a_new_measured_mean() {
+        let legacy = LegacyMctsGoldfishResults {
+            total_games: 2, wins: 1, losses: 1, draws: 0,
+            avg_kill_turn: 5.0, fastest_kill: 5, slowest_kill: 5,
+            avg_actions: 40.0, avg_decisions_per_game: 4.0, avg_best_reward: 0.8,
+            kill_turn_distribution: vec![0, 0, 0, 0, 0, 1], fastest_sequence: vec![],
+        };
+        let mut current = MctsCampaignCheckpoint::new(MctsConfig::default(), "new".into(), 1);
+        current.add_game(MctsGameResult {
+            won: true, outcome: MctsOutcome::Win, kill_turn: 4,
+            actions_taken: 100, final_life: [20, 0],
+            decision_stats: vec![DecisionStat { turn: 4, phase: Phase::PreCombatMain,
+                num_legal_actions: 1, best_action_visits: 1, best_action_avg_reward: 0.7,
+                action_description: "measured".into(), pilot_hand: vec![] }],
+            trace_lines: vec![],
+        });
+        let mixed = MctsGoldfishResults::from(legacy).merge(&current.results);
+        assert_eq!(mixed.total_games, 3);
+        assert_eq!(mixed.wins, 2);
+        assert_eq!(mixed.avg_actions, Some(100.0));
+        assert_eq!(mixed.actions_samples, 1);
+        assert_eq!(mixed.avg_decisions_per_game, Some(1.0));
+        assert_eq!(mixed.decision_samples, 1);
+        assert!((mixed.avg_best_reward.unwrap() - 0.7).abs() < 1e-10);
+        assert_eq!(mixed.reward_samples, 1);
+    }
+
+    #[test]
+    fn two_measured_action_counts_average_and_zero_is_a_measurement() {
+        let mut campaign = MctsCampaignCheckpoint::new(MctsConfig::default(), "measured".into(), 3);
+        for actions in [100, 200, 0] {
+            campaign.add_game(MctsGameResult {
+                won: true, outcome: MctsOutcome::Win, kill_turn: 5,
+                actions_taken: actions, final_life: [20, 0],
+                decision_stats: vec![], trace_lines: vec![],
+            });
+            if actions == 200 {
+                assert_eq!(campaign.results.avg_actions, Some(150.0));
+                assert_eq!(campaign.results.actions_samples, 2);
+            }
+        }
+        assert_eq!(campaign.results.avg_actions, Some(100.0));
+        assert_eq!(campaign.results.actions_samples, 3);
+        assert_eq!(campaign.results.avg_decisions_per_game, Some(0.0));
+        assert_eq!(campaign.results.decision_samples, 3);
+        assert_eq!(campaign.results.avg_best_reward, None);
+        assert_eq!(campaign.results.reward_samples, 0);
+    }
+
+    #[test]
+    fn v2_aggregate_migration_preserves_only_recoverable_measurements() {
+        let old = MctsGoldfishResultsV2 {
+            schema_version: 2, total_games: 3, wins: 1, losses: 1, draws: 0,
+            censored: 0, stalled: 0, invalid: 0, legacy_unknown: 1,
+            avg_kill_turn: 5.0, fastest_kill: 5, slowest_kill: 5,
+            avg_actions: 50.0, avg_decisions_per_game: 4.0, avg_best_reward: 0.6,
+            kill_turn_distribution: vec![0, 0, 0, 0, 0, 1], fastest_sequence: vec![],
+        };
+        let migrated: MctsGoldfishResults = old.into();
+        assert_eq!(migrated.avg_kill_turn, Some(5.0));
+        assert_eq!(migrated.kill_turn_samples, 1);
+        assert_eq!(migrated.avg_actions, None);
+        assert_eq!(migrated.actions_samples, 0);
+        assert_eq!(migrated.avg_decisions_per_game, None);
+        assert_eq!(migrated.reward_samples, 0);
+        let json = serde_json::to_string(&migrated).unwrap();
+        let roundtrip: MctsGoldfishResults = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtrip.avg_actions, None);
+        assert_eq!(roundtrip.actions_samples, 0);
+    }
+
+    #[test]
+    fn v1_all_win_aggregate_retains_documented_action_and_decision_means() {
+        // V1 add_game averaged actions and decisions over total_games. When
+        // every attempt won, that denominator is also the completed count.
+        let fastest_sequence = [0.6, 0.8].into_iter().map(|reward| DecisionStat {
+            turn: 3, phase: Phase::PreCombatMain, num_legal_actions: 1,
+            best_action_visits: 1, best_action_avg_reward: reward,
+            action_description: "measured".into(), pilot_hand: vec![],
+        }).collect();
+        let old = LegacyMctsGoldfishResults {
+            total_games: 1, wins: 1, losses: 0, draws: 0,
+            avg_kill_turn: 3.0, fastest_kill: 3, slowest_kill: 3,
+            avg_actions: 80.0, avg_decisions_per_game: 2.0, avg_best_reward: 0.7,
+            kill_turn_distribution: vec![0, 0, 0, 1], fastest_sequence,
+        };
+        let migrated: MctsGoldfishResults = old.into();
+        assert_eq!((migrated.avg_actions, migrated.actions_samples), (Some(80.0), 1));
+        assert_eq!((migrated.avg_decisions_per_game, migrated.decision_samples), (Some(2.0), 1));
+        // The singleton has decisions, so its V1 reward cannot be a default.
+        assert_eq!((migrated.avg_best_reward, migrated.reward_samples), (Some(0.7), 1));
+        let mut current = MctsCampaignCheckpoint::new(MctsConfig::default(), "new".into(), 1);
+        current.add_game(MctsGameResult {
+            won: true, outcome: MctsOutcome::Win, kill_turn: 4,
+            actions_taken: 100, final_life: [20, 0],
+            decision_stats: vec![DecisionStat { turn: 4, phase: Phase::PreCombatMain,
+                num_legal_actions: 1, best_action_visits: 1, best_action_avg_reward: 0.5,
+                action_description: "new".into(), pilot_hand: vec![] }], trace_lines: vec![],
+        });
+        let mixed = migrated.merge(&current.results);
+        assert_eq!((mixed.avg_actions, mixed.actions_samples), (Some(90.0), 2));
+        assert_eq!((mixed.avg_best_reward, mixed.reward_samples), (Some(0.6), 2));
+    }
+
+    #[test]
+    fn v1_singleton_measured_zero_reward_is_available() {
+        let old = LegacyMctsGoldfishResults {
+            total_games: 1, wins: 1, losses: 0, draws: 0,
+            avg_kill_turn: 3.0, fastest_kill: 3, slowest_kill: 3,
+            avg_actions: 80.0, avg_decisions_per_game: 1.0, avg_best_reward: 0.0,
+            kill_turn_distribution: vec![0, 0, 0, 1],
+            fastest_sequence: vec![DecisionStat {
+                turn: 3, phase: Phase::PreCombatMain, num_legal_actions: 1,
+                best_action_visits: 1, best_action_avg_reward: 0.0,
+                action_description: "measured zero".into(), pilot_hand: vec![],
+            }],
+        };
+        let migrated: MctsGoldfishResults = old.into();
+        assert_eq!((migrated.avg_best_reward, migrated.reward_samples), (Some(0.0), 1));
+    }
+
+    #[test]
+    fn v1_multi_game_reward_aggregate_cannot_count_defaulted_games() {
+        let old = LegacyMctsGoldfishResults {
+            total_games: 2, wins: 2, losses: 0, draws: 0,
+            avg_kill_turn: 3.0, fastest_kill: 3, slowest_kill: 3,
+            avg_actions: 80.0, avg_decisions_per_game: 0.5, avg_best_reward: 0.35,
+            kill_turn_distribution: vec![0, 0, 0, 2], fastest_sequence: vec![],
+        };
+        let migrated: MctsGoldfishResults = old.into();
+        assert_eq!((migrated.avg_actions, migrated.actions_samples), (Some(80.0), 2));
+        assert_eq!((migrated.avg_best_reward, migrated.reward_samples), (None, 0));
+    }
+
+    #[test]
+    fn actual_v1_to_v2_compatibility_zero_is_not_a_measured_zero() {
+        // Previous V1 -> V2 migration retained the win and kill turn, but
+        // wrote zeros into action/decision/reward fields without provenance.
+        let old_v1 = LegacyMctsGoldfishResults {
+            total_games: 1, wins: 1, losses: 0, draws: 0,
+            avg_kill_turn: 3.0, fastest_kill: 3, slowest_kill: 3,
+            avg_actions: 80.0, avg_decisions_per_game: 2.0, avg_best_reward: 0.7,
+            kill_turn_distribution: vec![0, 0, 0, 1],
+            fastest_sequence: [0.6, 0.8].into_iter().map(|reward| DecisionStat {
+                turn: 3, phase: Phase::PreCombatMain, num_legal_actions: 1,
+                best_action_visits: 1, best_action_avg_reward: reward,
+                action_description: "measured".into(), pilot_hand: vec![],
+            }).collect(),
+        };
+        let intermediate = MctsGoldfishResultsV2 {
+            schema_version: 2, total_games: old_v1.total_games, wins: old_v1.wins,
+            losses: 0, draws: 0, censored: 0, stalled: 0, invalid: 0,
+            legacy_unknown: old_v1.total_games - old_v1.wins,
+            avg_kill_turn: old_v1.avg_kill_turn,
+            fastest_kill: old_v1.fastest_kill, slowest_kill: old_v1.slowest_kill,
+            avg_actions: 0.0, avg_decisions_per_game: 0.0, avg_best_reward: 0.0,
+            kill_turn_distribution: old_v1.kill_turn_distribution.clone(),
+            fastest_sequence: old_v1.fastest_sequence.clone(),
+        };
+        let direct = MctsGoldfishResults::from(old_v1);
+        assert_eq!((direct.avg_best_reward, direct.reward_samples), (Some(0.7), 1));
+        let path = std::env::temp_dir().join(format!("mcts-v1-v2-chain-{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_vec(&intermediate).unwrap()).unwrap();
+        let migrated = MctsGoldfishResults::load_checkpoint(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!((migrated.wins, migrated.legacy_unknown), (1, 0));
+        assert_eq!((migrated.avg_kill_turn, migrated.kill_turn_samples), (Some(3.0), 1));
+        assert_eq!((migrated.avg_actions, migrated.actions_samples), (None, 0));
+        assert_eq!((migrated.avg_decisions_per_game, migrated.decision_samples), (None, 0));
+        assert_eq!((migrated.avg_best_reward, migrated.reward_samples), (None, 0));
+
+        let mut current = MctsCampaignCheckpoint::new(MctsConfig::default(), "new".into(), 1);
+        current.add_game(MctsGameResult {
+            won: true, outcome: MctsOutcome::Win, kill_turn: 4,
+            actions_taken: 100, final_life: [20, 0],
+            decision_stats: vec![DecisionStat { turn: 4, phase: Phase::PreCombatMain,
+                num_legal_actions: 1, best_action_visits: 1, best_action_avg_reward: 0.5,
+                action_description: "measured".into(), pilot_hand: vec![] }], trace_lines: vec![],
+        });
+        let mixed = migrated.merge(&current.results);
+        assert_eq!((mixed.wins, mixed.avg_actions, mixed.actions_samples), (2, Some(100.0), 1));
+        assert_eq!((mixed.avg_decisions_per_game, mixed.decision_samples), (Some(1.0), 1));
+        assert_eq!((mixed.avg_best_reward, mixed.reward_samples), (Some(0.5), 1));
+        assert_eq!((mixed.avg_kill_turn, mixed.kill_turn_samples), (Some(3.5), 2));
+    }
+
+    #[test]
+    fn v2_nonzero_aggregate_without_records_has_no_metric_provenance() {
+        let old = MctsGoldfishResultsV2 {
+            schema_version: 2, total_games: 1, wins: 1, losses: 0, draws: 0,
+            censored: 0, stalled: 0, invalid: 0, legacy_unknown: 0,
+            avg_kill_turn: 4.0, fastest_kill: 4, slowest_kill: 4,
+            avg_actions: 80.0, avg_decisions_per_game: 2.0, avg_best_reward: 0.9,
+            kill_turn_distribution: vec![0, 0, 0, 0, 1], fastest_sequence: vec![],
+        };
+        let migrated: MctsGoldfishResults = old.into();
+        assert_eq!((migrated.wins, migrated.avg_kill_turn, migrated.kill_turn_samples),
+            (1, Some(4.0), 1));
+        assert_eq!((migrated.avg_actions, migrated.actions_samples), (None, 0));
+        assert_eq!((migrated.avg_decisions_per_game, migrated.decision_samples), (None, 0));
+        assert_eq!((migrated.avg_best_reward, migrated.reward_samples), (None, 0));
+    }
+
+    #[test]
+    fn v2_partial_campaign_recovers_only_the_present_records() {
+        let old = MctsCampaignCheckpointV2 {
+            config: MctsConfig::default(), deck_name: "partial".into(),
+            total_games_planned: 3, games_completed: 3,
+            results: MctsGoldfishResultsV2 {
+                schema_version: 2, total_games: 3, wins: 2, losses: 1, draws: 0,
+                censored: 0, stalled: 0, invalid: 0, legacy_unknown: 0,
+                avg_kill_turn: 5.0, fastest_kill: 4, slowest_kill: 6,
+                avg_actions: 0.0, avg_decisions_per_game: 0.0, avg_best_reward: 0.0,
+                kill_turn_distribution: vec![0, 0, 0, 0, 1, 0, 1], fastest_sequence: vec![],
+            },
+            game_results: vec![MctsGameResult {
+                won: true, outcome: MctsOutcome::Win, kill_turn: 4,
+                actions_taken: 80, final_life: [20, 0],
+                decision_stats: vec![DecisionStat { turn: 4, phase: Phase::PreCombatMain,
+                    num_legal_actions: 1, best_action_visits: 1, best_action_avg_reward: 0.0,
+                    action_description: "measured zero reward".into(), pilot_hand: vec![] }],
+                trace_lines: vec![],
+            }],
+        };
+        let dir = std::env::temp_dir().join(format!("mcts-v2-partial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut bytes = b"MCTSCAMP2".to_vec();
+        bytes.extend(bincode::serialize(&old).unwrap());
+        std::fs::write(dir.join("mcts_campaign.bin"), bytes).unwrap();
+        let mut loaded = MctsCampaignCheckpoint::load(dir.to_str().unwrap()).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!((loaded.results.wins, loaded.results.losses, loaded.results.total_games), (2, 1, 3));
+        assert_eq!((loaded.results.avg_kill_turn, loaded.results.kill_turn_samples), (Some(5.0), 2));
+        assert_eq!((loaded.results.avg_actions, loaded.results.actions_samples), (Some(80.0), 1));
+        assert_eq!((loaded.results.avg_decisions_per_game, loaded.results.decision_samples), (Some(1.0), 1));
+        assert_eq!((loaded.results.avg_best_reward, loaded.results.reward_samples), (Some(0.0), 1));
+        loaded.add_game(MctsGameResult { won: true, outcome: MctsOutcome::Win, kill_turn: 3,
+            actions_taken: 100, final_life: [20, 0], decision_stats: vec![], trace_lines: vec![] });
+        assert_eq!((loaded.results.wins, loaded.results.actions_samples, loaded.results.avg_actions),
+            (3, 2, Some(90.0)));
+        assert_eq!((loaded.results.avg_best_reward, loaded.results.reward_samples), (Some(0.0), 1));
+    }
+
+    #[test]
+    fn v1_partial_campaign_recovers_record_metrics_without_inventing_outcomes() {
+        let old = LegacyMctsCampaignCheckpoint {
+            config: MctsConfig::default(), deck_name: "v1 partial".into(),
+            total_games_planned: 3, games_completed: 3,
+            results: LegacyMctsGoldfishResults {
+                total_games: 3, wins: 2, losses: 1, draws: 0,
+                avg_kill_turn: 5.0, fastest_kill: 4, slowest_kill: 6,
+                avg_actions: 20.0, avg_decisions_per_game: 1.0, avg_best_reward: 0.4,
+                kill_turn_distribution: vec![0, 0, 0, 0, 1, 0, 1], fastest_sequence: vec![],
+            },
+            game_results: vec![LegacyMctsGameResult {
+                won: true, kill_turn: 4, actions_taken: 80,
+                final_life: [20, 0], decision_stats: vec![DecisionStat {
+                    turn: 4, phase: Phase::PreCombatMain, num_legal_actions: 1,
+                    best_action_visits: 1, best_action_avg_reward: 0.0,
+                    action_description: "known zero".into(), pilot_hand: vec![],
+                }], trace_lines: vec![],
+            }],
+        };
+        let dir = std::env::temp_dir().join(format!("mcts-v1-partial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("mcts_campaign.bin"), bincode::serialize(&old).unwrap()).unwrap();
+        let loaded = MctsCampaignCheckpoint::load(dir.to_str().unwrap()).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!((loaded.results.total_games, loaded.results.wins, loaded.results.legacy_unknown),
+            (3, 2, 1));
+        assert_eq!((loaded.results.avg_kill_turn, loaded.results.kill_turn_samples), (Some(5.0), 2));
+        assert_eq!((loaded.results.avg_actions, loaded.results.actions_samples), (Some(80.0), 1));
+        assert_eq!((loaded.results.avg_decisions_per_game, loaded.results.decision_samples), (Some(1.0), 1));
+        assert_eq!((loaded.results.avg_best_reward, loaded.results.reward_samples), (Some(0.0), 1));
+    }
+
+    #[test]
+    fn complete_v1_and_v2_campaign_records_preserve_equal_evidence() {
+        let decisions: Vec<DecisionStat> = [0.6, 0.8].into_iter().map(|reward| DecisionStat {
+            turn: 4, phase: Phase::PreCombatMain, num_legal_actions: 1,
+            best_action_visits: 1, best_action_avg_reward: reward,
+            action_description: "measured".into(), pilot_hand: vec![],
+        }).collect();
+        let old_v1 = LegacyMctsCampaignCheckpoint {
+            config: MctsConfig::default(), deck_name: "chain".into(),
+            total_games_planned: 1, games_completed: 1,
+            results: LegacyMctsGoldfishResults {
+                total_games: 1, wins: 1, losses: 0, draws: 0,
+                avg_kill_turn: 4.0, fastest_kill: 4, slowest_kill: 4,
+                avg_actions: 80.0, avg_decisions_per_game: 2.0, avg_best_reward: 0.7,
+                kill_turn_distribution: vec![0, 0, 0, 0, 1], fastest_sequence: vec![],
+            },
+            game_results: vec![LegacyMctsGameResult {
+                won: true, kill_turn: 4, actions_taken: 80, final_life: [20, 0],
+                decision_stats: decisions.clone(), trace_lines: vec![],
+            }],
+        };
+        let dir = std::env::temp_dir().join(format!("mcts-evidence-chain-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("mcts_campaign.bin"), bincode::serialize(&old_v1).unwrap()).unwrap();
+        let direct = MctsCampaignCheckpoint::load(dir.to_str().unwrap()).unwrap();
+        let old_v2 = MctsCampaignCheckpointV2 {
+            config: MctsConfig::default(), deck_name: "chain".into(),
+            total_games_planned: 1, games_completed: 1,
+            results: MctsGoldfishResultsV2 {
+                schema_version: 2, total_games: 1, wins: 1, losses: 0, draws: 0,
+                censored: 0, stalled: 0, invalid: 0, legacy_unknown: 0,
+                avg_kill_turn: 4.0, fastest_kill: 4, slowest_kill: 4,
+                avg_actions: 0.0, avg_decisions_per_game: 0.0, avg_best_reward: 0.0,
+                kill_turn_distribution: vec![0, 0, 0, 0, 1], fastest_sequence: vec![],
+            },
+            game_results: vec![MctsGameResult {
+                won: true, outcome: MctsOutcome::Win, kill_turn: 4, actions_taken: 80,
+                final_life: [20, 0], decision_stats: decisions, trace_lines: vec![],
+            }],
+        };
+        let mut bytes = b"MCTSCAMP2".to_vec();
+        bytes.extend(bincode::serialize(&old_v2).unwrap());
+        std::fs::write(dir.join("mcts_campaign.bin"), bytes).unwrap();
+        let chained = MctsCampaignCheckpoint::load(dir.to_str().unwrap()).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!((direct.results.avg_actions, direct.results.actions_samples),
+            (chained.results.avg_actions, chained.results.actions_samples));
+        assert_eq!((direct.results.avg_decisions_per_game, direct.results.decision_samples),
+            (chained.results.avg_decisions_per_game, chained.results.decision_samples));
+        assert_eq!((direct.results.avg_best_reward, direct.results.reward_samples),
+            (chained.results.avg_best_reward, chained.results.reward_samples));
+        assert_eq!((direct.results.avg_kill_turn, direct.results.kill_turn_samples),
+            (chained.results.avg_kill_turn, chained.results.kill_turn_samples));
+        assert_eq!((chained.results.avg_actions, chained.results.actions_samples), (Some(80.0), 1));
+        assert_eq!((chained.results.avg_decisions_per_game, chained.results.decision_samples),
+            (Some(2.0), 1));
+        assert_eq!((chained.results.avg_best_reward, chained.results.reward_samples),
+            (Some(0.7), 1));
+    }
+
+    #[test]
+    fn v3_json_and_bincode_keep_independent_metric_availability() {
+        let historical: MctsGoldfishResults = MctsGoldfishResultsV2 {
+            schema_version: 2, total_games: 1, wins: 1, losses: 0, draws: 0,
+            censored: 0, stalled: 0, invalid: 0, legacy_unknown: 0,
+            avg_kill_turn: 3.0, fastest_kill: 3, slowest_kill: 3,
+            avg_actions: 0.0, avg_decisions_per_game: 0.0, avg_best_reward: 0.0,
+            kill_turn_distribution: vec![0, 0, 0, 1], fastest_sequence: vec![],
+        }.into();
+        let mut current = MctsCampaignCheckpoint::new(MctsConfig::default(), "roundtrip".into(), 1);
+        current.add_game(MctsGameResult {
+            won: true, outcome: MctsOutcome::Win, kill_turn: 4,
+            actions_taken: 0, final_life: [20, 0],
+            decision_stats: vec![], trace_lines: vec![],
+        });
+        let mixed = historical.merge(&current.results);
+        assert_eq!((mixed.avg_actions, mixed.actions_samples), (Some(0.0), 1));
+        assert_eq!((mixed.avg_decisions_per_game, mixed.decision_samples), (Some(0.0), 1));
+        assert_eq!((mixed.avg_best_reward, mixed.reward_samples), (None, 0));
+        let path = std::env::temp_dir().join(format!("mcts-v3-availability-{}.json", std::process::id()));
+        mixed.save_checkpoint(&path).unwrap();
+        let json = MctsGoldfishResults::load_checkpoint(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let binary: MctsGoldfishResults = bincode::deserialize(&bincode::serialize(&mixed).unwrap()).unwrap();
+        for restored in [json, binary] {
+            assert_eq!((restored.wins, restored.avg_kill_turn, restored.kill_turn_samples),
+                (2, Some(3.5), 2));
+            assert_eq!((restored.avg_actions, restored.actions_samples), (Some(0.0), 1));
+            assert_eq!((restored.avg_decisions_per_game, restored.decision_samples), (Some(0.0), 1));
+            assert_eq!((restored.avg_best_reward, restored.reward_samples), (None, 0));
+        }
+    }
+
+    #[test]
+    fn v3_known_reward_and_unknown_actions_remain_independent() {
+        // V3 persists availability per metric. A known outcome and reward
+        // never imply that an unrelated action aggregate was measured.
+        let mut persisted: MctsGoldfishResults = MctsGoldfishResultsV2 {
+            schema_version: 2, total_games: 1, wins: 1, losses: 0, draws: 0,
+            censored: 0, stalled: 0, invalid: 0, legacy_unknown: 0,
+            avg_kill_turn: 3.0, fastest_kill: 3, slowest_kill: 3,
+            avg_actions: 0.0, avg_decisions_per_game: 0.0, avg_best_reward: 0.0,
+            kill_turn_distribution: vec![0, 0, 0, 1], fastest_sequence: vec![],
+        }.into();
+        persisted.avg_best_reward = Some(0.7);
+        persisted.reward_samples = 1;
+        let path = std::env::temp_dir().join(format!("mcts-v3-reward-{}.json", std::process::id()));
+        persisted.save_checkpoint(&path).unwrap();
+        let json = MctsGoldfishResults::load_checkpoint(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let binary: MctsGoldfishResults = bincode::deserialize(&bincode::serialize(&persisted).unwrap()).unwrap();
+        for restored in [json, binary] {
+            assert_eq!((restored.wins, restored.avg_actions, restored.actions_samples), (1, None, 0));
+            assert_eq!((restored.avg_best_reward, restored.reward_samples), (Some(0.7), 1));
+            let mut current = MctsCampaignCheckpoint::new(MctsConfig::default(), "current".into(), 1);
+            current.add_game(MctsGameResult {
+                won: true, outcome: MctsOutcome::Win, kill_turn: 4,
+                actions_taken: 100, final_life: [20, 0],
+                decision_stats: vec![DecisionStat {
+                    turn: 4, phase: Phase::PreCombatMain, num_legal_actions: 1,
+                    best_action_visits: 1, best_action_avg_reward: 0.5,
+                    action_description: "current".into(), pilot_hand: vec![],
+                }], trace_lines: vec![],
+            });
+            let merged = restored.merge(&current.results);
+            assert_eq!((merged.wins, merged.avg_actions, merged.actions_samples),
+                (2, Some(100.0), 1));
+            assert_eq!((merged.avg_best_reward, merged.reward_samples), (Some(0.6), 2));
+        }
+    }
+
+    #[test]
+    fn v2_bincode_campaign_recovers_measurements_from_complete_records() {
+        let old = MctsCampaignCheckpointV2 {
+            config: MctsConfig::default(), deck_name: "v2".into(),
+            total_games_planned: 2, games_completed: 2,
+            results: MctsGoldfishResultsV2 {
+                schema_version: 2, total_games: 2, wins: 1, losses: 0, draws: 0,
+                censored: 0, stalled: 0, invalid: 0, legacy_unknown: 1,
+                avg_kill_turn: 5.0, fastest_kill: 5, slowest_kill: 5,
+                avg_actions: 20.0, avg_decisions_per_game: 0.5, avg_best_reward: 0.3,
+                kill_turn_distribution: vec![0, 0, 0, 0, 0, 1], fastest_sequence: vec![],
+            },
+            game_results: vec![
+                MctsGameResult { won: true, outcome: MctsOutcome::Win, kill_turn: 5,
+                    actions_taken: 30, final_life: [20, 0], decision_stats: vec![], trace_lines: vec![] },
+                MctsGameResult { won: false, outcome: MctsOutcome::LegacyUnknown, kill_turn: 8,
+                    actions_taken: 10, final_life: [20, 20], decision_stats: vec![], trace_lines: vec![] },
+            ],
+        };
+        let dir = std::env::temp_dir().join(format!("mcts-v2-migration-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut bytes = b"MCTSCAMP2".to_vec();
+        bytes.extend(bincode::serialize(&old).unwrap());
+        std::fs::write(dir.join("mcts_campaign.bin"), bytes).unwrap();
+        let loaded = MctsCampaignCheckpoint::load(dir.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.results.avg_actions, Some(30.0));
+        assert_eq!(loaded.results.actions_samples, 1);
+        assert_eq!(loaded.results.avg_decisions_per_game, Some(0.0));
+        assert_eq!(loaded.results.decision_samples, 1);
+        assert_eq!(loaded.results.avg_best_reward, None);
+        assert_eq!(loaded.results.legacy_unknown, 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mcts_and_normal_classify_coherent_rejection_and_terminal_limits_equally() {
+        use crate::card::{CardDef, CardType, ZoneType};
+        use crate::game::CardDatabase;
+        use crate::simulation::{classify_outcome, GameOutcome, TerminationReason};
+        use std::sync::Arc;
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 90_124, name: "Filler".into(),
+            card_types: vec![CardType::Land], ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::Cleanup;
+        state.cleanup_discard_in_progress = true;
+        for _ in 0..8 { state.create_card_in_zone(90_124, 0, ZoneType::Hand); }
+        let shared_rejection = classify_outcome(&state, 20, 10_000, 0,
+            Some(GameOutcome::Stalled(TerminationReason::RejectedAction)));
+        let legal = legal_actions(&state);
+        let mut actions_taken = 0;
+        let mut rejected_in_row = 0;
+        for _ in 0..2 {
+            assert!(apply_mcts_game_action(&mut state, &Action::PassPriority, &legal,
+                &mut actions_taken, &mut rejected_in_row).unwrap() == false);
+        }
+        let rejection = apply_mcts_game_action(&mut state, &Action::PassPriority, &legal,
+            &mut actions_taken, &mut rejected_in_row).unwrap_err();
+        assert_eq!(actions_taken, 0);
+        assert_eq!(rejection, shared_rejection);
+        let config = MctsConfig::default();
+
+        let mut terminal = GameState::new(2);
+        terminal.game_over = true;
+        terminal.winner = Some(0);
+        assert_eq!(MctsOutcome::from(classify_outcome(&terminal, 20, 10_000, 0, None)),
+            run_mcts_goldfish_game(&mut terminal, &config, false, None).outcome);
+        let mut limit = GameState::new(2);
+        limit.turn_number = 21;
+        assert_eq!(MctsOutcome::from(classify_outcome(&limit, 20, 10_000, 0, None)),
+            run_mcts_goldfish_game(&mut limit, &config, false, None).outcome);
+    }
+
+    #[test]
+    fn explicit_outcomes_separate_completed_games_from_attempts() {
+        let mut campaign = MctsCampaignCheckpoint::new(MctsConfig::default(), "test".into(), 7);
+        for outcome in [MctsOutcome::Win, MctsOutcome::Loss, MctsOutcome::Draw,
+            MctsOutcome::Censored, MctsOutcome::Stalled, MctsOutcome::Invalid,
+            MctsOutcome::LegacyUnknown] {
+            campaign.add_game(MctsGameResult {
+                won: outcome == MctsOutcome::Win,
+                outcome,
+                kill_turn: 5,
+                actions_taken: 10,
+                final_life: [20, 20],
+                decision_stats: Vec::new(),
+                trace_lines: Vec::new(),
+            });
+        }
+        assert_eq!(campaign.results.total_games, 7);
+        assert_eq!(campaign.results.completed_games(), 3);
+        assert_eq!((campaign.results.wins, campaign.results.losses, campaign.results.draws), (1, 1, 1));
+        assert_eq!((campaign.results.censored, campaign.results.stalled,
+            campaign.results.invalid, campaign.results.legacy_unknown), (1, 1, 1, 1));
+        assert!((campaign.results.win_rate() - 1.0 / 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn versioned_campaign_round_trips_every_outcome() {
+        let mut campaign = MctsCampaignCheckpoint::new(MctsConfig::default(), "test".into(), 7);
+        for outcome in [MctsOutcome::Win, MctsOutcome::Loss, MctsOutcome::Draw,
+            MctsOutcome::Censored, MctsOutcome::Stalled, MctsOutcome::Invalid,
+            MctsOutcome::LegacyUnknown] {
+            campaign.add_game(MctsGameResult { won: outcome == MctsOutcome::Win, outcome,
+                kill_turn: 5, actions_taken: 10, final_life: [20, 20],
+                decision_stats: Vec::new(), trace_lines: Vec::new() });
+        }
+        let dir = std::env::temp_dir().join(format!("mcts-v2-{}", std::process::id()));
+        campaign.save(dir.to_str().unwrap()).unwrap();
+        let bytes = std::fs::read(dir.join("mcts_campaign.bin")).unwrap();
+        assert!(bytes.starts_with(b"MCTSCAMP3"));
+        let loaded = MctsCampaignCheckpoint::load(dir.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.game_results.iter().map(|r| r.outcome).collect::<Vec<_>>(),
+            campaign.game_results.iter().map(|r| r.outcome).collect::<Vec<_>>());
+        assert_eq!(loaded.results.completed_games(), 3);
+        assert_eq!(loaded.results.actions_samples, 3);
+        assert_eq!(loaded.results.reward_samples, 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn old_json_aggregate_marks_ambiguous_remainder_unknown() {
+        let path = std::env::temp_dir().join(format!("mcts-old-{}.json", std::process::id()));
+        let mut old = serde_json::to_value(make_results(4, 1, 1, 2, 5.0, 5, 5,
+            vec![0, 0, 0, 0, 0, 1], vec![])).unwrap();
+        for key in ["schema_version", "censored", "stalled", "invalid", "legacy_unknown",
+            "kill_turn_samples", "actions_samples", "decision_samples", "reward_samples"] {
+            old.as_object_mut().unwrap().remove(key);
+        }
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let loaded = MctsGoldfishResults::load_checkpoint(&path).unwrap();
+        assert_eq!((loaded.wins, loaded.losses, loaded.draws, loaded.legacy_unknown), (1, 0, 0, 3));
+        assert_eq!(loaded.completed_games(), 1);
+        assert_eq!(loaded.avg_actions, None);
+        assert_eq!(loaded.actions_samples, 0);
+        assert_eq!(loaded.avg_kill_turn, Some(5.0));
+        assert_eq!(loaded.kill_turn_samples, 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn old_bincode_campaign_preserves_attempts_without_inventing_nonwin_outcomes() {
+        let old = LegacyMctsCampaignCheckpoint {
+            config: MctsConfig::default(), deck_name: "old".into(),
+            total_games_planned: 3, games_completed: 2,
+            results: LegacyMctsGoldfishResults {
+                total_games: 2, wins: 1, losses: 1, draws: 0,
+                avg_kill_turn: 4.0, fastest_kill: 4, slowest_kill: 4,
+                avg_actions: 10.0, avg_decisions_per_game: 2.0, avg_best_reward: 0.5,
+                kill_turn_distribution: vec![0, 0, 0, 0, 1], fastest_sequence: vec![],
+            },
+            game_results: vec![
+                LegacyMctsGameResult { won: true, kill_turn: 4, actions_taken: 10,
+                    final_life: [20, 0], decision_stats: vec![], trace_lines: vec![] },
+                LegacyMctsGameResult { won: false, kill_turn: 21, actions_taken: 10,
+                    final_life: [0, 0], decision_stats: vec![], trace_lines: vec![] },
+            ],
+        };
+        let dir = std::env::temp_dir().join(format!("mcts-v1-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("mcts_campaign.bin"), bincode::serialize(&old).unwrap()).unwrap();
+        let loaded = MctsCampaignCheckpoint::load(dir.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.games_completed, 2);
+        assert_eq!((loaded.results.wins, loaded.results.losses, loaded.results.draws,
+            loaded.results.legacy_unknown), (1, 0, 0, 1));
+        assert_eq!(loaded.game_results[1].outcome, MctsOutcome::LegacyUnknown);
+        assert_eq!(loaded.results.avg_actions, Some(10.0));
+        assert_eq!(loaded.results.actions_samples, 1);
+        assert_eq!(loaded.results.reward_samples, 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn execution_distinguishes_rules_draw_from_horizon_and_invalid_state() {
+        let config = MctsConfig::default();
+        let mut draw = GameState::new(2);
+        draw.game_over = true;
+        draw.winner = None;
+        assert_eq!(run_mcts_goldfish_game(&mut draw, &config, false, None).outcome, MctsOutcome::Draw);
+        let mut censored = GameState::new(2);
+        censored.turn_number = GOLDFISH_MAX_TURNS + 1;
+        assert_eq!(run_mcts_goldfish_game(&mut censored, &config, false, None).outcome,
+            MctsOutcome::Censored);
+        let mut invalid = GameState::new(2);
+        invalid.winner = Some(0);
+        assert_eq!(run_mcts_goldfish_game(&mut invalid, &config, false, None).outcome,
+            MctsOutcome::Invalid);
+    }
+
+    #[test]
+    fn locked_empty_choice_is_stalled_instead_of_action_limit_censored() {
+        let mut state = GameState::new(2);
+        state.phase = Phase::PreCombatMain;
+        state.pending_copy_order = Some(crate::game::PendingCopyOrder {
+            controller: 1, items: vec![], selected_order: vec![],
+            expected_stack_len: 0, expected_next_stack_id: 1,
+            resolving_entry: None, resolving_source_generation: None,
+        });
+        let result = run_mcts_goldfish_game(&mut state, &MctsConfig::default(), false, None);
+        assert_eq!(result.outcome, MctsOutcome::Stalled);
+        assert_eq!(result.actions_taken, 0);
+    }
 
     #[test]
     fn test_goldfish_reward() {
@@ -1382,17 +2394,27 @@ mod tests {
         kill_turn_distribution: Vec<u64>,
         fastest_sequence: Vec<DecisionStat>,
     ) -> MctsGoldfishResults {
+        let completed = wins + losses + draws;
         MctsGoldfishResults {
+            schema_version: 3,
             total_games,
             wins,
             losses,
             draws,
-            avg_kill_turn,
+            censored: 0,
+            stalled: 0,
+            invalid: 0,
+            legacy_unknown: 0,
+            avg_kill_turn: (wins > 0).then_some(avg_kill_turn),
+            kill_turn_samples: wins,
             fastest_kill,
             slowest_kill,
-            avg_actions: 50.0,
-            avg_decisions_per_game: 10.0,
-            avg_best_reward: 0.7,
+            avg_actions: (completed > 0).then_some(50.0),
+            actions_samples: completed,
+            avg_decisions_per_game: (completed > 0).then_some(10.0),
+            decision_samples: completed,
+            avg_best_reward: (completed > 0).then_some(0.7),
+            reward_samples: completed,
             kill_turn_distribution,
             fastest_sequence,
         }
@@ -1422,7 +2444,7 @@ mod tests {
         let merged = a.merge(&b);
 
         let expected_avg = (5.0 * 80.0 + 4.0 * 40.0) / 120.0;
-        assert!((merged.avg_kill_turn - expected_avg).abs() < 1e-10);
+        assert!((merged.avg_kill_turn.unwrap() - expected_avg).abs() < 1e-10);
     }
 
     #[test]
@@ -1497,7 +2519,7 @@ mod tests {
         assert_eq!(merged.wins, 15);
         assert_eq!(merged.fastest_kill, 3);
         assert_eq!(merged.slowest_kill, 7);
-        assert!((merged.avg_kill_turn - 5.0).abs() < 1e-10);
+        assert!((merged.avg_kill_turn.unwrap() - 5.0).abs() < 1e-10);
         // Sequence from b should be kept since a has no wins
         assert_eq!(merged.fastest_sequence.len(), 1);
         assert_eq!(
@@ -1541,7 +2563,14 @@ mod tests {
         assert_eq!(loaded.wins, results.wins);
         assert_eq!(loaded.losses, results.losses);
         assert_eq!(loaded.draws, results.draws);
-        assert!((loaded.avg_kill_turn - results.avg_kill_turn).abs() < 1e-10);
+        assert!((loaded.avg_kill_turn.unwrap() - results.avg_kill_turn.unwrap()).abs() < 1e-10);
+        assert_eq!(loaded.kill_turn_samples, results.kill_turn_samples);
+        assert_eq!(loaded.avg_actions, results.avg_actions);
+        assert_eq!(loaded.actions_samples, results.actions_samples);
+        assert_eq!(loaded.avg_decisions_per_game, results.avg_decisions_per_game);
+        assert_eq!(loaded.decision_samples, results.decision_samples);
+        assert_eq!(loaded.avg_best_reward, results.avg_best_reward);
+        assert_eq!(loaded.reward_samples, results.reward_samples);
         assert_eq!(loaded.fastest_kill, results.fastest_kill);
         assert_eq!(loaded.slowest_kill, results.slowest_kill);
         assert_eq!(loaded.kill_turn_distribution, results.kill_turn_distribution);

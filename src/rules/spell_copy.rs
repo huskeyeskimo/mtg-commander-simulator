@@ -357,6 +357,10 @@ pub(crate) fn choose_next_copy(state: &mut GameState, item_index: usize) -> Resu
         let resolving_entry = pending.resolving_entry.clone();
         let _ = materialize_batch(state, &items, &order)?;
         state.pending_copy_order = None;
+        // A restored copy-order state has no active Rust resolution frame.
+        // Re-enter its settlement window before deferred cleanup and SBA work;
+        // complete_stack_resolution releases this gate after stabilization.
+        state.trigger_placement_deferred = true;
         if let Some(entry) = resolving_entry {
             super::resolution::finish_deferred_resolution(state, &entry);
         }

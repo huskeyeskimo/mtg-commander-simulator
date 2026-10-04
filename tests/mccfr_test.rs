@@ -1242,32 +1242,47 @@ fn test_commander_goldfish_kinnan_deck() {
 }
 
 #[test]
-fn test_commander_goldfish_deep_training_convergence() {
-    // Deep training test: validates that with more iterations, the MCCFR strategy
-    // improves. This is the test you'd run on dedicated hardware with higher
-    // iteration counts (e.g., 100-500+) to confirm convergence.
-    //
-    // CI-friendly budget: 10 vs 30 iterations.
+fn test_commander_goldfish_training_retains_coverage() {
+    // One continuous run checks that training retains earlier pilot work.
+    // Coverage and visits do not establish strategy quality, equilibrium
+    // convergence, or optimal play.
     let db = sample::build_sample_db();
     let (deck, commander) = sample::brimaz_commander_deck();
     let state = setup_commander_goldfish_game(&deck, commander);
 
     let bucketed = BucketedAbstraction;
     let config = McfrConfig { max_depth: 6, max_actions: 800, max_nodes_per_iteration: 0 };
-
-    // Train with fewer iterations
-    let tables_10 = mccfr::train_goldfish_with_abstraction(
-        &state, 10, &config, &bucketed, 0,
+    let mut progress = Vec::new();
+    let mut pilot_10 = None;
+    let tables_30 = mccfr::train_goldfish_with_progress(
+        &state, 30, &config, &bucketed, 0,
+        |iteration, total, tables| {
+            progress.push((iteration, total));
+            if iteration == 10 {
+                assert!(pilot_10.is_none(), "iteration 10 callback repeated");
+                pilot_10 = Some(tables[0].clone());
+            }
+        },
     );
+    assert_eq!(progress, (1..=30).map(|iteration| (iteration, 30)).collect::<Vec<_>>());
+    let pilot_10 = pilot_10.expect("iteration 10 callback missing");
+    assert!(!pilot_10.data.is_empty(), "pilot checkpoint at iteration 10 is empty");
+    for (key, earlier) in &pilot_10.data {
+        let later = tables_30[0].get(*key).expect("iteration 10 info set was lost");
+        assert!(later.visit_count >= earlier.visit_count,
+            "pilot info set {key} lost visits: {} -> {}",
+            earlier.visit_count, later.visit_count);
+    }
+    let visits_10: u64 = pilot_10.data.values().map(|entry| entry.visit_count).sum();
+    let visits_30: u64 = tables_30[0].data.values().map(|entry| entry.visit_count).sum();
+    assert!(visits_30 > visits_10,
+        "pilot visits should grow in one continuous run: {visits_10} -> {visits_30}");
+
+    let tables_10 = [pilot_10, RegretTable::new()];
     let exploit_10 = mccfr::approximate_exploitability(&tables_10);
     let strat_10 = AbstractedMcfrStrategy::new(
         tables_10[0].clone(),
         Box::new(BucketedAbstraction),
-    );
-
-    // Train with more iterations
-    let tables_30 = mccfr::train_goldfish_with_abstraction(
-        &state, 30, &config, &bucketed, 0,
     );
     let exploit_30 = mccfr::approximate_exploitability(&tables_30);
     let strat_30 = AbstractedMcfrStrategy::new(
@@ -1282,30 +1297,23 @@ fn test_commander_goldfish_deep_training_convergence() {
     let stats_10 = mccfr::training_stats(&tables_10);
     let stats_30 = mccfr::training_stats(&tables_30);
 
-    eprintln!("\n=== Commander Goldfish Convergence Test ===");
+    eprintln!("\n=== Commander Goldfish Training Retention Test ===");
     eprintln!(
-        "10 iters: info_sets={}, exploit={:.4}, win={:.0}%, avg_kill=T{:.2}",
-        stats_10.total_info_sets[0], exploit_10,
+        "iteration 10: info_sets={}, visits={}, exploit={:.4}, win={:.0}%, avg_kill=T{:.2}",
+        stats_10.total_info_sets[0], visits_10, exploit_10,
         results_10.win_rate() * 100.0, results_10.avg_kill_turn,
     );
     eprintln!(
-        "30 iters: info_sets={}, exploit={:.4}, win={:.0}%, avg_kill=T{:.2}",
-        stats_30.total_info_sets[0], exploit_30,
+        "iteration 30: info_sets={}, visits={}, exploit={:.4}, win={:.0}%, avg_kill=T{:.2}",
+        stats_30.total_info_sets[0], visits_30, exploit_30,
         results_30.win_rate() * 100.0, results_30.avg_kill_turn,
     );
 
-    // More training should discover more of the game tree
-    assert!(
-        stats_30.total_info_sets[0] >= stats_10.total_info_sets[0],
-        "30 iters should discover >= info sets than 10 iters ({} vs {})",
-        stats_30.total_info_sets[0], stats_10.total_info_sets[0],
-    );
-
-    // Exploitability should be finite
+    // Numerical health checks only; no quality ordering is inferred.
     assert!(exploit_10.is_finite(), "Exploitability should be finite (10 iters)");
     assert!(exploit_30.is_finite(), "Exploitability should be finite (30 iters)");
 
-    // All games must complete
+    // Both checkpoint policies retain the original evaluation bookkeeping.
     assert_eq!(results_10.total_games, num_games);
     assert_eq!(results_30.total_games, num_games);
 }

@@ -15,6 +15,11 @@ pub(super) fn handle_priority_pass(state: &mut GameState) {
         if !state.stack.is_empty() {
             // Resolve top of stack
             super::resolution::resolve_top_of_stack(state);
+        } else if state.phase == Phase::Cleanup && state.cleanup_needs_repeat {
+            // Activity during cleanup grants priority, then another cleanup
+            // step begins only after the stack empties and all players pass.
+            state.cleanup_needs_repeat = false;
+            execute_phase_entry(state);
         } else {
             // Advance to next phase
             advance_phase(state);
@@ -106,12 +111,16 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
         }
 
         Phase::Draw => {
+            state.priority_player = active;
             // Active player draws a card (skip on turn 1 for first player in standard rules)
             if !(state.turn_number == 1 && active == 0) {
                 super::draw_cards(state, active, 1);
             }
-            // Priority is given after draw
-            state.priority_player = active;
+            // A draw trigger may require another controller's mandatory order
+            // choice. That choice restores active-player priority afterward.
+            if state.pending_triggers.is_empty() {
+                state.priority_player = active;
+            }
         }
 
         Phase::Upkeep => {
@@ -191,6 +200,7 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
             // Discard down to max hand size (7)
             let hand_size = state.players[active].hand.len();
             if hand_size > 7 {
+                state.cleanup_discard_in_progress = true;
                 state.priority_player = active;
                 state.consecutive_passes = 0;
                 return;
@@ -201,7 +211,11 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
 }
 
 pub(super) fn finalize_cleanup(state: &mut GameState) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.pending_copy_order.is_some() {
+        return;
+    }
+    state.cleanup_discard_in_progress = false;
+    let caller_deferred = std::mem::replace(&mut state.trigger_placement_deferred, true);
     // Remove end-of-turn continuous effects (layer engine)
     state.cleanup_eot_effects();
     // Remove legacy EoT effects on instances
@@ -210,12 +224,26 @@ pub(super) fn finalize_cleanup(state: &mut GameState) {
             inst.cleanup_eot();
         }
     }
-    // Advance to next turn (no priority in cleanup normally)
-    advance_phase(state);
+    let had_sba = super::sba::check_state_based_actions(state);
+    state.trigger_placement_deferred = caller_deferred;
+    let had_triggers = !state.pending_triggers.is_empty();
+    if !caller_deferred && had_triggers {
+        let _ = super::triggers::flush_triggers(state);
+    }
+    if had_sba || had_triggers || !state.stack.is_empty() {
+        state.cleanup_needs_repeat = true;
+        if state.pending_triggers.is_empty() {
+            state.priority_player = state.active_player;
+        }
+    } else {
+        state.cleanup_needs_repeat = false;
+        advance_phase(state);
+    }
 }
 
 /// Move to the next turn.
 fn next_turn(state: &mut GameState) {
+    state.cleanup_discard_in_progress = false;
     // Clear skip_phases from the ending turn
     state.skip_phases.clear();
 

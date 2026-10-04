@@ -9,6 +9,7 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
         None => return,
     };
     state.trigger_order_resume = Some(crate::game::TriggerOrderResume::AfterResolution);
+    state.trigger_placement_deferred = true;
 
     match &entry.source {
         StackSource::Spell(obj_id) => {
@@ -197,6 +198,98 @@ fn resolve_triggered_ability(
     super::effects::resolve_trigger_effect(
         state, context, controller, targets, live_source, source_id,
     );
+}
+
+#[cfg(test)]
+mod settlement_copy_tests {
+    use super::*;
+    use crate::action::Action;
+    use crate::card::{CardDef, Effect, TriggeredAbility};
+    use crate::events::{GameEvent, Zone};
+    use crate::game::{CardDatabase, Phase};
+    use std::sync::Arc;
+
+    #[test]
+    fn copy_order_suspends_deferred_trigger_until_physical_cleanup() {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef {
+            id: 990101,
+            name: "Ordered spell".into(),
+            card_types: vec![CardType::Instant],
+            spell_effect: Some(Effect::Multiple(vec![
+                Effect::DrawCards { count: 1 },
+                Effect::TestCopyBatch { copies: 2 },
+            ])),
+            ..Default::default()
+        });
+        db.insert(CardDef {
+            id: 990102,
+            name: "Draw observer".into(),
+            card_types: vec![CardType::Enchantment],
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::OpponentDrawsCard,
+                effect: Effect::GainLife { amount: 1 },
+                description: "Observed draw".into(),
+            }],
+            ..Default::default()
+        });
+        db.insert(CardDef {
+            id: 990103,
+            name: "Library card".into(),
+            card_types: vec![CardType::Land],
+            ..Default::default()
+        });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::PreCombatMain;
+        state.create_card_in_zone(990103, 0, ZoneType::Library);
+        let observer = state.create_card_in_zone(990102, 1, ZoneType::Battlefield);
+        let spell = state.create_card_in_zone(990101, 0, ZoneType::Hand);
+        super::super::apply_action(
+            &mut state,
+            &Action::CastSpell {
+                object_id: spell,
+                targets: vec![],
+            },
+        );
+        state.drain_events();
+        super::super::apply_action(&mut state, &Action::PassPriority);
+        super::super::apply_action(&mut state, &Action::PassPriority);
+        assert!(state.pending_copy_order.is_some());
+        assert_eq!(state.pending_triggers.len(), 1);
+        assert!(state.stack.is_empty());
+        assert!(!state.players[0].graveyard.contains(&spell));
+        assert!(!state.drain_events().iter().any(|event|
+            matches!(event, GameEvent::AbilityTriggered { source, .. } if *source == observer)));
+
+        super::super::apply_action(&mut state, &Action::ChooseNextCopy { item_index: 0 });
+        assert!(state.pending_copy_order.is_none());
+        assert_eq!(
+            state.players[0]
+                .graveyard
+                .iter()
+                .filter(|&&id| id == spell)
+                .count(),
+            1
+        );
+        assert_eq!(state.stack.len(), 3);
+        assert!(matches!(state.stack.last().unwrap().source,
+            StackSource::TriggeredAbility { source_id, .. } if source_id == observer));
+        let events = state.drain_events();
+        let cleanup = events.iter().position(|event| matches!(event,
+            GameEvent::ZoneChange { object, from: Zone::Stack, to: Zone::Graveyard } if *object == spell)).unwrap();
+        let placement = events
+            .iter()
+            .position(|event| {
+                matches!(event,
+            GameEvent::AbilityTriggered { source, .. } if *source == observer)
+            })
+            .unwrap();
+        assert!(cleanup < placement);
+        let before = serde_json::to_value(&state).unwrap();
+        super::super::apply_action(&mut state, &Action::ChooseNextCopy { item_index: 0 });
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+    }
 }
 
 #[cfg(test)]

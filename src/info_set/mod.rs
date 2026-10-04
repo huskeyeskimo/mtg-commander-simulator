@@ -72,6 +72,8 @@ pub struct InformationSet {
     /// Cast relationships retained by triggers waiting for APNAP ordering.
     pub pending_cast_spells: Vec<Option<CastSpellInfo>>,
     pub trigger_order_resume: Option<TriggerOrderResume>,
+    pub cleanup_needs_repeat: bool,
+    pub cleanup_discard_in_progress: bool,
     pub pending_copy_order: Option<PendingCopyInfo>,
 
     /// Our graveyard as sorted CardIds.
@@ -257,6 +259,8 @@ impl InformationSet {
             stack_entries,
             pending_cast_spells,
             trigger_order_resume: view.trigger_order_resume,
+            cleanup_needs_repeat: view.cleanup_needs_repeat,
+            cleanup_discard_in_progress: view.cleanup_discard_in_progress,
             pending_copy_order,
             my_graveyard,
             opp_graveyard,
@@ -290,6 +294,8 @@ impl InformationSet {
         self.stack_entries.hash(&mut hasher);
         self.pending_cast_spells.hash(&mut hasher);
         self.trigger_order_resume.hash(&mut hasher);
+        self.cleanup_needs_repeat.hash(&mut hasher);
+        self.cleanup_discard_in_progress.hash(&mut hasher);
         self.pending_copy_order.hash(&mut hasher);
         self.my_graveyard.hash(&mut hasher);
         self.opp_graveyard.hash(&mut hasher);
@@ -562,6 +568,8 @@ impl InfoSetAbstraction for BucketedAbstraction {
         stack_nonempty.hash(&mut hasher);
         info_set.pending_copy_order.hash(&mut hasher);
         info_set.trigger_order_resume.hash(&mut hasher);
+        info_set.cleanup_needs_repeat.hash(&mut hasher);
+        info_set.cleanup_discard_in_progress.hash(&mut hasher);
 
         // Mana availability: total mana (bucketed)
         let total_mana: u32 = info_set.my_mana.iter().sum();
@@ -705,6 +713,8 @@ impl<'a> InfoSetAbstraction for CardAwareBucketedAbstraction<'a> {
         stack_size.hash(&mut hasher);
         info_set.pending_copy_order.hash(&mut hasher);
         info_set.trigger_order_resume.hash(&mut hasher);
+        info_set.cleanup_needs_repeat.hash(&mut hasher);
+        info_set.cleanup_discard_in_progress.hash(&mut hasher);
 
         // Total mana bucket
         let total_mana: u32 = info_set.my_mana.iter().sum();

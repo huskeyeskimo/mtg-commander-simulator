@@ -67,8 +67,8 @@ pub enum Action {
         assignment: Vec<(ObjectId, u32)>,
     },
 
-    /// Choose the order to place simultaneous triggered abilities on the stack.
-    /// When a player controls multiple triggers that would go on the stack at once,
+    /// Choose the order to place triggered abilities in one placement window.
+    /// When a player controls multiple pending triggers to place on the stack,
     /// they choose the ordering. First element goes on the stack first (resolves last
     /// due to LIFO). Each entry is (source_id, ability_index).
     OrderTriggers {
@@ -268,8 +268,20 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
         );
     }
 
+    // Discards in one cleanup step finish before their triggers are placed.
+    if state.phase == Phase::Cleanup
+        && !state.cleanup_needs_repeat
+        && player == state.active_player
+        && state.players[player].hand.len() > 7
+    {
+        for &obj_id in &state.players[player].hand {
+            actions.push(Action::Discard { object_id: obj_id });
+        }
+        return actions;
+    }
+
     // Before normal priority actions, check for pending triggers needing ordering.
-    // When a player controls multiple simultaneous triggers, they must choose the
+    // When a player controls multiple pending triggers, they must choose the
     // order to place them on the stack. This is a real strategic decision that
     // MCCFR must be able to observe and optimize over.
     if !state.pending_triggers.is_empty() {
@@ -306,18 +318,6 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
             actions.extend(available);
         }
         actions.push(Action::Concede);
-        return actions;
-    }
-
-    let forced_discard = state.phase == Phase::Cleanup
-        && player == state.active_player
-        && state.players[player].hand.len() > 7;
-
-    if forced_discard {
-        // Cleanup discard is mandatory; PassPriority is intentionally omitted here.
-        for &obj_id in &state.players[player].hand {
-            actions.push(Action::Discard { object_id: obj_id });
-        }
         return actions;
     }
 
@@ -813,94 +813,7 @@ fn can_potentially_pay_excluding(
     cost: &crate::mana::ManaCost,
     reserved: Option<ObjectId>,
 ) -> bool {
-    use crate::card::ManaAbility;
-    use crate::mana::Color;
-
-    // Start with current pool
-    let mut pool = state.players[player].mana_pool.clone();
-
-    // Add mana from all untapped mana sources (not just lands)
-    let db = state.card_db();
-    let sources = state.untapped_mana_sources(player);
-
-    // First pass: count how much of each specific color is available
-    // and how much flexible mana (TapForAny / TapForChoice) we have.
-    let mut flexible_count: u32 = 0;
-    let mut flexible_colors: Vec<Vec<Color>> = Vec::new();
-
-    for &source_id in &sources {
-        if Some(source_id) == reserved { continue; }
-        let inst = &state.objects[&source_id];
-        let def = match db.get(inst.card_def_id) {
-            Some(d) => d,
-            None => continue,
-        };
-        if let Some(ma) = def.mana_abilities.first() {
-            match ma {
-                ManaAbility::TapForColor(color) => {
-                    pool.add_color(*color, 1);
-                }
-                ManaAbility::TapForColorless => {
-                    pool.colorless += 1;
-                }
-                ManaAbility::TapForAny => {
-                    // TapForAny can produce any color — optimistically assume it covers
-                    // whatever we need most. Track as flexible mana.
-                    flexible_count += 1;
-                    flexible_colors.push(Color::ALL.to_vec());
-                }
-                ManaAbility::TapForChoice(colors) => {
-                    // Can produce any of the listed colors
-                    flexible_count += 1;
-                    flexible_colors.push(colors.clone());
-                }
-                ManaAbility::TapForColorlessAmount(n) => {
-                    pool.colorless += n;
-                }
-                ManaAbility::TapForLegendaryColors => {
-                    // Mox Amber: check what colors legendary creatures/PWs provide
-                    let leg_colors: Vec<Color> = state.battlefield.iter().filter_map(|&bid| {
-                        let binst = state.objects.get(&bid)?;
-                        if binst.controller != player { return None; }
-                        let bdef = db.get(binst.card_def_id)?;
-                        let is_leg = bdef.supertypes.contains(&crate::card::Supertype::Legendary);
-                        let is_creature = bdef.card_types.contains(&crate::card::CardType::Creature);
-                        let is_pw = bdef.card_types.contains(&crate::card::CardType::Planeswalker);
-                        if is_leg && (is_creature || is_pw) {
-                            bdef.mana_cost.as_ref().map(|c| c.colors())
-                        } else {
-                            None
-                        }
-                    }).flatten().collect();
-                    if !leg_colors.is_empty() {
-                        flexible_count += 1;
-                        flexible_colors.push(leg_colors);
-                    }
-                }
-            }
-        }
-    }
-
-    // Check if we can pay with the fixed mana + flexible mana optimally allocated.
-    // For each color shortfall, try to use flexible sources.
-    let mut remaining_flexible = flexible_count;
-    for &color in &Color::ALL {
-        let needed = cost.color_amount(color);
-        let have = pool.get(color);
-        if needed > have {
-            let shortfall = needed - have;
-            if shortfall > remaining_flexible {
-                return false;
-            }
-            remaining_flexible -= shortfall;
-            // Account for it
-            pool.add_color(color, shortfall);
-        }
-    }
-    // Add remaining flexible as colorless (covers generic)
-    pool.colorless += remaining_flexible;
-
-    pool.can_pay(cost)
+    crate::rules::can_pay_cost(state, player, cost, reserved)
 }
 
 /// Returns true if a spell's effect requires a target to be legal.

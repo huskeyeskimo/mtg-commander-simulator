@@ -39,19 +39,26 @@ fn find_duplicates_to_remove(
 
 /// Check and apply state-based actions, implementing the CR 704.3 loop.
 ///
-/// The loop structure interleaves SBA checks with trigger checking:
+/// Settle all SBA passes and collect their triggers before placement:
 ///
 /// ```text
 /// loop {
 ///     perform_all_SBAs()         // inner loop until no more SBAs apply
 ///     check_and_queue_triggers() // queue triggers for events that happened
 ///     if no_SBAs_performed && no_triggers_queued { break }
-///     put_triggers_on_stack()    // may pause for OrderTriggers
 /// }
+/// put_triggers_on_stack()        // may pause for OrderTriggers
 /// // only now grant priority
 /// ```
-pub fn check_state_based_actions(state: &mut GameState) {
-    if state.pending_copy_order.is_some() { return; }
+pub fn check_state_based_actions(state: &mut GameState) -> bool {
+    if state.pending_copy_order.is_some() {
+        return false;
+    }
+    // Every SBA pass belongs to one settlement window, including events from
+    // returns and other work performed by an earlier pass. Keep a caller's
+    // enclosing-resolution deferral intact when this function returns.
+    let caller_deferred = std::mem::replace(&mut state.trigger_placement_deferred, true);
+    let mut performed_sba = false;
     // Outer CR 704.3 loop: interleave SBA checks with trigger checks
     loop {
         // --- Inner SBA loop: perform all SBAs until stable ---
@@ -336,6 +343,7 @@ pub fn check_state_based_actions(state: &mut GameState) {
                 break;
             }
             any_sba = true;
+            performed_sba = true;
         }
 
         // --- Queue triggers for SBA events ---
@@ -360,14 +368,12 @@ pub fn check_state_based_actions(state: &mut GameState) {
         if !any_sba && !triggers_queued {
             break;
         }
-
-        // --- Flush triggers to stack ---
-        if !state.pending_triggers.is_empty() {
-            let flushed = super::triggers::flush_triggers(state);
-            if !flushed {
-                // Paused for OrderTriggers — return to game loop
-                return;
-            }
         }
+    state.trigger_placement_deferred = caller_deferred;
+    // A resolving spell/ability owns the later placement boundary. A direct
+    // SBA caller places only after all passes have stabilized.
+    if !caller_deferred && !state.cleanup_discard_in_progress && !state.pending_triggers.is_empty() {
+        let _ = super::triggers::flush_triggers(state);
     }
+    performed_sba
 }

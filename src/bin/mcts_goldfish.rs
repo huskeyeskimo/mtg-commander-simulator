@@ -145,7 +145,7 @@ fn run_standard_checkpoint(
     let mut checkpoint = match MctsCampaignCheckpoint::load(checkpoint_dir) {
         Ok(cp) => {
             println!(
-                "Resumed from checkpoint: {}/{} games completed ({:.1}% win rate)",
+                "Resumed from checkpoint: {}/{} attempts recorded ({:.1}% wins/completed game)",
                 cp.games_completed,
                 cp.total_games_planned,
                 cp.results.win_rate() * 100.0,
@@ -166,7 +166,7 @@ fn run_standard_checkpoint(
     let remaining = checkpoint.games_remaining();
     if remaining == 0 {
         println!("Campaign already complete!");
-        checkpoint.results.display();
+        display_mcts_results(&checkpoint.results);
         return;
     }
 
@@ -189,7 +189,7 @@ fn run_standard_checkpoint(
 
     let elapsed = t0.elapsed();
     println!("\nCompleted in {:.1}s ({:.2} games/sec)\n", elapsed.as_secs_f64(), remaining as f64 / elapsed.as_secs_f64());
-    checkpoint.results.display();
+    display_mcts_results(&checkpoint.results);
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ fn run_commander_checkpoint(
     let mut checkpoint = match MctsCampaignCheckpoint::load(checkpoint_dir) {
         Ok(cp) => {
             println!(
-                "Resumed from checkpoint: {}/{} games completed ({:.1}% win rate)",
+                "Resumed from checkpoint: {}/{} attempts recorded ({:.1}% wins/completed game)",
                 cp.games_completed,
                 cp.total_games_planned,
                 cp.results.win_rate() * 100.0,
@@ -260,7 +260,7 @@ fn run_commander_checkpoint(
     let remaining = checkpoint.games_remaining();
     if remaining == 0 {
         println!("Campaign already complete!");
-        checkpoint.results.display();
+        display_mcts_results(&checkpoint.results);
         return;
     }
 
@@ -285,7 +285,7 @@ fn run_commander_checkpoint(
 
     let elapsed = t0.elapsed();
     println!("\nCompleted in {:.1}s ({:.2} games/sec)\n", elapsed.as_secs_f64(), remaining as f64 / elapsed.as_secs_f64());
-    checkpoint.results.display();
+    display_mcts_results(&checkpoint.results);
 }
 
 // ---------------------------------------------------------------------------
@@ -325,11 +325,11 @@ fn run_campaign_batched(
             eprintln!("Warning: failed to save checkpoint: {}", e);
         } else {
             println!(
-                "  [{}/{}] saved checkpoint ({:.1}% win, avg T{:.2})",
+                "  [{}/{}] saved checkpoint ({:.1}% win/completed, avg kill {})",
                 checkpoint.games_completed,
                 checkpoint.total_games_planned,
                 checkpoint.results.win_rate() * 100.0,
-                checkpoint.results.avg_kill_turn,
+                checkpoint.results.avg_kill_turn.map_or_else(|| "unavailable".into(), |v| format!("T{v:.2}")),
             );
         }
     }
@@ -389,7 +389,7 @@ fn run_standard_goldfish(
     println!();
 
     // ── 4. Kill turn distribution comparison ───────────────────────────
-    println!("Kill Turn Distribution (cumulative P(win by turn X))");
+    println!("Kill Turn Distribution (cumulative share among wins)");
     println!("────────────────────────────────────────────────────");
     print_distribution_comparison(&greedy_results, &mcts_results);
     println!();
@@ -407,7 +407,7 @@ fn run_standard_goldfish(
     }
     println!(
         "Result: {} on T{} ({} actions), life: {}/{}",
-        if result.won { "WIN" } else { "DRAW" },
+        format!("{:?}", result.outcome),
         result.kill_turn,
         result.actions_taken,
         result.final_life[0],
@@ -508,7 +508,7 @@ fn run_commander_goldfish(
     println!();
 
     // ── 4. Kill turn distribution comparison ───────────────────────────
-    println!("Kill Turn Distribution (cumulative P(win by turn X))");
+    println!("Kill Turn Distribution (cumulative share among wins)");
     println!("────────────────────────────────────────────────────");
     print_distribution_comparison(&greedy_results, &mcts_results);
     println!();
@@ -526,7 +526,7 @@ fn run_commander_goldfish(
     }
     println!(
         "Result: {} on T{} ({} actions), life: {}/{}",
-        if result.won { "WIN" } else { "DRAW" },
+        format!("{:?}", result.outcome),
         result.kill_turn,
         result.actions_taken,
         result.final_life[0],
@@ -581,26 +581,74 @@ fn print_fastest_sequence(
     println!();
 }
 
+fn display_mcts_results(r: &MctsGoldfishResults) {
+    println!("=== MCTS Goldfish Results ===");
+    println!("Attempts recorded: {}", r.total_games);
+    println!("Completed: {}", r.completed_games());
+    println!("Wins: {} ({:.1}% of completed)", r.wins, r.win_rate() * 100.0);
+    println!("Losses: {}, rules draws: {}", r.losses, r.draws);
+    println!("Censored: {}, stalled: {}, invalid: {}, legacy unknown: {}",
+        r.censored, r.stalled, r.invalid, r.legacy_unknown);
+    if r.wins > 0 {
+        println!("Avg kill turn among wins: {} ({} measured)", r.avg_kill_turn.map_or_else(|| "unavailable".into(), |v| format!("{v:.2}")), r.kill_turn_samples);
+        println!("Fastest kill: T{}", r.fastest_kill);
+        println!("Slowest kill: T{}", r.slowest_kill);
+        println!("Kill turn distribution among wins:");
+        for (turn, &count) in r.kill_turn_distribution.iter().enumerate() {
+            if count > 0 {
+                println!("  T{}: {} ({:.1}%)", turn, count,
+                    count as f64 / r.wins as f64 * 100.0);
+            }
+        }
+        if !r.fastest_sequence.is_empty() {
+            println!("\nFastest observed win (T{}) sequence:", r.fastest_kill);
+            for (i, stat) in r.fastest_sequence.iter().enumerate() {
+                if !stat.pilot_hand.is_empty() {
+                    println!("        Hand: [{}]", stat.pilot_hand.join(", "));
+                }
+                println!("  #{:<3} T{} {:?}: {} (of {} options, Q={:.3})",
+                    i + 1, stat.turn, stat.phase, stat.action_description,
+                    stat.num_legal_actions, stat.best_action_avg_reward);
+            }
+        }
+    }
+    println!("Avg actions/measured game: {} ({} measured)", r.avg_actions.map_or_else(|| "unavailable".into(), |v| format!("{v:.1}")), r.actions_samples);
+    println!("Avg decisions/measured game: {} ({} measured)", r.avg_decisions_per_game.map_or_else(|| "unavailable".into(), |v| format!("{v:.1}")), r.decision_samples);
+    println!("Avg best-action reward/measured game: {} ({} measured)", r.avg_best_reward.map_or_else(|| "unavailable".into(), |v| format!("{v:.4}")), r.reward_samples);
+}
+
 fn print_strategy_row(name: &str, r: &GoldfishResults) {
     if r.wins > 0 {
         println!(
-            "  {:<8} win={:>5.1}%  avg_kill=T{:<5.2}  fastest=T{:<3}  slowest=T{:<3}  draws={}",
+            "  {:<8} attempted={} completed={} win={:>5.1}%  avg_kill=T{:<5.2}  fastest=T{:<3}  slowest=T{:<3}  loss={} draw={} censored={} stalled={} invalid={}",
             name,
+            r.total_games,
+            r.completed_games(),
             r.win_rate() * 100.0,
             r.avg_kill_turn,
             r.fastest_kill,
             r.slowest_kill,
+            r.losses,
             r.draws,
+            r.censored,
+            r.stalled,
+            r.invalid,
         );
     } else {
         println!(
-            "  {:<8} win={:>5.1}%  avg_kill={:<6}  fastest={:<4}  slowest={:<4}  draws={}",
+            "  {:<8} attempted={} completed={} win={:>5.1}%  avg_kill={:<6}  fastest={:<4}  slowest={:<4}  loss={} draw={} censored={} stalled={} invalid={}",
             name,
+            r.total_games,
+            r.completed_games(),
             r.win_rate() * 100.0,
             "-",
             "-",
             "-",
+            r.losses,
             r.draws,
+            r.censored,
+            r.stalled,
+            r.invalid,
         );
     }
 }
@@ -611,23 +659,38 @@ fn print_mcts_strategy_row(
 ) {
     if r.wins > 0 {
         println!(
-            "  {:<8} win={:>5.1}%  avg_kill=T{:<5.2}  fastest=T{:<3}  slowest=T{:<3}  draws={}",
+            "  {:<8} attempted={} completed={} win={:>5.1}%  avg_kill={} (n={})  fastest=T{:<3}  slowest=T{:<3}  loss={} draw={} censored={} stalled={} invalid={} legacy_unknown={}",
             name,
+            r.total_games,
+            r.completed_games(),
             r.win_rate() * 100.0,
-            r.avg_kill_turn,
+            r.avg_kill_turn.map_or_else(|| "unavailable".into(), |v| format!("T{v:.2}")),
+            r.kill_turn_samples,
             r.fastest_kill,
             r.slowest_kill,
+            r.losses,
             r.draws,
+            r.censored,
+            r.stalled,
+            r.invalid,
+            r.legacy_unknown,
         );
     } else {
         println!(
-            "  {:<8} win={:>5.1}%  avg_kill={:<6}  fastest={:<4}  slowest={:<4}  draws={}",
+            "  {:<8} attempted={} completed={} win={:>5.1}%  avg_kill={:<6}  fastest={:<4}  slowest={:<4}  loss={} draw={} censored={} stalled={} invalid={} legacy_unknown={}",
             name,
+            r.total_games,
+            r.completed_games(),
             r.win_rate() * 100.0,
             "-",
             "-",
             "-",
+            r.losses,
             r.draws,
+            r.censored,
+            r.stalled,
+            r.invalid,
+            r.legacy_unknown,
         );
     }
 }
@@ -636,24 +699,27 @@ fn print_improvement_summary(
     greedy: &GoldfishResults,
     mcts: &mtg_gto::solver::mcts::MctsGoldfishResults,
 ) {
-    if greedy.wins > 0 && mcts.wins > 0 {
-        let delta = greedy.avg_kill_turn - mcts.avg_kill_turn;
+    if greedy.wins > 0 && mcts.wins > 0 && mcts.avg_kill_turn.is_some() {
+        let mcts_kill_turn = mcts.avg_kill_turn.unwrap();
+        let delta = greedy.avg_kill_turn - mcts_kill_turn;
         println!(
             "MCTS improves by {:.2} turns on average (Greedy T{:.2} → MCTS T{:.2})",
-            delta, greedy.avg_kill_turn, mcts.avg_kill_turn,
+            delta, greedy.avg_kill_turn, mcts_kill_turn,
         );
     } else if greedy.wins == 0 && mcts.wins > 0 {
         println!(
-            "Greedy never won; MCTS wins {:.1}% with avg kill T{:.2}",
+            "Greedy never won; MCTS wins/completed game {:.1}% with avg kill {}",
             mcts.win_rate() * 100.0,
-            mcts.avg_kill_turn,
+            mcts.avg_kill_turn.map_or_else(|| "unavailable".into(), |v| format!("T{v:.2}")),
         );
     } else if greedy.wins > 0 && mcts.wins == 0 {
         println!(
-            "MCTS never won; Greedy wins {:.1}% with avg kill T{:.2}",
+            "MCTS never won; Greedy wins/completed game {:.1}% with avg kill T{:.2}",
             greedy.win_rate() * 100.0,
             greedy.avg_kill_turn,
         );
+    } else if greedy.wins > 0 && mcts.wins > 0 {
+        println!("Kill-turn comparison unavailable: MCTS kill-turn mean has no measured samples");
     } else {
         println!("Neither strategy won any games");
     }
@@ -684,8 +750,8 @@ fn print_distribution_comparison(
             continue;
         }
 
-        let pg = cum_g as f64 / greedy.total_games as f64 * 100.0;
-        let pm = cum_m as f64 / mcts.total_games as f64 * 100.0;
+        let pg = greedy.kill_share(cum_g) * 100.0;
+        let pm = if mcts.wins == 0 { 0.0 } else { cum_m as f64 / mcts.wins as f64 * 100.0 };
 
         println!(
             "  T{:<3} │  {:>5.1}%     │  {:>5.1}%",

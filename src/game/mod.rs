@@ -400,8 +400,23 @@ pub struct GameState {
     #[serde(default)]
     pub trigger_order_resume: Option<TriggerOrderResume>,
 
+    /// Cleanup had trigger or SBA activity and must repeat after priority passes.
+    #[serde(default)]
+    pub cleanup_needs_repeat: bool,
+
+    /// The active player is still completing required discards in this cleanup step.
+    #[serde(default)]
+    pub cleanup_discard_in_progress: bool,
+
     /// Mandatory choice inside a still-resolving terminal copy batch.
     pub pending_copy_order: Option<PendingCopyOrder>,
+
+    /// Synchronous stack resolution is between trigger detection and the
+    /// settlement/placement boundary. A suspended copy order is persisted by
+    /// `pending_copy_order`; this transient flag is only needed while code is
+    /// actively resolving an entry on the current call stack.
+    #[serde(skip)]
+    pub(crate) trigger_placement_deferred: bool,
 
     /// Transient structural position in recursive effect resolution. A terminal
     /// copy batch cannot be started from a child with instructions after it.
@@ -667,6 +682,8 @@ pub struct GameStateSnapshot {
     next_stack_id: StackId,
     pending_triggers: Vec<PendingTrigger>,
     trigger_order_resume: Option<TriggerOrderResume>,
+    cleanup_needs_repeat: bool,
+    cleanup_discard_in_progress: bool,
     pending_copy_order: Option<PendingCopyOrder>,
     continuous_effects: Vec<ContinuousEffect>,
     next_timestamp: u32,
@@ -711,6 +728,8 @@ pub struct PlayerView<'a> {
     /// Triggered abilities waiting to be placed on the stack.
     pub pending_triggers: &'a [PendingTrigger],
     pub trigger_order_resume: Option<TriggerOrderResume>,
+    pub cleanup_needs_repeat: bool,
+    pub cleanup_discard_in_progress: bool,
     pub pending_copy_order: Option<&'a PendingCopyOrder>,
     /// Which player currently has priority.
     pub priority_player: PlayerIndex,
@@ -870,6 +889,8 @@ impl GameState {
             combat: &self.combat,
             pending_triggers: &self.pending_triggers,
             trigger_order_resume: self.trigger_order_resume,
+            cleanup_needs_repeat: self.cleanup_needs_repeat,
+            cleanup_discard_in_progress: self.cleanup_discard_in_progress,
             pending_copy_order: self.pending_copy_order.as_ref(),
             priority_player: self.priority_player,
 
@@ -922,7 +943,10 @@ impl GameState {
             next_stack_id: 1,
             pending_triggers: Vec::new(),
             trigger_order_resume: None,
+            cleanup_needs_repeat: false,
+            cleanup_discard_in_progress: false,
             pending_copy_order: None,
+            trigger_placement_deferred: false,
             effect_terminal_position: None,
             continuous_effects: Vec::new(),
             next_timestamp: 1,
@@ -960,7 +984,10 @@ impl GameState {
             next_stack_id: 1,
             pending_triggers: Vec::new(),
             trigger_order_resume: None,
+            cleanup_needs_repeat: false,
+            cleanup_discard_in_progress: false,
             pending_copy_order: None,
+            trigger_placement_deferred: false,
             effect_terminal_position: None,
             continuous_effects: Vec::new(),
             next_timestamp: 1,
@@ -1010,6 +1037,8 @@ impl GameState {
             next_stack_id: self.next_stack_id,
             pending_triggers: self.pending_triggers.clone(),
             trigger_order_resume: self.trigger_order_resume,
+            cleanup_needs_repeat: self.cleanup_needs_repeat,
+            cleanup_discard_in_progress: self.cleanup_discard_in_progress,
             pending_copy_order: self.pending_copy_order.clone(),
             continuous_effects: self.continuous_effects.clone(),
             next_timestamp: self.next_timestamp,
@@ -1041,7 +1070,10 @@ impl GameState {
         self.next_stack_id = snap.next_stack_id;
         self.pending_triggers = snap.pending_triggers;
         self.trigger_order_resume = snap.trigger_order_resume;
+        self.cleanup_needs_repeat = snap.cleanup_needs_repeat;
+        self.cleanup_discard_in_progress = snap.cleanup_discard_in_progress;
         self.pending_copy_order = snap.pending_copy_order;
+        self.trigger_placement_deferred = false;
         self.effect_terminal_position = None;
         self.continuous_effects = snap.continuous_effects;
         self.next_timestamp = snap.next_timestamp;

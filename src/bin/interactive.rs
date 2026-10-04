@@ -28,6 +28,23 @@ const MAX_TURNS: u32 = 20;
 /// Maximum actions per game.
 const MAX_ACTIONS: u32 = 10_000;
 
+/// Human-owned mandatory decisions interrupt the goldfish's turn.
+fn human_mandatory_choice_pending(state: &GameState) -> bool {
+    if state.priority_player != 0 {
+        return false;
+    }
+    if state.pending_tutor.as_ref().is_some_and(|choice| choice.controller == 0) {
+        return true;
+    }
+    legal_actions(state).iter().any(|action| matches!(action,
+        Action::ChooseNextCopy { .. }
+            | Action::OrderTriggers { .. }
+            | Action::ChooseTutorTarget { .. }
+            | Action::ChooseReplacementOrder { .. }
+            | Action::OrderDamageAssignment { .. }
+            | Action::DeclareBlockers { .. }))
+}
+
 fn main() {
     let deck_name = std::env::var("DECK").unwrap_or_else(|_| "red".to_string());
 
@@ -93,10 +110,13 @@ fn main() {
 
     while !state.game_over && state.turn_number <= MAX_TURNS && actions_taken < MAX_ACTIONS {
         // Fast-forward the goldfish's entire turn without prompting
-        if state.active_player != 0
-            && state.pending_copy_order.as_ref().is_none_or(|pending| pending.controller() != 0) {
+        if state.active_player != 0 && !human_mandatory_choice_pending(&state) {
             let ff_actions = rules::fast_forward_goldfish_turn_until_copy_choice(&mut state, 0);
             actions_taken += ff_actions;
+            if ff_actions == 0 && !human_mandatory_choice_pending(&state) {
+                eprintln!("Goldfish fast-forward made no progress at a non-human decision.");
+                break;
+            }
             continue;
         }
 
@@ -206,10 +226,18 @@ fn main() {
     println!("========================================");
     display_game_state(&state, &db);
 
-    match state.winner {
-        Some(0) => println!("*** YOU WIN on turn {}! ***", state.turn_number),
-        Some(_) => println!("*** YOU LOST on turn {}. ***", state.turn_number),
-        None => println!("*** DRAW (turn limit reached). ***"),
+    if state.game_over {
+        match state.winner {
+            Some(0) => println!("*** YOU WIN on turn {}! ***", state.turn_number),
+            Some(_) => println!("*** YOU LOST on turn {}. ***", state.turn_number),
+            None => println!("*** RULES DRAW on turn {}. ***", state.turn_number),
+        }
+    } else if state.turn_number > MAX_TURNS {
+        println!("*** CENSORED reason=turn_limit. ***");
+    } else if actions_taken >= MAX_ACTIONS {
+        println!("*** CENSORED reason=action_limit. ***");
+    } else {
+        println!("*** STALLED reason=no_progress. ***");
     }
     println!(
         "Final life totals: You={} Goldfish={}",
@@ -219,6 +247,47 @@ fn main() {
     println!();
 
     print_action_log(&action_log);
+}
+
+#[cfg(test)]
+mod mandatory_choice_tests {
+    use super::*;
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility, ZoneType};
+    use mtg_gto::game::{CardDatabase, Phase};
+
+    #[test]
+    fn opponent_draw_order_belongs_to_human_and_fast_forward_continues_after_choice() {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 990401, name: "Observer".into(),
+            card_types: vec![CardType::Enchantment],
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::OpponentDrawsCard,
+                effect: Effect::GainLife { amount: 1 }, description: "Draw".into(),
+            }], ..Default::default() });
+        db.insert(CardDef { id: 990402, name: "Library".into(),
+            card_types: vec![CardType::Land], ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::Upkeep;
+        state.turn_number = 2;
+        state.active_player = 1;
+        state.priority_player = 1;
+        state.create_card_in_zone(990402, 1, ZoneType::Library);
+        for _ in 0..2 { state.create_card_in_zone(990401, 0, ZoneType::Battlefield); }
+        rules::apply_action(&mut state, &Action::PassPriority);
+        rules::apply_action(&mut state, &Action::PassPriority);
+        assert_eq!(state.phase, Phase::Draw);
+        assert_eq!(state.active_player, 1);
+        assert_eq!(state.priority_player, 0);
+        assert!(human_mandatory_choice_pending(&state));
+        assert_eq!(rules::fast_forward_goldfish_turn_until_copy_choice(&mut state, 0), 0);
+        let choice = legal_actions(&state).into_iter()
+            .find(|action| matches!(action, Action::OrderTriggers { .. })).unwrap();
+        rules::apply_action(&mut state, &choice);
+        assert!(!human_mandatory_choice_pending(&state));
+        assert!(rules::fast_forward_goldfish_turn_until_copy_choice(&mut state, 0) > 0);
+        assert_eq!(state.players[0].life, 22);
+    }
 }
 
 // ---------------------------------------------------------------------------

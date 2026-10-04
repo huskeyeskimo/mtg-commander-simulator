@@ -20,6 +20,7 @@
 //!   --coverage        Inspect support/readiness and exit
 
 use std::sync::Arc;
+use std::fmt::Write as _;
 
 use mtg_gto::card::catalog;
 use mtg_gto::card::sample;
@@ -90,14 +91,11 @@ fn main() {
         println!("----------");
         let result = run_commander_goldfish_game_verbose(&db, &deck, commander, strategy.as_ref());
         println!(
-            "\nResult: {} in {} turns ({} actions)",
-            match result.winner {
-                Some(0) => "WIN",
-                Some(_) => "LOSS",
-                None => "DRAW",
-            },
+            "\nResult: {} in {} turns ({} accepted actions, {} rejected proposals)",
+            result.outcome,
             result.turns,
             result.actions_taken,
+            result.rejected_actions,
         );
         println!(
             "Final life: {} / {}",
@@ -218,26 +216,37 @@ fn print_coverage_report(db: &CardDatabase, deck: &[CardId], commander: CardId, 
 }
 
 fn print_results(r: &GoldfishResults) {
-    println!("Results");
-    println!("-------");
-    println!(
-        "  Win rate:    {:.1}% ({}/{})",
+    print!("{}", render_results(r));
+}
+
+fn render_results(r: &GoldfishResults) -> String {
+    let mut out = String::new();
+    writeln!(out, "Results").unwrap();
+    writeln!(out, "-------").unwrap();
+    writeln!(out, "  Attempts:    {}", r.total_games).unwrap();
+    writeln!(out, "  Completed:   {}", r.completed_games()).unwrap();
+    writeln!(out,
+        "  Win rate:    {:.1}% ({}/{} completed)",
         r.win_rate() * 100.0,
         r.wins,
-        r.total_games
-    );
+        r.completed_games()
+    ).unwrap();
     if r.wins > 0 {
-        println!("  Avg kill:    T{:.1}", r.avg_kill_turn);
-        println!("  Fastest:     T{}", r.fastest_kill);
-        println!("  Slowest:     T{}", r.slowest_kill);
+        writeln!(out, "  Avg kill:    T{:.1}", r.avg_kill_turn).unwrap();
+        writeln!(out, "  Fastest:     T{}", r.fastest_kill).unwrap();
+        writeln!(out, "  Slowest:     T{}", r.slowest_kill).unwrap();
     }
-    println!("  Draws:       {}", r.draws);
-    println!("  Avg actions: {:.0}", r.avg_actions);
+    writeln!(out, "  Losses:      {}", r.losses).unwrap();
+    writeln!(out, "  Draws:       {}", r.draws).unwrap();
+    writeln!(out, "  Censored:    {}", r.censored).unwrap();
+    writeln!(out, "  Stalled:     {}", r.stalled).unwrap();
+    writeln!(out, "  Invalid:     {}", r.invalid).unwrap();
+    writeln!(out, "  Avg actions/completed game: {:.0}", r.avg_actions).unwrap();
 
     if r.wins > 0 {
-        println!("\n  Kill Turn Distribution:");
-        println!("  Turn | Wins |  P(kill) | P(by)");
-        println!("  -----+------+----------+------");
+        writeln!(out, "\n  Kill Turn Distribution (among wins):").unwrap();
+        writeln!(out, "  Turn | Wins |  P(kill | win) | P(by | win)").unwrap();
+        writeln!(out, "  -----+------+----------------+------------").unwrap();
         let mut cumulative = 0u64;
         for (turn, &count) in r.kill_turn_distribution.iter().enumerate() {
             if count == 0 && cumulative == 0 {
@@ -245,22 +254,40 @@ fn print_results(r: &GoldfishResults) {
             }
             cumulative += count;
             if count > 0 || (cumulative > 0 && turn <= r.slowest_kill as usize) {
-                let p_kill = count as f64 / r.total_games as f64;
-                let p_cum = cumulative as f64 / r.total_games as f64;
-                println!(
+                let p_kill = r.kill_share(count);
+                let p_cum = r.kill_share(cumulative);
+                writeln!(out,
                     "  T{:<3} | {:>4} |  {:>5.1}%  | {:>5.1}%",
                     turn,
                     count,
                     p_kill * 100.0,
                     p_cum * 100.0,
-                );
+                ).unwrap();
             }
         }
     }
+    out
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mixed_report_discloses_attempts_and_conditions_kill_distribution_on_wins() {
+        let results = mtg_gto::simulation::GoldfishResults {
+            total_games: 3, wins: 1, losses: 0, draws: 0, censored: 0,
+            stalled: 1, invalid: 1, avg_kill_turn: 2.0, fastest_kill: 2,
+            slowest_kill: 2, avg_actions: 4.0,
+            kill_turn_distribution: vec![0, 0, 1],
+        };
+        let report = super::render_results(&results);
+        assert!(report.contains("Attempts:    3"));
+        assert!(report.contains("Completed:   1"));
+        assert!(report.contains("100.0% (1/1 completed)"));
+        assert!(report.contains("Stalled:     1"));
+        assert!(report.contains("Invalid:     1"));
+        assert!(report.contains("100.0%"));
+        assert!(!report.contains("33.3%"));
+    }
     use super::*;
 
     #[test]

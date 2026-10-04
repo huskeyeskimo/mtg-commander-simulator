@@ -199,7 +199,7 @@ fn main() {
     println!();
 
     // Side-by-side comparison
-    println!("Kill Turn Distribution Comparison (cumulative P(win by turn X))");
+    println!("Kill Turn Distribution Comparison (cumulative share among wins)");
     println!("───────────────────────────────────────────────────────────────");
     print_distribution_comparison(&random_results, &greedy_results, &mccfr_results);
     println!();
@@ -211,14 +211,11 @@ fn main() {
 
     let result = run_commander_goldfish_game_verbose(&db, &deck, commander, &mccfr_strat);
     println!(
-        "Result: {} in {} turns ({} actions), final life: {}/{}",
-        match result.winner {
-            Some(0) => "WIN",
-            Some(_) => "LOSS",
-            None => "DRAW",
-        },
+        "Result: {} in {} turns ({} accepted actions, {} rejected proposals), final life: {}/{}",
+        result.outcome,
         result.turns,
         result.actions_taken,
+        result.rejected_actions,
         result.final_life[0],
         result.final_life[1],
     );
@@ -299,26 +296,36 @@ fn resolve_card_names(action: &str, names: &HashMap<String, String>) -> String {
 }
 
 fn print_strategy_row(name: &str, r: &GoldfishResults) {
-    if r.wins > 0 {
-        println!(
-            "  {:<8} win={:>5.1}%  avg_kill=T{:<5.2}  fastest=T{:<3}  slowest=T{:<3}  draws={}",
-            name,
-            r.win_rate() * 100.0,
-            r.avg_kill_turn,
-            r.fastest_kill,
-            r.slowest_kill,
-            r.draws,
-        );
+    println!("{}", strategy_row(name, r));
+}
+
+fn strategy_row(name: &str, r: &GoldfishResults) -> String {
+    let (avg, fastest, slowest) = if r.wins > 0 {
+        (format!("T{:.2}", r.avg_kill_turn), format!("T{}", r.fastest_kill),
+            format!("T{}", r.slowest_kill))
     } else {
-        println!(
-            "  {:<8} win={:>5.1}%  avg_kill={:<6}  fastest={:<4}  slowest={:<4}  draws={}",
-            name,
-            r.win_rate() * 100.0,
-            "-",
-            "-",
-            "-",
-            r.draws,
-        );
+        ("-".into(), "-".into(), "-".into())
+    };
+    format!(
+        "  {:<8} attempted={} completed={} win={:>5.1}%  avg_kill={} fastest={} slowest={} loss={} draw={} censored={} stalled={} invalid={}",
+        name, r.total_games, r.completed_games(), r.win_rate() * 100.0,
+        avg, fastest, slowest, r.losses, r.draws, r.censored, r.stalled, r.invalid,
+    )
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    #[test]
+    fn mixed_strategy_row_discloses_incomplete_attempts() {
+        let r = GoldfishResults { total_games: 3, wins: 1, losses: 0, draws: 0,
+            censored: 0, stalled: 1, invalid: 1, avg_kill_turn: 2.0,
+            fastest_kill: 2, slowest_kill: 2, avg_actions: 4.0,
+            kill_turn_distribution: vec![0, 0, 1] };
+        let row = strategy_row("Greedy", &r);
+        assert!(row.contains("attempted=3 completed=1 win=100.0%"));
+        assert!(row.contains("stalled=1 invalid=1"));
     }
 }
 
@@ -328,7 +335,7 @@ fn print_kill_distribution(r: &GoldfishResults) {
         return;
     }
     let mut cumulative = 0u64;
-    println!("  Turn │ Wins │  P(kill) │ P(win by)");
+    println!("  Turn │ Wins │  P(kill | win) │ P(by | win)");
     println!("  ─────┼──────┼──────────┼──────────");
     for (turn, &count) in r.kill_turn_distribution.iter().enumerate() {
         if count == 0 && cumulative == 0 {
@@ -336,8 +343,8 @@ fn print_kill_distribution(r: &GoldfishResults) {
         }
         cumulative += count;
         if count > 0 || (cumulative > 0 && turn <= r.slowest_kill as usize) {
-            let p_kill = count as f64 / r.total_games as f64;
-            let p_cum = cumulative as f64 / r.total_games as f64;
+            let p_kill = r.kill_share(count);
+            let p_cum = r.kill_share(cumulative);
             println!(
                 "  T{:<3} │ {:>4} │  {:>5.1}%  │  {:>5.1}%",
                 turn,
@@ -346,14 +353,6 @@ fn print_kill_distribution(r: &GoldfishResults) {
                 p_cum * 100.0,
             );
         }
-    }
-    let no_win = r.total_games - r.wins;
-    if no_win > 0 {
-        println!(
-            "  T20+ │ {:>4} │  {:>5.1}%  │   (did not win)",
-            no_win,
-            no_win as f64 / r.total_games as f64 * 100.0,
-        );
     }
 }
 
@@ -391,9 +390,9 @@ fn print_distribution_comparison(
             continue;
         }
 
-        let pr = cum_r as f64 / random.total_games as f64 * 100.0;
-        let pg = cum_g as f64 / greedy.total_games as f64 * 100.0;
-        let pm = cum_m as f64 / mccfr.total_games as f64 * 100.0;
+        let pr = random.kill_share(cum_r) * 100.0;
+        let pg = greedy.kill_share(cum_g) * 100.0;
+        let pm = mccfr.kill_share(cum_m) * 100.0;
 
         println!(
             "  T{:<3} │  {:>5.1}%     │  {:>5.1}%     │  {:>5.1}%",

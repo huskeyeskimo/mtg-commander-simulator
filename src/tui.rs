@@ -205,6 +205,23 @@ impl App {
         }
     }
 
+    /// Mandatory choices owned by the human can interrupt an opponent turn.
+    fn human_mandatory_choice_pending(&self) -> bool {
+        if self.state.priority_player != 0 {
+            return false;
+        }
+        if self.state.pending_tutor.as_ref().is_some_and(|choice| choice.controller == 0) {
+            return true;
+        }
+        legal_actions(&self.state).iter().any(|action| matches!(action,
+            Action::ChooseNextCopy { .. }
+                | Action::OrderTriggers { .. }
+                | Action::ChooseTutorTarget { .. }
+                | Action::ChooseReplacementOrder { .. }
+                | Action::OrderDamageAssignment { .. }
+                | Action::DeclareBlockers { .. }))
+    }
+
     /// Auto-advance: handle goldfish turns and auto-pass situations.
     pub fn auto_advance(&mut self) {
         let mut passes = 0;
@@ -213,12 +230,13 @@ impl App {
             && self.actions_taken < MAX_ACTIONS
             && passes < 200
         {
-            // Fast-forward entire opponent turn without calling legal_actions().
+            // Fast-forward the opponent until a human mandatory choice is due.
             if self.state.active_player != 0
-                && self.state.pending_copy_order.as_ref().is_none_or(|pending| pending.controller() != 0) {
+                && !self.human_mandatory_choice_pending() {
                 let ff = rules::fast_forward_goldfish_turn_until_copy_choice(&mut self.state, 0);
                 self.actions_taken += ff;
                 passes += ff as usize;
+                if ff == 0 { break; }
                 continue;
             }
 

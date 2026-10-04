@@ -10,6 +10,16 @@ use mtg_gto::card::sample;
 use mtg_gto::simulation;
 use mtg_gto::strategy::GreedyStrategy;
 
+#[test]
+fn test_kinnan_seed12_does_not_advertise_an_unpayable_cast() {
+    let db = sample::build_sample_db();
+    let (deck, commander, _) = sample::kinnan_commander_deck();
+    let result = simulation::run_commander_goldfish_game_seeded(
+        &db, &deck, commander, &GreedyStrategy, 12);
+    assert_eq!(result.rejected_actions, 0,
+        "seed 12 previously offered Sink into Stupor without black mana");
+}
+
 // ===========================================================================
 // Standard deck goldfish tests
 // ===========================================================================
@@ -24,7 +34,7 @@ fn test_red_aggro_goldfish_completes() {
 
     assert_eq!(results.total_games, 50, "Should complete all 50 games");
     assert_eq!(
-        results.wins + results.losses + results.draws,
+        results.wins + results.losses + results.draws + results.censored,
         50,
         "All games should have an outcome"
     );
@@ -88,7 +98,7 @@ fn test_brimaz_commander_goldfish_completes() {
 
     assert_eq!(results.total_games, 20, "Should complete all 20 games");
     assert_eq!(
-        results.wins + results.losses + results.draws,
+        results.wins + results.losses + results.draws + results.censored,
         20,
         "All games should have an outcome"
     );
@@ -106,7 +116,7 @@ fn test_ashcoat_commander_goldfish_completes() {
 
     assert_eq!(results.total_games, 20, "Should complete all 20 games");
     assert_eq!(
-        results.wins + results.losses + results.draws,
+        results.wins + results.losses + results.draws + results.censored,
         20,
         "All games should have an outcome"
     );
@@ -122,7 +132,7 @@ fn test_kinnan_commander_goldfish_completes() {
 
     assert_eq!(results.total_games, 20, "Should complete all 20 games");
     assert_eq!(
-        results.wins + results.losses + results.draws,
+        results.wins + results.losses + results.draws + results.censored,
         20,
         "All games should have an outcome"
     );
@@ -143,7 +153,7 @@ fn test_red_vs_green_completes_without_panic() {
 
     assert_eq!(results.total_games, 50, "Should complete all 50 games");
     assert_eq!(
-        results.player0_wins + results.player1_wins + results.draws,
+        results.player0_wins + results.player1_wins + results.draws + results.censored,
         50,
         "All games should have an outcome"
     );

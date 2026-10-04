@@ -8,18 +8,123 @@ use crate::game::{CardDatabase, GameState, PlayerIndex};
 use crate::rules;
 use crate::strategy::Strategy;
 
-/// Maximum turns before a game is declared a draw.
+/// Search horizon for a simulated game.
 const MAX_TURNS: u32 = 200;
 
-/// Maximum actions per game before forced draw (prevents infinite loops).
+/// Action budget for a simulated game.
 const MAX_ACTIONS: u32 = 50_000;
+
+/// Why a run ended without a completed game result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminationReason {
+    TurnLimit,
+    ActionLimit,
+    NoProgress,
+    IncompleteCleanup,
+    RejectedAction,
+    StateEncoding,
+    InvalidTerminalState,
+}
+
+impl TerminationReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::TurnLimit => "turn_limit",
+            Self::ActionLimit => "action_limit",
+            Self::NoProgress => "no_progress",
+            Self::IncompleteCleanup => "incomplete_cleanup",
+            Self::RejectedAction => "rejected_action",
+            Self::StateEncoding => "state_encoding",
+            Self::InvalidTerminalState => "invalid_terminal_state",
+        }
+    }
+}
+
+/// Completed games and incomplete simulation attempts are distinct outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameOutcome {
+    Win(PlayerIndex),
+    Draw,
+    Censored(TerminationReason),
+    Stalled(TerminationReason),
+    Invalid(TerminationReason),
+}
+
+impl std::fmt::Display for GameOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Win(0) => write!(f, "WIN"),
+            Self::Win(_) => write!(f, "LOSS"),
+            Self::Draw => write!(f, "DRAW"),
+            Self::Censored(reason) => write!(f, "CENSORED reason={}", reason.code()),
+            Self::Stalled(reason) => write!(f, "STALLED reason={}", reason.code()),
+            Self::Invalid(reason) => write!(f, "INVALID reason={}", reason.code()),
+        }
+    }
+}
+
+pub(crate) fn classify_outcome(state: &GameState, max_turns: u32, max_actions: u32, actions: u32,
+    interrupted: Option<GameOutcome>) -> GameOutcome {
+    if state.winner.is_some_and(|winner| !state.game_over || winner >= state.players.len()) {
+        return GameOutcome::Invalid(TerminationReason::InvalidTerminalState);
+    }
+    if state.game_over {
+        return state.winner.map_or(GameOutcome::Draw, GameOutcome::Win);
+    }
+    if let Some(outcome) = interrupted { return outcome; }
+    if state.turn_number > max_turns { return GameOutcome::Censored(TerminationReason::TurnLimit); }
+    if actions >= max_actions { return GameOutcome::Censored(TerminationReason::ActionLimit); }
+    GameOutcome::Stalled(TerminationReason::NoProgress)
+}
+
+/// Detect contradictory mandatory-cleanup ownership without advancing rules.
+/// A pending copy choice owns the action while its resolution is suspended.
+pub fn invalid_cleanup_state(state: &GameState) -> bool {
+    if state.pending_copy_order.is_some() { return false; }
+    let hand = state.players[state.active_player].hand.len();
+    if state.cleanup_discard_in_progress {
+        state.phase != crate::game::Phase::Cleanup
+            || state.cleanup_needs_repeat
+            || state.priority_player != state.active_player
+            || hand <= 7
+    } else {
+        state.phase == crate::game::Phase::Cleanup
+            && !state.cleanup_needs_repeat
+            && hand > 7
+            && state.priority_player != state.active_player
+    }
+}
+
+pub(crate) fn no_progress_outcome(state: &GameState) -> GameOutcome {
+    if invalid_cleanup_state(state) {
+        GameOutcome::Invalid(TerminationReason::IncompleteCleanup)
+    } else {
+        GameOutcome::Stalled(TerminationReason::NoProgress)
+    }
+}
+
+pub(crate) const MAX_REJECTED_IN_ROW: u32 = 3;
+
+/// Action legality alone does not prove application: several rules guards
+/// reject a proposal without mutating the canonical state.
+pub fn apply_counted_action(state: &mut GameState, action: &crate::action::Action,
+    legal: &[crate::action::Action]) -> Result<bool, TerminationReason> {
+    if !legal.contains(action) { return Ok(false); }
+    let before = bincode::serialize(state).map_err(|_| TerminationReason::StateEncoding)?;
+    rules::apply_action(state, action);
+    let after = bincode::serialize(state).map_err(|_| TerminationReason::StateEncoding)?;
+    Ok(before != after)
+}
 
 /// Result of a single simulated game.
 #[derive(Debug, Clone)]
 pub struct GameResult {
     pub winner: Option<PlayerIndex>,
+    pub outcome: GameOutcome,
     pub turns: u32,
     pub actions_taken: u32,
+    /// Proposals that left canonical game state unchanged; excluded from the action budget.
+    pub rejected_actions: u32,
     pub final_life: [i32; 2],
 }
 
@@ -30,23 +135,32 @@ pub struct SimulationResults {
     pub player0_wins: u64,
     pub player1_wins: u64,
     pub draws: u64,
+    pub censored: u64,
+    pub stalled: u64,
+    pub invalid: u64,
     pub avg_turns: f64,
     pub avg_actions: f64,
 }
 
 impl SimulationResults {
+    pub fn completed_games(&self) -> u64 {
+        self.player0_wins + self.player1_wins + self.draws
+    }
+
     pub fn win_rate(&self, player: PlayerIndex) -> f64 {
         let wins = if player == 0 {
             self.player0_wins
         } else {
             self.player1_wins
         };
-        wins as f64 / self.total_games as f64
+        let eligible = self.completed_games();
+        if eligible == 0 { 0.0 } else { wins as f64 / eligible as f64 }
     }
 
     pub fn display(&self) {
         println!("=== Simulation Results ===");
         println!("Total games: {}", self.total_games);
+        println!("Completed games: {}", self.completed_games());
         println!(
             "Player 0 wins: {} ({:.1}%)",
             self.player0_wins,
@@ -58,6 +172,7 @@ impl SimulationResults {
             self.win_rate(1) * 100.0
         );
         println!("Draws: {}", self.draws);
+        println!("Censored: {}  Stalled: {}  Invalid: {}", self.censored, self.stalled, self.invalid);
         println!("Avg turns: {:.1}", self.avg_turns);
         println!("Avg actions: {:.1}", self.avg_actions);
     }
@@ -176,16 +291,35 @@ fn run_game_loop(
     verbose: bool,
 ) -> GameResult {
     let mut actions_taken: u32 = 0;
+    let mut rejected_actions: u32 = 0;
+    let mut rejected_in_row: u32 = 0;
+    let mut interrupted = None;
 
     while !state.game_over && state.turn_number <= MAX_TURNS && actions_taken < MAX_ACTIONS {
+        if invalid_cleanup_state(state) {
+            interrupted = Some(GameOutcome::Invalid(TerminationReason::IncompleteCleanup));
+            break;
+        }
         let player = state.priority_player;
         let actions = legal_actions(state);
 
         if actions.is_empty()
             || (actions.len() == 1 && actions[0] == crate::action::Action::PassPriority)
         {
-            rules::apply_action(state, &crate::action::Action::PassPriority);
-            actions_taken += 1;
+            if actions.is_empty() {
+                interrupted = Some(no_progress_outcome(state));
+                break;
+            }
+            let action = crate::action::Action::PassPriority;
+            match apply_counted_action(state, &action, &actions) {
+                Ok(true) => { actions_taken += 1; rejected_in_row = 0; }
+                Ok(false) => { rejected_actions += 1; rejected_in_row += 1; }
+                Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
+            }
+            if rejected_in_row >= MAX_REJECTED_IN_ROW {
+                interrupted = Some(GameOutcome::Stalled(TerminationReason::RejectedAction));
+                break;
+            }
             continue;
         }
 
@@ -196,18 +330,27 @@ fn run_game_loop(
             log_action(state, &action, player);
         }
 
-        rules::apply_action(state, &action);
-        actions_taken += 1;
+        let advanced = match apply_counted_action(state, &action, &actions) {
+            Ok(true) => { actions_taken += 1; rejected_in_row = 0; true }
+            Ok(false) => { rejected_actions += 1; rejected_in_row += 1; false }
+            Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
+        };
+        if rejected_in_row >= MAX_REJECTED_IN_ROW {
+            interrupted = Some(GameOutcome::Stalled(TerminationReason::RejectedAction));
+            break;
+        }
 
-        if actions_taken.is_multiple_of(10) {
+        if advanced && actions_taken.is_multiple_of(10) {
             rules::check_state_based_actions(state);
         }
     }
 
     GameResult {
         winner: state.winner,
+        outcome: classify_outcome(state, MAX_TURNS, MAX_ACTIONS, actions_taken, interrupted),
         turns: state.turn_number,
         actions_taken,
+        rejected_actions,
         final_life: [state.players[0].life, state.players[1].life],
     }
 }
@@ -227,6 +370,9 @@ pub fn simulate_commander(
     let p0_wins = AtomicU64::new(0);
     let p1_wins = AtomicU64::new(0);
     let draws = AtomicU64::new(0);
+    let censored = AtomicU64::new(0);
+    let stalled = AtomicU64::new(0);
+    let invalid = AtomicU64::new(0);
     let total_turns = AtomicU64::new(0);
     let total_actions = AtomicU64::new(0);
 
@@ -242,29 +388,37 @@ pub fn simulate_commander(
             false,
         );
 
-        match result.winner {
-            Some(0) => {
+        match result.outcome {
+            GameOutcome::Win(0) => {
                 p0_wins.fetch_add(1, Ordering::Relaxed);
             }
-            Some(1) => {
+            GameOutcome::Win(_) => {
                 p1_wins.fetch_add(1, Ordering::Relaxed);
             }
-            _ => {
+            GameOutcome::Draw => {
                 draws.fetch_add(1, Ordering::Relaxed);
             }
+            GameOutcome::Censored(_) => { censored.fetch_add(1, Ordering::Relaxed); return; }
+            GameOutcome::Stalled(_) => { stalled.fetch_add(1, Ordering::Relaxed); return; }
+            GameOutcome::Invalid(_) => { invalid.fetch_add(1, Ordering::Relaxed); return; }
         }
         total_turns.fetch_add(result.turns as u64, Ordering::Relaxed);
         total_actions.fetch_add(result.actions_taken as u64, Ordering::Relaxed);
     });
 
     let total = num_games;
+    let completed = p0_wins.load(Ordering::Relaxed) + p1_wins.load(Ordering::Relaxed)
+        + draws.load(Ordering::Relaxed);
     SimulationResults {
         total_games: total,
         player0_wins: p0_wins.load(Ordering::Relaxed),
         player1_wins: p1_wins.load(Ordering::Relaxed),
         draws: draws.load(Ordering::Relaxed),
-        avg_turns: total_turns.load(Ordering::Relaxed) as f64 / total as f64,
-        avg_actions: total_actions.load(Ordering::Relaxed) as f64 / total as f64,
+        censored: censored.load(Ordering::Relaxed),
+        stalled: stalled.load(Ordering::Relaxed),
+        invalid: invalid.load(Ordering::Relaxed),
+        avg_turns: total_turns.load(Ordering::Relaxed) as f64 / completed.max(1) as f64,
+        avg_actions: total_actions.load(Ordering::Relaxed) as f64 / completed.max(1) as f64,
     }
 }
 
@@ -281,35 +435,46 @@ pub fn simulate(
     let p0_wins = AtomicU64::new(0);
     let p1_wins = AtomicU64::new(0);
     let draws = AtomicU64::new(0);
+    let censored = AtomicU64::new(0);
+    let stalled = AtomicU64::new(0);
+    let invalid = AtomicU64::new(0);
     let total_turns = AtomicU64::new(0);
     let total_actions = AtomicU64::new(0);
 
     (0..num_games).into_par_iter().for_each(|_| {
         let result = run_game_inner(Arc::clone(&db), deck0, deck1, strategy0, strategy1, false);
 
-        match result.winner {
-            Some(0) => {
+        match result.outcome {
+            GameOutcome::Win(0) => {
                 p0_wins.fetch_add(1, Ordering::Relaxed);
             }
-            Some(1) => {
+            GameOutcome::Win(_) => {
                 p1_wins.fetch_add(1, Ordering::Relaxed);
             }
-            _ => {
+            GameOutcome::Draw => {
                 draws.fetch_add(1, Ordering::Relaxed);
             }
+            GameOutcome::Censored(_) => { censored.fetch_add(1, Ordering::Relaxed); return; }
+            GameOutcome::Stalled(_) => { stalled.fetch_add(1, Ordering::Relaxed); return; }
+            GameOutcome::Invalid(_) => { invalid.fetch_add(1, Ordering::Relaxed); return; }
         }
         total_turns.fetch_add(result.turns as u64, Ordering::Relaxed);
         total_actions.fetch_add(result.actions_taken as u64, Ordering::Relaxed);
     });
 
     let total = num_games;
+    let completed = p0_wins.load(Ordering::Relaxed) + p1_wins.load(Ordering::Relaxed)
+        + draws.load(Ordering::Relaxed);
     SimulationResults {
         total_games: total,
         player0_wins: p0_wins.load(Ordering::Relaxed),
         player1_wins: p1_wins.load(Ordering::Relaxed),
         draws: draws.load(Ordering::Relaxed),
-        avg_turns: total_turns.load(Ordering::Relaxed) as f64 / total as f64,
-        avg_actions: total_actions.load(Ordering::Relaxed) as f64 / total as f64,
+        censored: censored.load(Ordering::Relaxed),
+        stalled: stalled.load(Ordering::Relaxed),
+        invalid: invalid.load(Ordering::Relaxed),
+        avg_turns: total_turns.load(Ordering::Relaxed) as f64 / completed.max(1) as f64,
+        avg_actions: total_actions.load(Ordering::Relaxed) as f64 / completed.max(1) as f64,
     }
 }
 
@@ -317,9 +482,7 @@ pub fn simulate(
 // Goldfish mode — solitaire simulation against a passive opponent
 // ---------------------------------------------------------------------------
 
-/// Maximum turns before a goldfish game is declared a draw (terminal state).
-/// Games that haven't ended by turn 20 are treated as terminal — this applies
-/// to both Standard and Commander goldfish.
+/// Goldfish search horizon (incomplete runs are censored).
 const GOLDFISH_MAX_TURNS: u32 = 20;
 
 /// Maximum actions per goldfish game (lower bound since opponent does nothing).
@@ -339,8 +502,11 @@ pub struct GoldfishResults {
     /// decking out, or an effect that causes the pilot to lose. Should be rare
     /// against a passive opponent, but tracked for completeness.
     pub losses: u64,
-    /// Games that hit the turn/action limit without either player winning.
+    /// Completed games with no winner.
     pub draws: u64,
+    pub censored: u64,
+    pub stalled: u64,
+    pub invalid: u64,
     pub avg_kill_turn: f64,
     pub fastest_kill: u32,
     pub slowest_kill: u32,
@@ -351,20 +517,31 @@ pub struct GoldfishResults {
 }
 
 impl GoldfishResults {
+    pub fn completed_games(&self) -> u64 {
+        self.wins + self.losses + self.draws
+    }
+
+    pub fn kill_share(&self, count: u64) -> f64 {
+        if self.wins == 0 { 0.0 } else { count as f64 / self.wins as f64 }
+    }
+
     pub fn win_rate(&self) -> f64 {
-        self.wins as f64 / self.total_games as f64
+        let eligible = self.completed_games();
+        if eligible == 0 { 0.0 } else { self.wins as f64 / eligible as f64 }
     }
 
     pub fn display(&self) {
         println!("=== Goldfish Results ===");
         println!("Total games: {}", self.total_games);
-        println!("Wins: {} ({:.1}%)", self.wins, self.win_rate() * 100.0);
-        println!("Draws (timeout): {}", self.draws);
+        println!("Completed games: {}", self.completed_games());
+        println!("Wins: {} ({:.1}% of completed)", self.wins, self.win_rate() * 100.0);
+        println!("Draws: {}", self.draws);
+        println!("Censored: {}  Stalled: {}  Invalid: {}", self.censored, self.stalled, self.invalid);
         if self.wins > 0 {
             println!("Avg kill turn: {:.2}", self.avg_kill_turn);
             println!("Fastest kill: T{}", self.fastest_kill);
             println!("Slowest kill: T{}", self.slowest_kill);
-            println!("Avg actions/game: {:.1}", self.avg_actions);
+            println!("Avg actions/completed game: {:.1}", self.avg_actions);
             println!("Kill turn distribution:");
             for (turn, &count) in self.kill_turn_distribution.iter().enumerate() {
                 if count > 0 {
@@ -459,20 +636,41 @@ fn init_and_run_goldfish(
 ///
 /// Player 0 uses the provided strategy; player 1 is a passive goldfish
 /// that always passes priority.
-fn run_goldfish_loop(
+pub(crate) fn run_goldfish_loop(
     state: &mut GameState,
     strategy: &dyn Strategy,
     verbose: bool,
 ) -> GameResult {
     let mut actions_taken: u32 = 0;
+    let mut rejected_actions: u32 = 0;
+    let mut rejected_in_row: u32 = 0;
+    let mut interrupted = None;
 
     while !state.game_over
         && state.turn_number <= GOLDFISH_MAX_TURNS
         && actions_taken < GOLDFISH_MAX_ACTIONS
     {
+        if invalid_cleanup_state(state) {
+            interrupted = Some(GameOutcome::Invalid(TerminationReason::IncompleteCleanup));
+            break;
+        }
         // Fast-forward the goldfish's entire turn without calling legal_actions
         if state.active_player != 0 {
-            actions_taken += rules::fast_forward_goldfish_turn(state);
+            let before = match bincode::serialize(state) {
+                Ok(bytes) => bytes,
+                Err(_) => { interrupted = Some(GameOutcome::Invalid(TerminationReason::StateEncoding)); break; }
+            };
+            let advanced = rules::fast_forward_goldfish_turn(state);
+            if advanced == 0 {
+                interrupted = Some(no_progress_outcome(state));
+                break;
+            }
+            match bincode::serialize(state) {
+                Ok(after) if after != before => {}
+                Ok(_) => { interrupted = Some(no_progress_outcome(state)); break; }
+                Err(_) => { interrupted = Some(GameOutcome::Invalid(TerminationReason::StateEncoding)); break; }
+            }
+            actions_taken += advanced;
             continue;
         }
 
@@ -482,8 +680,20 @@ fn run_goldfish_loop(
         if actions.is_empty()
             || (actions.len() == 1 && actions[0] == crate::action::Action::PassPriority)
         {
-            rules::apply_action(state, &crate::action::Action::PassPriority);
-            actions_taken += 1;
+            if actions.is_empty() {
+                interrupted = Some(no_progress_outcome(state));
+                break;
+            }
+            let action = crate::action::Action::PassPriority;
+            match apply_counted_action(state, &action, &actions) {
+                Ok(true) => { actions_taken += 1; rejected_in_row = 0; }
+                Ok(false) => { rejected_actions += 1; rejected_in_row += 1; }
+                Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
+            }
+            if rejected_in_row >= MAX_REJECTED_IN_ROW {
+                interrupted = Some(GameOutcome::Stalled(TerminationReason::RejectedAction));
+                break;
+            }
             continue;
         }
 
@@ -493,18 +703,27 @@ fn run_goldfish_loop(
             log_action(state, &action, player);
         }
 
-        rules::apply_action(state, &action);
-        actions_taken += 1;
+        let advanced = match apply_counted_action(state, &action, &actions) {
+            Ok(true) => { actions_taken += 1; rejected_in_row = 0; true }
+            Ok(false) => { rejected_actions += 1; rejected_in_row += 1; false }
+            Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
+        };
+        if rejected_in_row >= MAX_REJECTED_IN_ROW {
+            interrupted = Some(GameOutcome::Stalled(TerminationReason::RejectedAction));
+            break;
+        }
 
-        if actions_taken.is_multiple_of(10) {
+        if advanced && actions_taken.is_multiple_of(10) {
             rules::check_state_based_actions(state);
         }
     }
 
     GameResult {
         winner: state.winner,
+        outcome: classify_outcome(state, GOLDFISH_MAX_TURNS, GOLDFISH_MAX_ACTIONS, actions_taken, interrupted),
         turns: state.turn_number,
         actions_taken,
+        rejected_actions,
         final_life: [state.players[0].life, state.players[1].life],
     }
 }
@@ -555,6 +774,9 @@ fn aggregate_goldfish_results(
     let wins = AtomicU64::new(0);
     let losses = AtomicU64::new(0);
     let draws = AtomicU64::new(0);
+    let censored = AtomicU64::new(0);
+    let stalled = AtomicU64::new(0);
+    let invalid = AtomicU64::new(0);
     let total_kill_turns = AtomicU64::new(0);
     let total_actions = AtomicU64::new(0);
     let fastest = AtomicU64::new(u64::MAX);
@@ -567,10 +789,8 @@ fn aggregate_goldfish_results(
     (0..num_games).into_par_iter().for_each(|i| {
         let result = run_one(i);
 
-        total_actions.fetch_add(result.actions_taken as u64, Ordering::Relaxed);
-
-        match result.winner {
-            Some(0) => {
+        match result.outcome {
+            GameOutcome::Win(0) => {
                 wins.fetch_add(1, Ordering::Relaxed);
                 let turn = result.turns;
                 total_kill_turns.fetch_add(turn as u64, Ordering::Relaxed);
@@ -580,13 +800,17 @@ fn aggregate_goldfish_results(
                 fastest.fetch_min(turn as u64, Ordering::Relaxed);
                 slowest.fetch_max(turn as u64, Ordering::Relaxed);
             }
-            Some(_) => {
+            GameOutcome::Win(_) => {
                 losses.fetch_add(1, Ordering::Relaxed);
             }
-            None => {
+            GameOutcome::Draw => {
                 draws.fetch_add(1, Ordering::Relaxed);
             }
+            GameOutcome::Censored(_) => { censored.fetch_add(1, Ordering::Relaxed); return; }
+            GameOutcome::Stalled(_) => { stalled.fetch_add(1, Ordering::Relaxed); return; }
+            GameOutcome::Invalid(_) => { invalid.fetch_add(1, Ordering::Relaxed); return; }
         }
+        total_actions.fetch_add(result.actions_taken as u64, Ordering::Relaxed);
     });
 
     let total_wins = wins.load(Ordering::Relaxed);
@@ -603,6 +827,9 @@ fn aggregate_goldfish_results(
         wins: total_wins,
         losses: losses.load(Ordering::Relaxed),
         draws: draws.load(Ordering::Relaxed),
+        censored: censored.load(Ordering::Relaxed),
+        stalled: stalled.load(Ordering::Relaxed),
+        invalid: invalid.load(Ordering::Relaxed),
         avg_kill_turn: if total_wins > 0 {
             total_kill_turns.load(Ordering::Relaxed) as f64 / total_wins as f64
         } else {
@@ -610,7 +837,7 @@ fn aggregate_goldfish_results(
         },
         fastest_kill: if total_wins > 0 { fast as u32 } else { 0 },
         slowest_kill: if total_wins > 0 { slow as u32 } else { 0 },
-        avg_actions: total_actions.load(Ordering::Relaxed) as f64 / num_games as f64,
+        avg_actions: total_actions.load(Ordering::Relaxed) as f64 / (total_wins + losses.load(Ordering::Relaxed) + draws.load(Ordering::Relaxed)).max(1) as f64,
         kill_turn_distribution: kill_turn_dist,
     }
 }
@@ -788,11 +1015,17 @@ fn aggregate_mcts_goldfish_results(
     let wins = AtomicU64::new(0);
     let losses = AtomicU64::new(0);
     let draws = AtomicU64::new(0);
+    let censored = AtomicU64::new(0);
+    let stalled = AtomicU64::new(0);
+    let invalid = AtomicU64::new(0);
+    let legacy_unknown = AtomicU64::new(0);
+    let completed = AtomicU64::new(0);
     let total_kill_turns = AtomicU64::new(0);
     let total_actions = AtomicU64::new(0);
     let fastest = AtomicU64::new(u64::MAX);
     let slowest = AtomicU64::new(0);
     let total_decisions = AtomicU64::new(0);
+    let reward_samples = AtomicU64::new(0);
     // Use Mutex<f64> for exact floating-point accumulation (no ×1000 truncation).
     let total_reward = Mutex::new(0.0f64);
     // Track the decision sequence from the fastest winning game.
@@ -807,19 +1040,21 @@ fn aggregate_mcts_goldfish_results(
         let mut state = make_state(i);
         let result = mcts::run_mcts_goldfish_game(&mut state, config, false, decisions);
 
-        total_actions.fetch_add(result.actions_taken as u64, Ordering::Relaxed);
+        if matches!(result.outcome, mcts::MctsOutcome::Win | mcts::MctsOutcome::Loss | mcts::MctsOutcome::Draw) {
+            completed.fetch_add(1, Ordering::Relaxed);
+            total_actions.fetch_add(result.actions_taken as u64, Ordering::Relaxed);
+            total_decisions.fetch_add(result.decision_stats.len() as u64, Ordering::Relaxed);
+            if !result.decision_stats.is_empty() {
+                let avg_reward: f64 = {
+                result.decision_stats.iter().map(|d| d.best_action_avg_reward).sum::<f64>()
+                    / result.decision_stats.len() as f64
+                };
+                *total_reward.lock().unwrap() += avg_reward;
+                reward_samples.fetch_add(1, Ordering::Relaxed);
+            }
+        }
 
-        let n_decisions = result.decision_stats.len() as u64;
-        total_decisions.fetch_add(n_decisions, Ordering::Relaxed);
-        let avg_reward: f64 = if result.decision_stats.is_empty() {
-            0.0
-        } else {
-            result.decision_stats.iter().map(|d| d.best_action_avg_reward).sum::<f64>()
-                / result.decision_stats.len() as f64
-        };
-        *total_reward.lock().unwrap() += avg_reward;
-
-        if result.won {
+        if result.outcome == mcts::MctsOutcome::Win {
             wins.fetch_add(1, Ordering::Relaxed);
             let turn = result.kill_turn;
             total_kill_turns.fetch_add(turn as u64, Ordering::Relaxed);
@@ -832,10 +1067,16 @@ fn aggregate_mcts_goldfish_results(
             if (turn as u64) <= prev_fastest {
                 *fastest_sequence.lock().unwrap() = result.decision_stats;
             }
-        } else if result.final_life[0] <= 0 {
-            losses.fetch_add(1, Ordering::Relaxed);
         } else {
-            draws.fetch_add(1, Ordering::Relaxed);
+            match result.outcome {
+                mcts::MctsOutcome::Loss => { losses.fetch_add(1, Ordering::Relaxed); }
+                mcts::MctsOutcome::Draw => { draws.fetch_add(1, Ordering::Relaxed); }
+                mcts::MctsOutcome::Censored => { censored.fetch_add(1, Ordering::Relaxed); }
+                mcts::MctsOutcome::Stalled => { stalled.fetch_add(1, Ordering::Relaxed); }
+                mcts::MctsOutcome::Invalid => { invalid.fetch_add(1, Ordering::Relaxed); }
+                mcts::MctsOutcome::LegacyUnknown => { legacy_unknown.fetch_add(1, Ordering::Relaxed); }
+                mcts::MctsOutcome::Win => unreachable!(),
+            }
         }
 
         if let Some(p) = progress {
@@ -848,6 +1089,8 @@ fn aggregate_mcts_goldfish_results(
     let slow = slowest.load(Ordering::Relaxed);
     let tot_decisions = total_decisions.load(Ordering::Relaxed);
     let tot_reward = *total_reward.lock().unwrap();
+    let completed_games = completed.load(Ordering::Relaxed);
+    let measured_rewards = reward_samples.load(Ordering::Relaxed);
 
     let kill_turn_dist: Vec<u64> = distribution
         .iter()
@@ -855,30 +1098,55 @@ fn aggregate_mcts_goldfish_results(
         .collect();
 
     MctsGoldfishResults {
+        schema_version: 3,
         total_games: num_games,
         wins: total_wins,
         losses: losses.load(Ordering::Relaxed),
         draws: draws.load(Ordering::Relaxed),
-        avg_kill_turn: if total_wins > 0 {
-            total_kill_turns.load(Ordering::Relaxed) as f64 / total_wins as f64
-        } else {
-            0.0
-        },
+        censored: censored.load(Ordering::Relaxed),
+        stalled: stalled.load(Ordering::Relaxed),
+        invalid: invalid.load(Ordering::Relaxed),
+        legacy_unknown: legacy_unknown.load(Ordering::Relaxed),
+        avg_kill_turn: (total_wins > 0).then(||
+            total_kill_turns.load(Ordering::Relaxed) as f64 / total_wins as f64),
+        kill_turn_samples: total_wins,
         fastest_kill: if total_wins > 0 { fast as u32 } else { 0 },
         slowest_kill: if total_wins > 0 { slow as u32 } else { 0 },
-        avg_actions: total_actions.load(Ordering::Relaxed) as f64 / num_games as f64,
-        avg_decisions_per_game: if num_games > 0 {
-            tot_decisions as f64 / num_games as f64
-        } else {
-            0.0
-        },
-        avg_best_reward: if num_games > 0 {
-            tot_reward / num_games as f64
-        } else {
-            0.0
-        },
+        avg_actions: (completed_games > 0).then(||
+            total_actions.load(Ordering::Relaxed) as f64 / completed_games as f64),
+        actions_samples: completed_games,
+        avg_decisions_per_game: (completed_games > 0).then(||
+            tot_decisions as f64 / completed_games as f64),
+        decision_samples: completed_games,
+        avg_best_reward: (measured_rewards > 0).then(||
+            tot_reward / measured_rewards as f64),
+        reward_samples: measured_rewards,
         kill_turn_distribution: kill_turn_dist,
         fastest_sequence: fastest_sequence.into_inner().unwrap(),
+    }
+}
+
+#[cfg(test)]
+mod mcts_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn parallel_aggregation_counts_only_rules_completions_in_denominators() {
+        let results = aggregate_mcts_goldfish_results(4, &MctsConfig::default(), |index| {
+            let mut state = GameState::new(2);
+            match index {
+                0 => { state.game_over = true; state.winner = Some(0); }
+                1 => { state.game_over = true; state.winner = Some(1); }
+                2 => { state.game_over = true; state.winner = None; }
+                _ => { state.turn_number = 21; }
+            }
+            state
+        }, None, None);
+        assert_eq!(results.total_games, 4);
+        assert_eq!(results.completed_games(), 3);
+        assert_eq!((results.wins, results.losses, results.draws, results.censored), (1, 1, 1, 1));
+        assert!((results.win_rate() - 1.0 / 3.0).abs() < 1e-10);
+        assert_eq!(results.avg_actions, Some(0.0));
     }
 }
 
@@ -975,4 +1243,160 @@ fn log_action(state: &GameState, action: &crate::action::Action, player: PlayerI
         state.players[0].life,
         state.players[1].life,
     );
+}
+
+#[cfg(test)]
+mod cleanup_continuation_tests {
+    use super::*;
+    use crate::action::Action;
+    use crate::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility, ZoneType};
+    use crate::game::Phase;
+    use crate::strategy::GoldfishStrategy;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+
+    struct AlwaysPass;
+    impl Strategy for AlwaysPass {
+        fn choose_action(&self, _: &GameState, _: PlayerIndex) -> Action { Action::PassPriority }
+        fn name(&self) -> &str { "always-pass" }
+    }
+
+    struct RejectOnce(std::sync::atomic::AtomicUsize);
+    impl Strategy for RejectOnce {
+        fn choose_action(&self, state: &GameState, _: PlayerIndex) -> Action {
+            if self.0.fetch_add(1, Ordering::Relaxed) == 0 { Action::PassPriority }
+            else { legal_actions(state)[0].clone() }
+        }
+        fn name(&self) -> &str { "reject-once" }
+    }
+
+    fn mandatory_cleanup() -> GameState {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 90_123, name: "Filler".into(),
+            card_types: vec![CardType::Land], ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::Cleanup;
+        state.turn_number = GOLDFISH_MAX_TURNS;
+        state.cleanup_discard_in_progress = true;
+        for _ in 0..8 { state.create_card_in_zone(90_123, 0, ZoneType::Hand); }
+        state
+    }
+
+    #[test]
+    fn original_json_cleanup_chooser_mismatch_is_invalid() {
+        let mut state = mandatory_cleanup();
+        state.active_player = 1;
+        state.priority_player = 0;
+        for _ in 0..8 { state.create_card_in_zone(90_123, 1, ZoneType::Hand); }
+        let json = serde_json::to_string(&state).unwrap();
+        let mut restored: GameState = serde_json::from_str(&json).unwrap();
+        restored.card_db = state.card_db.clone();
+        let result = run_goldfish_loop(&mut restored, &GoldfishStrategy, false);
+        assert_eq!(result.outcome, GameOutcome::Invalid(TerminationReason::IncompleteCleanup));
+        assert_eq!(result.actions_taken, 0);
+    }
+
+    #[test]
+    fn repeated_rejected_action_stalls_without_spending_accepted_budget() {
+        let mut state = mandatory_cleanup();
+        let result = run_goldfish_loop(&mut state, &AlwaysPass, false);
+        assert_eq!(result.outcome, GameOutcome::Stalled(TerminationReason::RejectedAction));
+        assert_eq!(result.actions_taken, 0);
+        assert!(result.rejected_actions > 0);
+    }
+
+    #[test]
+    fn one_rejected_proposal_can_recover_with_legal_discard() {
+        let mut state = mandatory_cleanup();
+        let strategy = RejectOnce(std::sync::atomic::AtomicUsize::new(0));
+        let result = run_goldfish_loop(&mut state, &strategy, false);
+        assert_eq!(result.rejected_actions, 1);
+        assert!(result.actions_taken > 0);
+        assert_eq!(state.players[0].hand.len(), 7);
+        assert_eq!(result.outcome, GameOutcome::Censored(TerminationReason::TurnLimit));
+    }
+
+    #[test]
+    fn mixed_attempts_use_completed_game_denominator() {
+        let make = |outcome| GameResult { winner: None, outcome, turns: 2,
+            actions_taken: 4, rejected_actions: 0, final_life: [20, 20] };
+        let sample = [make(GameOutcome::Win(0)),
+            make(GameOutcome::Stalled(TerminationReason::NoProgress)),
+            make(GameOutcome::Invalid(TerminationReason::IncompleteCleanup))];
+        let results = aggregate_goldfish_results(3, |i| sample[i as usize].clone());
+        assert_eq!((results.total_games, results.completed_games(), results.wins,
+            results.stalled, results.invalid), (3, 1, 1, 1, 1));
+        assert_eq!(results.win_rate(), 1.0);
+        assert_eq!(results.kill_share(1), 1.0);
+        assert_eq!(results.avg_actions, 4.0);
+    }
+
+    #[test]
+    fn incomplete_cleanup_is_invalid_and_not_aggregated_as_draw() {
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(CardDatabase::new()));
+        state.active_player = 1;
+        state.priority_player = 1;
+        state.phase = Phase::PreCombatMain;
+        state.cleanup_discard_in_progress = true;
+        // A discard continuation outside cleanup is inconsistent.
+        let result = run_goldfish_loop(&mut state, &GoldfishStrategy, false);
+        assert!(matches!(result.outcome, GameOutcome::Invalid(TerminationReason::IncompleteCleanup)));
+        let results = aggregate_goldfish_results(1, |_| result.clone());
+        assert_eq!((results.draws, results.invalid, results.total_games), (0, 1, 1));
+    }
+
+    #[test]
+    fn turn_limit_is_censored_and_terminal_loss_is_a_loss() {
+        let mut state = GameState::new(2);
+        state.turn_number = GOLDFISH_MAX_TURNS + 1;
+        let capped = run_goldfish_loop(&mut state, &GoldfishStrategy, false);
+        assert!(matches!(capped.outcome, GameOutcome::Censored(TerminationReason::TurnLimit)));
+        state.game_over = true;
+        state.winner = Some(1);
+        let loss = run_goldfish_loop(&mut state, &GoldfishStrategy, false);
+        assert!(matches!(loss.outcome, GameOutcome::Win(1)));
+        let aggregate = aggregate_goldfish_results(2, |i| if i == 0 { capped.clone() } else { loss.clone() });
+        assert_eq!((aggregate.losses, aggregate.draws, aggregate.censored), (1, 0, 1));
+        assert_eq!(aggregate.completed_games(), 1);
+        assert_eq!(aggregate.avg_actions, 0.0);
+    }
+
+    #[test]
+    fn interrupted_goldfish_cleanup_makes_progress_in_simulation_loop() {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 90_121, name: "Observer".into(),
+            card_types: vec![CardType::Enchantment],
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::YouDiscardACard,
+                effect: Effect::GainLife { amount: 1 }, description: "Discard".into(),
+            }], ..Default::default() });
+        db.insert(CardDef { id: 90_122, name: "Filler".into(),
+            card_types: vec![CardType::Land], ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        state.active_player = 1;
+        state.priority_player = 1;
+        state.turn_number = GOLDFISH_MAX_TURNS;
+        state.phase = Phase::Cleanup;
+        state.create_card_in_zone(90_121, 1, ZoneType::Battlefield);
+        for _ in 0..9 { state.create_card_in_zone(90_122, 1, ZoneType::Hand); }
+        let first = state.players[1].hand[0];
+        rules::apply_action(&mut state, &Action::Discard { object_id: first });
+        assert!(state.cleanup_discard_in_progress);
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = run_goldfish_loop(&mut state, &GoldfishStrategy, false);
+            tx.send((result.actions_taken, state.active_player, state.turn_number,
+                state.players[1].hand.len(), state.players[1].life)).unwrap();
+        });
+        let outcome = rx.recv_timeout(Duration::from_secs(3))
+            .expect("simulation must not spin on an interrupted cleanup discard");
+        assert!(outcome.0 > 0);
+        assert_eq!((outcome.1, outcome.2, outcome.3, outcome.4),
+            (0, GOLDFISH_MAX_TURNS + 1, 7, 22));
+    }
 }

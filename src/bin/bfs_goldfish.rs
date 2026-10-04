@@ -36,7 +36,7 @@ use mtg_gto::combo::ComboCategory;
 use mtg_gto::combo_discovery::DiscoveryConfig;
 use mtg_gto::game::{GameState, Phase};
 use mtg_gto::rules;
-use mtg_gto::simulation::format_action_name;
+use mtg_gto::simulation::{apply_counted_action, format_action_name, invalid_cleanup_state, TerminationReason};
 use mtg_gto::strategy::{GreedyStrategy, Strategy};
 
 /// Convert engine turn_number to Magic game turn.
@@ -64,6 +64,59 @@ struct SearchStats {
     max_depth_reached: usize,
     timed_out: bool,
     hit_state_cap: bool,
+    hit_depth_cap: bool,
+    hit_turn_cap: bool,
+    stalled: bool,
+    invalid: bool,
+    stalled_branches: u64,
+    invalid_branches: u64,
+    invalid_reason: &'static str,
+}
+
+fn search_action_advanced(stats: &mut SearchStats,
+    result: Result<bool, TerminationReason>) -> bool {
+    match result {
+        Ok(true) => true,
+        Ok(false) => {
+            stats.stalled = true;
+            stats.stalled_branches += 1;
+            false
+        }
+        Err(reason) => {
+            stats.invalid = true;
+            stats.invalid_branches += 1;
+            stats.invalid_reason = reason.code();
+            false
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SearchOutcome {
+    Win(u32),
+    FoundWinIncomplete(u32, &'static str),
+    ExhaustedNoWin,
+    Censored(&'static str),
+    Stalled(&'static str),
+    Invalid(&'static str),
+}
+
+fn classify_search(win_turn: Option<u32>, stats: &SearchStats) -> SearchOutcome {
+    if let Some(turn) = win_turn {
+        if stats.invalid { return SearchOutcome::FoundWinIncomplete(turn, "invalid_branch"); }
+        if stats.stalled { return SearchOutcome::FoundWinIncomplete(turn, "stalled_branch"); }
+        if stats.timed_out { return SearchOutcome::FoundWinIncomplete(turn, "timeout"); }
+        if stats.hit_state_cap { return SearchOutcome::FoundWinIncomplete(turn, "state_cap"); }
+        if stats.hit_depth_cap { return SearchOutcome::FoundWinIncomplete(turn, "depth_cap"); }
+        return SearchOutcome::Win(turn);
+    }
+    if stats.invalid { return SearchOutcome::Invalid(stats.invalid_reason); }
+    if stats.stalled { return SearchOutcome::Stalled("no_progress"); }
+    if stats.timed_out { return SearchOutcome::Censored("timeout"); }
+    if stats.hit_state_cap { return SearchOutcome::Censored("state_cap"); }
+    if stats.hit_depth_cap { return SearchOutcome::Censored("depth_cap"); }
+    if stats.hit_turn_cap && win_turn.is_none() { return SearchOutcome::Censored("turn_cap"); }
+    SearchOutcome::ExhaustedNoWin
 }
 
 impl SearchStats {
@@ -75,6 +128,13 @@ impl SearchStats {
             max_depth_reached: 0,
             timed_out: false,
             hit_state_cap: false,
+            hit_depth_cap: false,
+            hit_turn_cap: false,
+            stalled: false,
+            invalid: false,
+            stalled_branches: 0,
+            invalid_branches: 0,
+            invalid_reason: "incomplete_cleanup",
         }
     }
 }
@@ -558,26 +618,71 @@ fn dfs_search(
             break;
         }
 
+        if invalid_cleanup_state(&work) {
+            stats.invalid = true;
+            stats.invalid_branches += 1;
+            break;
+        }
+
         // Bound prune
         if work.turn_number >= *best_win_turn {
             stats.states_pruned_bound += 1;
+            if best_sequence.is_empty() { stats.hit_turn_cap = true; }
             break;
         }
 
         // Depth limit
         if current_sequence.len() > limits.max_depth {
+            stats.hit_depth_cap = true;
             break;
         }
 
         // Opponent's turn — fast-forward without branching.
         if work.active_player != 0 {
-            rules::fast_forward_goldfish_turn(&mut work);
+            let before = match bincode::serialize(&work) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    stats.invalid = true;
+                    stats.invalid_branches += 1;
+                    stats.invalid_reason = "state_encoding";
+                    break;
+                }
+            };
+            let advanced = rules::fast_forward_goldfish_turn(&mut work);
+            if advanced == 0 {
+                if invalid_cleanup_state(&work) {
+                    stats.invalid = true;
+                    stats.invalid_branches += 1;
+                } else {
+                    stats.stalled = true;
+                    stats.stalled_branches += 1;
+                }
+                break;
+            }
+            match bincode::serialize(&work) {
+                Ok(after) if after != before => {}
+                Ok(_) => {
+                    stats.stalled = true;
+                    stats.stalled_branches += 1;
+                    break;
+                }
+                Err(_) => {
+                    stats.invalid = true;
+                    stats.invalid_branches += 1;
+                    stats.invalid_reason = "state_encoding";
+                    break;
+                }
+            }
             continue;
         }
 
         // Opponent priority — auto-pass without branching.
         if work.priority_player != 0 {
-            rules::apply_action(&mut work, &Action::PassPriority);
+            let action = Action::PassPriority;
+            let legal = legal_actions(&work);
+            if !search_action_advanced(stats, apply_counted_action(&mut work, &action, &legal)) {
+                break;
+            }
             continue;
         }
 
@@ -612,10 +717,14 @@ fn dfs_search(
         // Get and prune legal actions
         let actions = legal_actions(&work);
         if actions.is_empty() {
+            stats.stalled = true;
+            stats.stalled_branches += 1;
             break;
         }
         let pruned = prune_actions(&work, &actions, config);
         if pruned.is_empty() {
+            stats.stalled = true;
+            stats.stalled_branches += 1;
             break;
         }
 
@@ -637,7 +746,9 @@ fn dfs_search(
             let action = pruned[0].clone();
             let desc = format_action_name(&work, &action);
             let turn = work.turn_number;
-            rules::apply_action(&mut work, &action);
+            if !search_action_advanced(stats, apply_counted_action(&mut work, &action, &actions)) {
+                break;
+            }
             current_sequence.push(ActionRecord {
                 turn,
                 action,
@@ -655,7 +766,9 @@ fn dfs_search(
             let desc = format_action_name(&work, action);
             let mut clone = work.clone();
             let turn = clone.turn_number;
-            rules::apply_action(&mut clone, action);
+            if !search_action_advanced(stats, apply_counted_action(&mut clone, action, &actions)) {
+                continue;
+            }
             current_sequence.push(ActionRecord {
                 turn,
                 action: action.clone(),
@@ -849,8 +962,13 @@ fn main() {
 
     let mut kill_turns: HashMap<u32, u32> = HashMap::new();
     let mut wins = 0u32;
+    let mut incomplete_wins = 0u32;
     let mut total_states = 0u64;
     let mut timeouts = 0u32;
+    let mut censored = 0u32;
+    let mut stalled = 0u32;
+    let mut invalid = 0u32;
+    let mut exhausted = 0u32;
 
     for seed in seed_start..(seed_start + num_seeds) {
         let start = Instant::now();
@@ -877,8 +995,8 @@ fn main() {
             ""
         };
 
-        match win_turn {
-            Some(t) => {
+        match classify_search(win_turn, &stats) {
+            SearchOutcome::Win(t) => {
                 println!(
                     "Seed {:3}: Win T{} ({} states, {:.1}s){}",
                     seed, t, stats.states_explored, elapsed.as_secs_f64(), suffix
@@ -886,11 +1004,36 @@ fn main() {
                 *kill_turns.entry(t).or_insert(0) += 1;
                 wins += 1;
             }
-            None => {
+            SearchOutcome::FoundWinIncomplete(t, reason) => {
+                incomplete_wins += 1;
+                println!("Seed {:3}: Known win T{}; search incomplete reason={} ({} states, {:.1}s; stalled_branches={}, invalid_branches={})",
+                    seed, t, reason, stats.states_explored, elapsed.as_secs_f64(),
+                    stats.stalled_branches, stats.invalid_branches);
+                *kill_turns.entry(t).or_insert(0) += 1;
+            }
+            SearchOutcome::ExhaustedNoWin => {
+                exhausted += 1;
                 println!(
-                    "Seed {:3}: No win by T{} ({} states, {:.1}s){}",
+                    "Seed {:3}: Exhausted, no win by T{} ({} states, {:.1}s){}",
                     seed, max_turn, stats.states_explored, elapsed.as_secs_f64(), suffix
                 );
+            }
+            SearchOutcome::Censored(reason) => {
+                censored += 1;
+                println!("Seed {:3}: Censored reason={} ({} states, {:.1}s)",
+                    seed, reason, stats.states_explored, elapsed.as_secs_f64());
+            }
+            SearchOutcome::Stalled(reason) => {
+                stalled += 1;
+                println!("Seed {:3}: Stalled reason={} ({} states, {:.1}s; stalled_branches={}, invalid_branches={})",
+                    seed, reason, stats.states_explored, elapsed.as_secs_f64(),
+                    stats.stalled_branches, stats.invalid_branches);
+            }
+            SearchOutcome::Invalid(reason) => {
+                invalid += 1;
+                println!("Seed {:3}: Invalid reason={} ({} states, {:.1}s; stalled_branches={}, invalid_branches={})",
+                    seed, reason, stats.states_explored, elapsed.as_secs_f64(),
+                    stats.stalled_branches, stats.invalid_branches);
             }
         }
         total_states += stats.states_explored;
@@ -902,27 +1045,107 @@ fn main() {
     println!("Summary");
     println!("=======");
     println!(
-        "Win rate:   {}/{} ({:.1}%)",
+        "Complete-search win rate: {}/{} ({:.1}%)",
         wins,
-        num_seeds,
-        100.0 * wins as f64 / num_seeds as f64
+        wins + exhausted,
+        100.0 * wins as f64 / (wins + exhausted).max(1) as f64
     );
+    println!("Attempts: {}  Complete wins: {}  Known wins with incomplete search: {}  Exhausted no win: {}  Censored: {}  Stalled: {}  Invalid: {}",
+        num_seeds, wins, incomplete_wins, exhausted, censored, stalled, invalid);
     if timeouts > 0 {
         println!("Timeouts:   {}", timeouts);
     }
     println!("Total time: {:.1}s", total_elapsed.as_secs_f64());
-    println!(
-        "Avg states: {:.0}",
-        total_states as f64 / num_seeds as f64
-    );
+    println!("States explored across all attempts: {}", total_states);
 
     if !kill_turns.is_empty() {
         println!();
-        println!("Kill turn distribution:");
+        println!("Known winning lines by turn (some searches incomplete):");
         let mut turns: Vec<u32> = kill_turns.keys().cloned().collect();
         turns.sort();
         for t in turns {
             println!("  T{}: {} games", t, kill_turns[&t]);
         }
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    #[test]
+    fn no_win_requires_exhaustion_not_a_resource_cut() {
+        let mut stats = SearchStats::new();
+        assert_eq!(classify_search(None, &stats), SearchOutcome::ExhaustedNoWin);
+        stats.hit_state_cap = true;
+        assert_eq!(classify_search(None, &stats), SearchOutcome::Censored("state_cap"));
+    }
+
+    #[test]
+    fn stalled_and_invalid_are_disclosed_separately() {
+        let mut stats = SearchStats::new();
+        stats.stalled = true;
+        assert_eq!(classify_search(None, &stats), SearchOutcome::Stalled("no_progress"));
+        stats.invalid = true;
+        assert_eq!(classify_search(None, &stats), SearchOutcome::Invalid("incomplete_cleanup"));
+    }
+
+    #[test]
+    fn known_win_with_stalled_sibling_keeps_trace_but_is_incomplete() {
+        let mut stats = SearchStats::new();
+        stats.stalled = true;
+        assert_eq!(classify_search(Some(2), &stats),
+            SearchOutcome::FoundWinIncomplete(2, "stalled_branch"));
+    }
+
+    #[test]
+    fn inconsistent_cleanup_chooser_is_invalid_before_fast_forward() {
+        let mut state = GameState::new(2);
+        state.active_player = 1;
+        state.priority_player = 0;
+        state.phase = Phase::Cleanup;
+        state.cleanup_discard_in_progress = true;
+        assert!(invalid_cleanup_state(&state));
+        let mut best_turn = 10;
+        let mut best = Vec::new();
+        let mut current = Vec::new();
+        let mut stats = SearchStats::new();
+        let mut visited = HashMap::new();
+        let limits = SearchLimits {
+            deadline: Instant::now() + std::time::Duration::from_secs(1),
+            max_states: 10, max_visited: 10, max_depth: 10, trace: false,
+        };
+        dfs_search(&mut state, &mut best_turn, &mut best, &mut current,
+            &kinnan_config(), &mut stats, &mut visited, &limits);
+        assert_eq!(stats.invalid_branches, 1);
+        assert_eq!(classify_search(None, &stats), SearchOutcome::Invalid("incomplete_cleanup"));
+    }
+
+    #[test]
+    fn pruned_pass_during_coherent_cleanup_is_stalled_not_exhausted() {
+        let mut db = mtg_gto::game::CardDatabase::new();
+        db.insert(mtg_gto::card::CardDef { id: 91_001, name: "Filler".into(),
+            card_types: vec![mtg_gto::card::CardType::Land], ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::Cleanup;
+        state.cleanup_discard_in_progress = true;
+        for _ in 0..8 {
+            state.create_card_in_zone(91_001, 0, mtg_gto::card::ZoneType::Hand);
+        }
+        assert!(!invalid_cleanup_state(&state));
+        let mut best_turn = 10;
+        let mut best = Vec::new();
+        let mut current = Vec::new();
+        let mut stats = SearchStats::new();
+        let mut visited = HashMap::new();
+        let limits = SearchLimits {
+            deadline: Instant::now() + std::time::Duration::from_secs(1),
+            max_states: 10, max_visited: 10, max_depth: 10, trace: false,
+        };
+        dfs_search(&mut state, &mut best_turn, &mut best, &mut current,
+            &kinnan_config(), &mut stats, &mut visited, &limits);
+        assert_eq!(stats.stalled_branches, 1);
+        assert_eq!(classify_search(None, &stats), SearchOutcome::Stalled("no_progress"));
     }
 }
