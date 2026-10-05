@@ -180,6 +180,9 @@ fn resolve_activated_ability(
     };
 
     if let Some(effect) = effect {
+        if !crate::targeting::valid_destroy_ability_targets(
+            state, controller, &effect, targets, generations,
+        ) { return; }
         super::effects::resolve_effect(state, &effect, controller, targets, generations, Some(source_id));
     }
 }
@@ -193,6 +196,9 @@ fn resolve_triggered_ability(
     generations: &[Option<u32>],
     controller: PlayerIndex,
 ) {
+    if !crate::targeting::valid_destroy_ability_targets(
+        state, controller, &context.effect, targets, generations,
+    ) { return; }
     // The source is useful only while it is the same incarnation. Never let
     // a returned permanent supply state for the older ability on the stack.
     let live_source = state.objects.get(&source_id)
@@ -202,6 +208,112 @@ fn resolve_triggered_ability(
     super::effects::resolve_trigger_effect(
         state, context, controller, targets, generations, live_source, source_id,
     );
+}
+
+#[cfg(test)]
+mod destruction_ability_tests {
+    use std::sync::Arc;
+    use super::*;
+    use crate::card::{ActivatedAbility, CardDef, Effect, KeywordAbility, TargetSpec};
+    use crate::game::CardDatabase;
+    use crate::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
+    use crate::mana::ManaCost;
+
+    fn fixture(effect: Effect) -> (GameState, ObjectId, ObjectId) {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 996_001, name: "Destroy ability".into(),
+            card_types: vec![CardType::Artifact],
+            activated_abilities: vec![ActivatedAbility { cost: ManaCost::zero(),
+                requires_tap: false, sacrifice_cost: None, life_cost: 0,
+                effect, description: "test".into() }], ..Default::default() });
+        db.insert(CardDef { id: 996_002, name: "Target".into(),
+            card_types: vec![CardType::Creature], power: Some(2), toughness: Some(2),
+            ..Default::default() });
+        db.insert(CardDef { id: 996_003, name: "Library".into(),
+            card_types: vec![CardType::Land], ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        let source = state.create_card_in_zone(996_001, 0, ZoneType::Battlefield);
+        let subject = state.create_card_in_zone(996_002, 1, ZoneType::Battlefield);
+        (state, source, subject)
+    }
+
+    fn resolve(state: &mut GameState, source: ObjectId, target: ObjectId, generation: u32) {
+        resolve_activated_ability(state, source, 0, &[Target::Object(target)],
+            &[Some(generation)], 0);
+    }
+
+    fn make_noncreature(state: &mut GameState, target: ObjectId) {
+        state.continuous_effects.push(ContinuousEffect {
+            source_id: target, controller: 1, timestamp: 1,
+            duration: Duration::Permanent,
+            affected: AffectedObjects::Specific(target),
+            modification: LayerModification::SetTypes(vec![CardType::Artifact]),
+        });
+        state.invalidate_characteristics_cache();
+    }
+
+    #[test]
+    fn targeted_destroy_ability_checks_current_legality_and_incarnation() {
+        let effect = Effect::DestroyTarget { target: TargetSpec::AnyCreature };
+        let (mut legal, source, target) = fixture(effect.clone());
+        let generation = legal.objects[&target].zone_change_count;
+        resolve(&mut legal, source, target, generation);
+        assert!(legal.players[1].graveyard.contains(&target));
+
+        let (mut protected, source, target) = fixture(effect.clone());
+        let generation = protected.objects[&target].zone_change_count;
+        protected.objects.get_mut(&target).unwrap().temp_keywords.push(KeywordAbility::Shroud);
+        resolve(&mut protected, source, target, generation);
+        assert!(protected.battlefield.contains(&target));
+
+        let (mut departed, source, target) = fixture(effect.clone());
+        let generation = departed.objects[&target].zone_change_count;
+        departed.move_object(target, ZoneType::Battlefield, ZoneType::Graveyard);
+        resolve(&mut departed, source, target, generation);
+        assert!(!departed.battlefield.contains(&target));
+        assert_eq!(departed.players[1].graveyard.iter().filter(|&&id| id == target).count(), 1);
+
+        let (mut returned, source, target) = fixture(effect);
+        let old = returned.objects[&target].zone_change_count;
+        returned.move_object(target, ZoneType::Battlefield, ZoneType::Graveyard);
+        returned.move_object(target, ZoneType::Graveyard, ZoneType::Battlefield);
+        resolve(&mut returned, source, target, old);
+        assert!(returned.battlefield.contains(&target));
+    }
+
+    #[test]
+    fn destroy_ability_multiple_does_not_recheck_later_child() {
+        let effect = Effect::Multiple(vec![
+            Effect::DestroyTarget { target: TargetSpec::AnyCreature },
+            Effect::DrawCards { count: 1 },
+        ]);
+        let (mut state, source, target) = fixture(effect);
+        let card = state.create_card_in_zone(996_003, 0, ZoneType::Library);
+        let generation = state.objects[&target].zone_change_count;
+        resolve(&mut state, source, target, generation);
+        assert!(state.players[1].graveyard.contains(&target));
+        assert!(state.players[0].hand.contains(&card));
+    }
+
+    #[test]
+    fn type_change_uses_entry_legality_and_pretransition_creature_lki() {
+        let (mut creature_only, source, target) = fixture(
+            Effect::DestroyTarget { target: TargetSpec::AnyCreature });
+        let generation = creature_only.objects[&target].zone_change_count;
+        make_noncreature(&mut creature_only, target);
+        resolve(&mut creature_only, source, target, generation);
+        assert!(creature_only.battlefield.contains(&target));
+
+        let (mut any_permanent, source, target) = fixture(
+            Effect::DestroyTarget { target: TargetSpec::AnyPermanent });
+        let generation = any_permanent.objects[&target].zone_change_count;
+        make_noncreature(&mut any_permanent, target);
+        resolve(&mut any_permanent, source, target, generation);
+        assert!(any_permanent.players[1].graveyard.contains(&target));
+        assert!(!any_permanent.pending_triggers.iter().any(|trigger|
+            trigger.context.zone_transition.as_ref().is_some_and(|zone| zone.subject.creature_died())));
+    }
 }
 
 #[cfg(test)]

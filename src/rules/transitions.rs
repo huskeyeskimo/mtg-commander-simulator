@@ -1,5 +1,5 @@
-//! Validated, synchronous zone transitions. Only `ExileTarget` uses this
-//! kernel in production in 2B.1; other movement families remain legacy.
+//! Validated, synchronous zone transitions. `ExileTarget` and explicit
+//! destruction use this kernel; other movement families remain legacy.
 //! A batch is one simultaneous event, independent of the later 2A trigger
 //! placement window. The batch itself is transient; occurrences own history.
 
@@ -65,9 +65,8 @@ pub struct TransitionRequest {
     pub kind: MovementKind,
 }
 
-/// Semantic actions whose rules differ beyond endpoints. Only `Put` is
-/// accepted by the first battlefield-departure adapter; later complete
-/// operation families will opt in to their own kinds.
+/// Semantic actions whose rules differ beyond endpoints. Destruction uses a
+/// bounded preparation adapter; the public raw batch still accepts only Put.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MovementKind {
     Put,
@@ -1037,36 +1036,20 @@ fn actual_destination(state: &GameState, id: ObjectId, to: ZoneType) -> ZoneType
     }
 }
 
-fn validate(
+fn validate_subjects(
     state: &GameState,
-    requests: &[TransitionRequest],
-) -> Result<Vec<LinkedExileFollowup>, TransitionError> {
-    let db = state
-        .card_db
-        .as_ref()
-        .ok_or(TransitionError::MissingDatabase)?;
+    subjects: &[ExactObjectRef],
+) -> Result<(), TransitionError> {
+    let db = state.card_db.as_ref().ok_or(TransitionError::MissingDatabase)?;
     let mut seen = HashSet::new();
-    for request in requests {
-        let id = request.object.id;
+    for subject in subjects {
+        let id = subject.id;
         if !seen.insert(id) {
             return Err(TransitionError::DuplicateSubject(id));
         }
-        let inst = state
-            .objects
-            .get(&id)
-            .ok_or(TransitionError::MissingObject(id))?;
-        if inst.zone_change_count != request.object.generation {
+        let inst = state.objects.get(&id).ok_or(TransitionError::MissingObject(id))?;
+        if inst.zone_change_count != subject.generation {
             return Err(TransitionError::StaleIncarnation(id));
-        }
-        // This first adapter supports battlefield departures only. Other
-        // locations enter the same data model in later complete families.
-        if request.from != ZoneType::Battlefield
-            || matches!(request.to, ZoneType::Battlefield | ZoneType::Stack)
-        {
-            return Err(TransitionError::UnsupportedPath);
-        }
-        if request.kind != MovementKind::Put {
-            return Err(TransitionError::UnsupportedPath);
         }
         if !state.battlefield.contains(&id) {
             return Err(TransitionError::WrongZone(id));
@@ -1079,6 +1062,56 @@ fn validate(
         }
         if db.get(inst.card_def_id).is_none() {
             return Err(TransitionError::MissingDefinition(inst.card_def_id));
+        }
+    }
+    Ok(())
+}
+
+/// Prepare one destruction instruction from a single pre-event view. Valid
+/// protected permanents do not enter the event; malformed intent rejects the
+/// whole instruction before any movement or group allocation.
+pub fn destroy_batch(
+    state: &mut GameState,
+    subjects: &[ExactObjectRef],
+) -> Result<Option<CommittedTransitionBatch>, TransitionError> {
+    validate_subjects(state, subjects)?;
+    let requests: Vec<_> = subjects.iter().filter_map(|&object| {
+        if state.has_keyword(object.id, KeywordAbility::Indestructible) {
+            return None;
+        }
+        // The represented WouldDie subset applies to creatures about to go
+        // to graveyard. It is not regeneration or a general replacement engine.
+        let to = if state.is_creature(object.id) {
+            state.death_replacement_zone(object.id)
+        } else {
+            ZoneType::Graveyard
+        };
+        (to != ZoneType::Battlefield).then_some(TransitionRequest {
+            object, from: ZoneType::Battlefield, to, kind: MovementKind::Destroy,
+        })
+    }).collect();
+    if requests.is_empty() { return Ok(None); }
+    commit_batch(state, &requests, true).map(Some)
+}
+
+fn validate(
+    state: &GameState,
+    requests: &[TransitionRequest],
+    allow_destroy: bool,
+) -> Result<Vec<LinkedExileFollowup>, TransitionError> {
+    validate_subjects(state, &requests.iter().map(|r| r.object).collect::<Vec<_>>())?;
+    for request in requests {
+        // This first adapter supports battlefield departures only. Other
+        // locations enter the same data model in later complete families.
+        if request.from != ZoneType::Battlefield
+            || matches!(request.to, ZoneType::Battlefield | ZoneType::Stack)
+        {
+            return Err(TransitionError::UnsupportedPath);
+        }
+        if request.kind != MovementKind::Put
+            && !(allow_destroy && request.kind == MovementKind::Destroy)
+        {
+            return Err(TransitionError::UnsupportedPath);
         }
     }
     // Linked exiles are still a legacy secondary movement (2B.5). Capture
@@ -1288,7 +1321,15 @@ pub fn transition_batch(
     state: &mut GameState,
     requests: &[TransitionRequest],
 ) -> Result<CommittedTransitionBatch, TransitionError> {
-    let followups = validate(state, requests)?;
+    commit_batch(state, requests, false)
+}
+
+fn commit_batch(
+    state: &mut GameState,
+    requests: &[TransitionRequest],
+    allow_destroy: bool,
+) -> Result<CommittedTransitionBatch, TransitionError> {
+    let followups = validate(state, requests, allow_destroy)?;
     let group_id = state.next_zone_event_group_id;
     let next_group_id = group_id
         .checked_add(1)

@@ -254,6 +254,33 @@ pub fn valid_spell_targets(
     }
 }
 
+/// Resolution-entry legality for direct DestroyTarget abilities and compatible
+/// Multiple trees. The current classifier does not describe target contracts
+/// inside Conditional, Modal, or ForEach, so those retain their prior behavior.
+/// Children of Multiple share the entry decision; none is rechecked later.
+pub(crate) fn valid_destroy_ability_targets(
+    state: &GameState,
+    controller: PlayerIndex,
+    effect: &Effect,
+    targets: &[Target],
+    generations: &[Option<u32>],
+) -> bool {
+    fn has_classified_destroy(effect: &Effect) -> bool {
+        match effect {
+            Effect::DestroyTarget { .. } => true,
+            Effect::Multiple(children) => children.iter().any(has_classified_destroy),
+            _ => false,
+        }
+    }
+    if !has_classified_destroy(effect) { return true; }
+    let SpellTargeting::Single(spec) = effect_targeting(effect) else {
+        return true;
+    };
+    target_generations(state, targets) == generations
+        && targets.len() == 1
+        && target_is_legal(state, controller, &spec, &targets[0])
+}
+
 pub fn enumerate_spell_targets(
     state: &GameState,
     controller: PlayerIndex,

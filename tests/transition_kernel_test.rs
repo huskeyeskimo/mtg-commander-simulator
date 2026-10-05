@@ -2927,6 +2927,111 @@ fn exact_normalization(
     }
 }
 
+#[test]
+fn production_destroy_watcher_normalizer_diagnostics() {
+    use mtg_gto::rules::transitions::{destroy_batch, ExactObjectRef};
+    // Distinct authored-like watcher identities, with the same generic death
+    // predicate, remain on the battlefield through one actual mass event.
+    for (watchers, deaths) in [(1, 10), (4, 10), (8, 10), (11, 10), (11, 30)] {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 997_000, name: "Plain victim".into(),
+            card_types: vec![CardType::Creature], power: Some(2), toughness: Some(2),
+            ..Default::default() });
+        for index in 0..watchers {
+            db.insert(CardDef { id: 997_100 + index as u64,
+                name: format!("Distinct death observer {index}"),
+                card_types: vec![CardType::Creature],
+                keywords: vec![KeywordAbility::Indestructible],
+                power: Some(2), toughness: Some(2),
+                triggered_abilities: vec![TriggeredAbility {
+                    trigger: TriggerCondition::ACreatureDies,
+                    effect: Effect::GainLife { amount: 1 },
+                    description: "death".into(),
+                }], ..Default::default() });
+        }
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        for index in 0..watchers {
+            state.create_card_in_zone(997_100 + index as u64, 0, ZoneType::Battlefield);
+        }
+        let subjects: Vec<_> = (0..deaths).map(|_| {
+            let id = state.create_card_in_zone(997_000, 1, ZoneType::Battlefield);
+            ExactObjectRef { id, generation: state.objects[&id].zone_change_count }
+        }).collect();
+        let batch = destroy_batch(&mut state, &subjects).unwrap().unwrap();
+        assert_eq!(batch.transitions.len(), deaths);
+        assert_eq!(state.pending_triggers.len(), watchers * deaths);
+        let result = exact_normalization(&state, false);
+        println!("production destroy watchers={watchers} deaths={deaths} sources={} occurrences={} components={:?} tied={:?} nodes={} calls={} candidates={} elapsed_ns={}",
+            result.source_ranks.len(), state.pending_triggers.len(),
+            result.stats.component_sizes, result.stats.tied_cell_sizes,
+            result.stats.search_nodes, result.stats.normalization_calls,
+            result.stats.encoded_candidates, result.stats.elapsed_nanos);
+    }
+}
+
+#[test]
+fn production_destroy_member_order_and_raw_ids_keep_retained_encoding() {
+    use mtg_gto::rules::transitions::{destroy_batch, ExactObjectRef};
+    fn run(shift_ids: bool, reverse_members: bool) -> GameState {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 997_300, name: "Victim".into(),
+            card_types: vec![CardType::Creature], power: Some(2), toughness: Some(2),
+            ..Default::default() });
+        db.insert(CardDef { id: 997_301, name: "Watcher".into(),
+            card_types: vec![CardType::Creature],
+            keywords: vec![KeywordAbility::Indestructible],
+            power: Some(2), toughness: Some(2),
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::ACreatureDies,
+                effect: Effect::GainLife { amount: 1 }, description: "death".into(),
+            }], ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        if shift_ids {
+            let extra = state.create_card_in_zone(997_300, 1, ZoneType::Battlefield);
+            state.objects.get_mut(&extra).unwrap().is_token = true;
+            state.move_object(extra, ZoneType::Battlefield, ZoneType::Exile);
+            state.pending_events.clear();
+        }
+        state.create_card_in_zone(997_301, 0, ZoneType::Battlefield);
+        let mut subjects: Vec<_> = (0..3).map(|_| {
+            let id = state.create_card_in_zone(997_300, 1, ZoneType::Battlefield);
+            ExactObjectRef { id, generation: state.objects[&id].zone_change_count }
+        }).collect();
+        if reverse_members { subjects.reverse(); }
+        destroy_batch(&mut state, &subjects).unwrap().unwrap();
+        if reverse_members { state.pending_triggers.reverse(); }
+        rules::check_state_based_actions(&mut state);
+        state
+    }
+    let a = run(false, false);
+    let b = run(true, true);
+    assert_eq!(exact_normalization(&a, false).encoding,
+        exact_normalization(&b, false).encoding);
+    let information = |state: &GameState| InformationSet::from_view(
+        &state.visible_state(0), state.card_db()).hash_value();
+    assert_eq!(information(&a), information(&b));
+    let choice = legal_actions(&a).into_iter()
+        .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. })).unwrap();
+    let key = canonicalize(&choice, &a);
+    let reconstructed = resolve(&key, &b, 0).unwrap();
+    assert_eq!(canonicalize(&reconstructed, &b), key);
+}
+
+#[test]
+#[ignore = "known synthetic tied eight-source control; run separately with an external diagnostic time budget"]
+fn synthetic_tied_eight_source_normalizer_control() {
+    let edges: Vec<_> = (0..8).map(|index| (index, (index + 1) % 8)).collect();
+    let state = exact_graph(&edges, &(0..8).collect::<Vec<_>>());
+    let result = exact_normalization(&state, false);
+    println!("synthetic tied cycle: sources={} occurrences={} components={:?} tied={:?} nodes={} calls={} candidates={} elapsed_ns={}",
+        result.source_ranks.len(), state.pending_triggers.len(),
+        result.stats.component_sizes, result.stats.tied_cell_sizes,
+        result.stats.search_nodes, result.stats.normalization_calls,
+        result.stats.encoded_candidates, result.stats.elapsed_nanos);
+}
+
 fn permutations(n: usize) -> Vec<Vec<usize>> {
     fn visit(prefix: &mut Vec<usize>, remaining: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
         if remaining.is_empty() {

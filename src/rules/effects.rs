@@ -2,6 +2,266 @@ use crate::card::{CardId, Effect, KeywordAbility, ObjectId, TriggerCondition, Zo
 use crate::events::GameEvent;
 use crate::game::{CastSpellSnapshot, GameState, PlayerIndex, StackSource, Target, TriggerContext};
 
+#[cfg(test)]
+mod destruction_migration_tests {
+    use std::sync::Arc;
+    use super::*;
+    use crate::card::{CardDef, CardType, TargetSpec, TriggeredAbility};
+    use crate::events::Zone;
+    use crate::game::CardDatabase;
+    use crate::replacement::{ReplacementAction, ReplacementEffect, ReplacementEventKind};
+    use crate::rules::transitions::{destroy_batch, ExactObjectRef, TransitionError};
+
+    fn fixture() -> GameState {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 995_001, name: "Subject".into(),
+            card_types: vec![CardType::Creature], power: Some(2), toughness: Some(2),
+            ..Default::default() });
+        db.insert(CardDef { id: 995_002, name: "Observer".into(),
+            card_types: vec![CardType::Creature], power: Some(2), toughness: Some(2),
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::ACreatureDies,
+                effect: Effect::GainLife { amount: 1 }, description: "death".into(),
+            }], ..Default::default() });
+        db.insert(CardDef { id: 995_003, name: "Self".into(),
+            card_types: vec![CardType::Creature], power: Some(2), toughness: Some(2),
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::Dies,
+                effect: Effect::GainLife { amount: 1 }, description: "self death".into(),
+            }], ..Default::default() });
+        db.insert(CardDef { id: 995_004, name: "Noncreature".into(),
+            card_types: vec![CardType::Artifact],
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::LeavesBattlefield,
+                effect: Effect::GainLife { amount: 1 }, description: "leave".into(),
+            }], ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        state
+    }
+
+    #[test]
+    fn destroy_all_captures_simultaneous_departed_watcher() {
+        let mut state = fixture();
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
+        let a = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        let b = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        resolve_effect(&mut state, &Effect::DestroyAll, 0, &[], &[], None);
+        let seen: Vec<_> = state.pending_triggers.iter().filter(|p| p.source_id == watcher)
+            .filter_map(|p| p.context.zone_transition.as_ref()).collect();
+        assert_eq!(seen.len(), 3);
+        assert!(seen.iter().all(|p| p.group_id == seen[0].group_id));
+        assert!(seen.iter().any(|p| p.subject.before.object.id == a));
+        assert!(seen.iter().any(|p| p.subject.before.object.id == b));
+    }
+
+    #[test]
+    fn indestructible_single_destroy_does_not_collect_self_death() {
+        let mut state = fixture();
+        let id = state.create_card_in_zone(995_003, 0, ZoneType::Battlefield);
+        state.objects.get_mut(&id).unwrap().temp_keywords.push(KeywordAbility::Indestructible);
+        let generation = state.objects[&id].zone_change_count;
+        resolve_effect(&mut state, &Effect::DestroyTarget { target: TargetSpec::AnyCreature },
+            1, &[Target::Object(id)], &[Some(generation)], None);
+        assert!(state.battlefield.contains(&id));
+        assert!(state.pending_triggers.is_empty());
+    }
+
+    fn exact(state: &GameState, id: ObjectId) -> ExactObjectRef {
+        ExactObjectRef { id, generation: state.objects[&id].zone_change_count }
+    }
+
+    fn replacement(state: &mut GameState, action: ReplacementAction) {
+        state.replacement_effects.push(ReplacementEffect {
+            source_id: 123, controller: 0, applies_to: ReplacementEventKind::WouldDie,
+            action, is_self_replacement: true, description: "represented test".into(),
+        });
+    }
+
+    #[test]
+    fn single_destroy_emits_once_with_owned_death_and_noncreature_is_not_death() {
+        let mut state = fixture();
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
+        let creature = state.create_card_in_zone(995_003, 1, ZoneType::Battlefield);
+        let artifact = state.create_card_in_zone(995_004, 1, ZoneType::Battlefield);
+        let creature_ref = exact(&state, creature);
+        let first = destroy_batch(&mut state, &[creature_ref]).unwrap().unwrap();
+        assert_eq!(first.transitions.len(), 1);
+        assert!(first.transitions[0].creature_died());
+        assert_eq!(state.pending_triggers.iter().filter(|p| p.source_id == creature).count(), 1);
+        assert_eq!(state.pending_triggers.iter().filter(|p| p.source_id == watcher).count(), 1);
+        let artifact_ref = exact(&state, artifact);
+        let second = destroy_batch(&mut state, &[artifact_ref]).unwrap().unwrap();
+        assert_ne!(first.group_id, second.group_id);
+        assert!(!second.transitions[0].creature_died());
+        assert_eq!(state.pending_triggers.iter().filter(|p| p.source_id == artifact).count(), 1);
+        assert_eq!(state.pending_triggers.iter().filter(|p| p.source_id == watcher).count(), 1);
+        let events = state.drain_events();
+        for id in [creature, artifact] {
+            assert_eq!(events.iter().filter(|e| matches!(e,
+                GameEvent::ZoneChange { object, from: Zone::Battlefield,
+                    to: Zone::Graveyard } if *object == id)).count(), 1);
+        }
+    }
+
+    #[test]
+    fn destruction_validates_all_intents_before_filtering_protected_members() {
+        let mut state = fixture();
+        let valid = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        let protected = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        state.objects.get_mut(&protected).unwrap().temp_keywords.push(KeywordAbility::Indestructible);
+        let before = serde_json::to_value(&state).unwrap();
+        let stale = ExactObjectRef { id: protected, generation: exact(&state, protected).generation + 1 };
+        let valid_ref = exact(&state, valid);
+        let protected_ref = exact(&state, protected);
+        assert_eq!(destroy_batch(&mut state, &[valid_ref, stale]).unwrap_err(),
+            TransitionError::StaleIncarnation(protected));
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+        let batch = destroy_batch(&mut state, &[valid_ref, protected_ref])
+            .unwrap().unwrap();
+        assert_eq!(batch.transitions.len(), 1);
+        assert_eq!(batch.transitions[0].before.object.id, valid);
+        assert!(state.battlefield.contains(&protected));
+    }
+
+    #[test]
+    fn represented_prevention_and_redirect_control_actual_death() {
+        let mut prevented = fixture();
+        let id = prevented.create_card_in_zone(995_003, 0, ZoneType::Battlefield);
+        replacement(&mut prevented, ReplacementAction::Prevent);
+        let id_ref = exact(&prevented, id);
+        assert!(destroy_batch(&mut prevented, &[id_ref]).unwrap().is_none());
+        assert!(prevented.battlefield.contains(&id));
+        assert!(prevented.pending_triggers.is_empty());
+        assert!(!prevented.drain_events().iter().any(|e| matches!(e,
+            GameEvent::ZoneChange { object, from: Zone::Battlefield, .. } if *object == id)));
+
+        let mut redirected = fixture();
+        let id = redirected.create_card_in_zone(995_003, 0, ZoneType::Battlefield);
+        replacement(&mut redirected, ReplacementAction::RedirectToZone(ZoneType::Exile));
+        let id_ref = exact(&redirected, id);
+        let batch = destroy_batch(&mut redirected, &[id_ref]).unwrap().unwrap();
+        assert_eq!(batch.transitions[0].destination.zone, ZoneType::Exile);
+        assert!(!batch.transitions[0].creature_died());
+        assert!(redirected.pending_triggers.is_empty());
+    }
+
+    #[test]
+    fn token_death_survives_purge_and_commander_redirect_is_not_death() {
+        let mut state = fixture();
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
+        let token = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        state.objects.get_mut(&token).unwrap().is_token = true;
+        let token_ref = exact(&state, token);
+        let batch = destroy_batch(&mut state, &[token_ref]).unwrap().unwrap();
+        assert!(batch.transitions[0].creature_died());
+        assert!(!state.objects.contains_key(&token));
+        let occurrence = state.pending_triggers.iter().find(|p| p.source_id == watcher)
+            .unwrap().context.zone_transition.as_ref().unwrap();
+        assert_eq!(occurrence.subject.before.object.id, token);
+        assert!(occurrence.subject.before.is_token);
+        assert_eq!(state.drain_events().iter().filter(|e| matches!(e,
+            GameEvent::ZoneChange { object, from: Zone::Battlefield, .. } if *object == token)).count(), 1);
+
+        let mut commander = GameState::new_commander(2);
+        commander.card_db = state.card_db.clone();
+        let id = commander.create_card_in_zone(995_003, 0, ZoneType::Battlefield);
+        commander.players[0].commander_object_id = Some(id);
+        let id_ref = exact(&commander, id);
+        let batch = destroy_batch(&mut commander, &[id_ref]).unwrap().unwrap();
+        assert_eq!(batch.transitions[0].destination.zone, ZoneType::Command);
+        assert!(!batch.transitions[0].creature_died());
+        assert!(commander.pending_triggers.is_empty());
+    }
+
+    #[test]
+    fn mass_destroy_only_commits_actual_movers_from_one_view() {
+        let mut state = fixture();
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
+        let protected = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        let second_protected = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        for id in [protected, second_protected] {
+            state.objects.get_mut(&id).unwrap().temp_keywords.push(KeywordAbility::Indestructible);
+        }
+        let a = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        let b = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        let token = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        state.objects.get_mut(&token).unwrap().is_token = true;
+        resolve_effect(&mut state, &Effect::DestroyAll, 0, &[], &[], None);
+        for id in [protected, second_protected] { assert!(state.battlefield.contains(&id)); }
+        for id in [watcher, a, b, token] { assert!(!state.battlefield.contains(&id)); }
+        let contexts: Vec<_> = state.pending_triggers.iter().filter(|p| p.source_id == watcher)
+            .filter_map(|p| p.context.zone_transition.as_ref()).collect();
+        assert_eq!(contexts.len(), 4);
+        assert!(contexts.iter().all(|zone| zone.group_id == contexts[0].group_id));
+        assert!(contexts.iter().all(|zone| zone.subject.creature_died()));
+        assert_eq!(state.pending_events.iter().filter(|e| matches!(e,
+            GameEvent::ZoneChange { from: Zone::Battlefield, to: Zone::Graveyard, .. })).count(), 4);
+    }
+
+    #[test]
+    fn different_destroy_instructions_have_distinct_groups() {
+        let mut state = fixture();
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
+        state.objects.get_mut(&watcher).unwrap().temp_keywords.push(KeywordAbility::Indestructible);
+        let a = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        let b = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        for id in [a, b] {
+            let generation = state.objects[&id].zone_change_count;
+            resolve_effect(&mut state, &Effect::DestroyTarget { target: TargetSpec::AnyCreature },
+                0, &[Target::Object(id)], &[Some(generation)], None);
+        }
+        let groups: Vec<_> = state.pending_triggers.iter().filter(|p| p.source_id == watcher)
+            .map(|p| p.context.zone_transition.as_ref().unwrap().group_id).collect();
+        assert_eq!(groups.len(), 2);
+        assert_ne!(groups[0], groups[1]);
+    }
+
+    #[test]
+    fn mixed_type_destruction_batch_has_only_creature_death() {
+        let mut state = fixture();
+        let creature = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        let artifact = state.create_card_in_zone(995_004, 0, ZoneType::Battlefield);
+        let subjects = [exact(&state, creature), exact(&state, artifact)];
+        let batch = destroy_batch(&mut state, &subjects).unwrap().unwrap();
+        assert_eq!(batch.transitions.len(), 2);
+        assert_eq!(batch.transitions.iter().filter(|t| t.creature_died()).count(), 1);
+        assert_eq!(batch.transitions.iter().filter(|t| t.left_battlefield()).count(), 2);
+    }
+
+    #[test]
+    fn departed_watcher_cannot_observe_later_destroy() {
+        let mut state = fixture();
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
+        let later = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        let first = exact(&state, watcher);
+        let second = exact(&state, later);
+        destroy_batch(&mut state, &[first]).unwrap();
+        destroy_batch(&mut state, &[second]).unwrap();
+        let seen: Vec<_> = state.pending_triggers.iter().filter(|p| p.source_id == watcher)
+            .filter_map(|p| p.context.zone_transition.as_ref()).collect();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].subject.before.object.id, watcher);
+    }
+
+    #[test]
+    fn represented_replacement_source_departing_in_batch_is_checked_before_commit() {
+        let mut state = fixture();
+        let source = state.create_card_in_zone(995_003, 0, ZoneType::Battlefield);
+        let other = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        state.replacement_effects.push(ReplacementEffect {
+            source_id: source, controller: 0, applies_to: ReplacementEventKind::WouldDie,
+            action: ReplacementAction::RedirectToZone(ZoneType::Exile),
+            is_self_replacement: true, description: "pre-event replacement".into(),
+        });
+        let subjects = [exact(&state, source), exact(&state, other)];
+        let batch = destroy_batch(&mut state, &subjects).unwrap().unwrap();
+        assert_eq!(batch.transitions.len(), 2);
+        assert!(batch.transitions.iter().all(|t| t.destination.zone == ZoneType::Exile));
+        assert!(batch.transitions.iter().all(|t| !t.creature_died()));
+    }
+}
+
 #[derive(Clone, Copy)]
 struct CastEffectContext<'a> {
     spell: &'a CastSpellSnapshot,
@@ -256,33 +516,17 @@ fn resolve_effect_inner(
         }
 
         Effect::DestroyTarget { .. } => {
-            // Collect which objects are destroyable (read phase)
-            let destroyable: Vec<ObjectId> = targets
-                .iter()
-                .filter_map(|target| {
-                    if let Target::Object(id) = target {
-                        let indestructible =
-                            state.has_keyword(*id, KeywordAbility::Indestructible);
-                        if !indestructible { Some(*id) } else { None }
-                    } else {
-                        None
-                    }
+            // Resolution-entry target legality is checked for physical spells
+            // and targeted abilities. Retain their cast/activation generations;
+            // a newly arrived incarnation must never inherit an old target.
+            let subjects: Option<Vec<_>> = targets.iter().enumerate().map(|(index, target)| {
+                let Target::Object(id) = target else { return None; };
+                Some(super::transitions::ExactObjectRef {
+                    id: *id, generation: target_generations.get(index).copied().flatten()?,
                 })
-                .collect();
-
-            let dies_triggers: Vec<_> = destroyable.iter().flat_map(|&id|
-                super::triggers::capture_source_triggers(state, TriggerCondition::Dies, id)).collect();
-
-            for &id in &destroyable {
-                state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
-            }
-            if !destroyable.is_empty() {
-                state.refresh_continuous_effects();
-            }
-            // Fire dies triggers for destroyed creatures.
-            state.pending_triggers.extend(dies_triggers);
-            if !destroyable.is_empty() {
-                let _ = super::triggers::flush_triggers(state);
+            }).collect();
+            if let Some(subjects) = subjects.filter(|subjects| !subjects.is_empty()) {
+                let _ = super::transitions::destroy_batch(state, &subjects);
             }
         }
 
@@ -397,32 +641,19 @@ fn resolve_effect_inner(
         }
 
         Effect::DestroyAll => {
-            // Destroy all creatures on the battlefield (e.g., Wrath of God)
-            let creatures: Vec<ObjectId> = state
+            // One instruction is one event. Capture the complete current set
+            // before any prevention/replacement decision or storage movement.
+            let subjects: Vec<_> = state
                 .battlefield
                 .iter()
                 .copied()
                 .filter(|&id| state.is_creature(id))
-                .filter(|&id| !state.has_keyword(id, KeywordAbility::Indestructible))
+                .map(|id| super::transitions::ExactObjectRef {
+                    id, generation: state.objects[&id].zone_change_count,
+                })
                 .collect();
-
-            let dies_triggers: Vec<_> = creatures.iter().flat_map(|&id|
-                super::triggers::capture_source_triggers(state, TriggerCondition::Dies, id)).collect();
-
-            for &id in &creatures {
-                let dest_zone = state.death_replacement_zone(id);
-                if dest_zone != ZoneType::Battlefield {
-                    state.move_object(id, ZoneType::Battlefield, dest_zone);
-                }
-            }
-            if !creatures.is_empty() {
-                state.refresh_continuous_effects();
-                state.refresh_replacement_effects();
-            }
-            // Fire dies triggers
-            state.pending_triggers.extend(dies_triggers);
-            if !creatures.is_empty() {
-                let _ = super::triggers::flush_triggers(state);
+            if !subjects.is_empty() {
+                let _ = super::transitions::destroy_batch(state, &subjects);
             }
         }
 
