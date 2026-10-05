@@ -1,5 +1,6 @@
 //! Validated, synchronous zone transitions. `ExileTarget` and explicit
-//! destruction, bounce, and battlefield-to-library effects use this kernel;
+//! destruction, resolved creature sacrifice, bounce, and battlefield-to-library
+//! effects use this kernel;
 //! other movement families remain legacy.
 //! A batch is one simultaneous event, independent of the later 2A trigger
 //! placement window. The batch itself is transient; occurrences own history.
@@ -67,7 +68,8 @@ pub struct TransitionRequest {
 }
 
 /// Semantic actions whose rules differ beyond endpoints. Destruction uses a
-/// bounded preparation adapter; the public raw batch still accepts only Put.
+/// bounded preparation adapter, as does resolved sacrifice; raw batches accept
+/// only Put.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MovementKind {
     Put,
@@ -1009,6 +1011,7 @@ pub enum TransitionError {
     CapacityExhausted,
     GroupIdExhausted,
     UnsupportedPath,
+    InvalidSacrificeSubject(ObjectId),
 }
 
 #[derive(Debug, Clone)]
@@ -1092,13 +1095,61 @@ pub fn destroy_batch(
         })
     }).collect();
     if requests.is_empty() { return Ok(None); }
-    commit_batch(state, &requests, true).map(Some)
+    commit_batch(state, &requests, PreparedKind::Destroy).map(Some)
 }
+
+/// A selected creature in a resolving sacrifice effect, never a cost payment.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedSacrificeSubject {
+    pub player: PlayerIndex,
+    pub object: ExactObjectRef,
+}
+
+/// Prepare a complete selected set before any movement. Selection policy lives
+/// in the resolver; this adapter checks legality and exact incarnations. Genuine
+/// represented WouldDie prevention applies, but indestructible does not.
+pub fn resolved_sacrifice_batch(
+    state: &mut GameState,
+    selected: &[ResolvedSacrificeSubject],
+) -> Result<Option<CommittedTransitionBatch>, TransitionError> {
+    validate_subjects(state, &selected.iter().map(|s| s.object).collect::<Vec<_>>())?;
+    for subject in selected {
+        let chars = state.get_characteristics(subject.object.id)
+            .ok_or(TransitionError::MissingObject(subject.object.id))?;
+        if subject.player >= state.players.len() || chars.controller != subject.player
+            || !chars.card_types.contains(&CardType::Creature)
+        {
+            return Err(TransitionError::InvalidSacrificeSubject(subject.object.id));
+        }
+    }
+    if selected.is_empty() { return Ok(None); }
+    // Validate every selected structural intent, including linked state and
+    // batch-wide capacity/counters, before prevention can remove a subject.
+    // These nominal endpoints are preparation only: no movement, occurrence,
+    // or follow-up runs until the replacement-adjusted mover set is committed.
+    let intents: Vec<_> = selected.iter().map(|subject| TransitionRequest {
+        object: subject.object, from: ZoneType::Battlefield, to: ZoneType::Graveyard,
+        kind: MovementKind::Sacrifice { player: subject.player },
+    }).collect();
+    validate(state, &intents, PreparedKind::ResolvedSacrifice)?;
+    let requests: Vec<_> = selected.iter().filter_map(|subject| {
+        let to = state.death_replacement_zone(subject.object.id);
+        (to != ZoneType::Battlefield).then_some(TransitionRequest {
+            object: subject.object, from: ZoneType::Battlefield, to,
+            kind: MovementKind::Sacrifice { player: subject.player },
+        })
+    }).collect();
+    if requests.is_empty() { return Ok(None); }
+    commit_batch(state, &requests, PreparedKind::ResolvedSacrifice).map(Some)
+}
+
+#[derive(Clone, Copy)]
+enum PreparedKind { Put, Destroy, ResolvedSacrifice }
 
 fn validate(
     state: &GameState,
     requests: &[TransitionRequest],
-    allow_destroy: bool,
+    prepared: PreparedKind,
 ) -> Result<Vec<LinkedExileFollowup>, TransitionError> {
     validate_subjects(state, &requests.iter().map(|r| r.object).collect::<Vec<_>>())?;
     for request in requests {
@@ -1110,7 +1161,9 @@ fn validate(
             return Err(TransitionError::UnsupportedPath);
         }
         if request.kind != MovementKind::Put
-            && !(allow_destroy && request.kind == MovementKind::Destroy)
+            && !matches!((prepared, request.kind),
+                (PreparedKind::Destroy, MovementKind::Destroy)
+                | (PreparedKind::ResolvedSacrifice, MovementKind::Sacrifice { .. }))
         {
             return Err(TransitionError::UnsupportedPath);
         }
@@ -1189,6 +1242,8 @@ fn validate(
             .checked_add(count)
             .ok_or(TransitionError::CapacityExhausted)?;
     }
+    state.next_zone_event_group_id.checked_add(1)
+        .ok_or(TransitionError::GroupIdExhausted)?;
     Ok(followups)
 }
 
@@ -1322,19 +1377,18 @@ pub fn transition_batch(
     state: &mut GameState,
     requests: &[TransitionRequest],
 ) -> Result<CommittedTransitionBatch, TransitionError> {
-    commit_batch(state, requests, false)
+    commit_batch(state, requests, PreparedKind::Put)
 }
 
 fn commit_batch(
     state: &mut GameState,
     requests: &[TransitionRequest],
-    allow_destroy: bool,
+    prepared: PreparedKind,
 ) -> Result<CommittedTransitionBatch, TransitionError> {
-    let followups = validate(state, requests, allow_destroy)?;
+    let followups = validate(state, requests, prepared)?;
     let group_id = state.next_zone_event_group_id;
-    let next_group_id = group_id
-        .checked_add(1)
-        .ok_or(TransitionError::GroupIdExhausted)?;
+    // Shared preflight has already checked this counter before mutation.
+    let next_group_id = group_id + 1;
     let subjects: Vec<_> = requests
         .iter()
         .map(|r| capture_subject(state, r.object.id))

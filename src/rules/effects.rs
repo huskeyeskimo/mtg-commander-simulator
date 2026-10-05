@@ -829,19 +829,34 @@ fn resolve_effect_inner(
         }
 
         Effect::SacrificeCreatures { count, .. } => {
+            // Approved pilot limitation: weakest effective power first, stable
+            // battlefield-order ties. This is not full player/solver choice.
+            // All recipients select from the same pre-event view before movement.
+            let mut selected = Vec::new();
+            let mut players = std::collections::HashSet::new();
             for target in targets {
-                if let Target::Player(p) = target {
-                    let mut creatures = state.creatures_controlled_by(*p);
-                    // Sort by effective power ascending so the weakest are
-                    // sacrificed first — a reasonable heuristic standing in
-                    // for actual player choice until we surface a UI action.
-                    creatures.sort_by_key(|&id| state.effective_power(id));
-                    for &id in creatures.iter().take(*count as usize) {
-                        state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
-                    }
+                if let Target::Player(player) = target {
+                    if *player >= state.players.len() { return; }
+                    if !players.insert(*player) { continue; }
+                    let mut candidates: Vec<_> = state.battlefield.iter().filter_map(|&id| {
+                        let chars = state.get_characteristics(id)?;
+                        (chars.controller == *player
+                            && chars.card_types.contains(&crate::card::CardType::Creature))
+                            .then_some((id, chars.power))
+                    }).collect();
+                    candidates.sort_by_key(|&(_, power)| power);
+                    selected.extend(candidates.into_iter().take(*count as usize).map(|(id, _)|
+                        super::transitions::ResolvedSacrificeSubject {
+                            player: *player,
+                            object: super::transitions::ExactObjectRef {
+                                id, generation: state.objects[&id].zone_change_count,
+                            },
+                        }));
                 }
             }
-            state.refresh_continuous_effects();
+            // Invalid intent is rejected atomically; never fall back to legacy
+            // movement or flush ordinary triggers inside this resolver.
+            let _ = super::transitions::resolved_sacrifice_batch(state, &selected);
         }
 
         Effect::PreventCombatDamage => {
