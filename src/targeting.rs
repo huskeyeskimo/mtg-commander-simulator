@@ -254,25 +254,26 @@ pub fn valid_spell_targets(
     }
 }
 
-/// Resolution-entry legality for direct DestroyTarget abilities and compatible
-/// Multiple trees. The current classifier does not describe target contracts
+/// Resolution-entry legality for destruction and 2B.2b targeted departures in
+/// direct abilities and compatible Multiple trees. The classifier does not describe target contracts
 /// inside Conditional, Modal, or ForEach, so those retain their prior behavior.
 /// Children of Multiple share the entry decision; none is rechecked later.
-pub(crate) fn valid_destroy_ability_targets(
+pub(crate) fn valid_transition_ability_targets(
     state: &GameState,
     controller: PlayerIndex,
     effect: &Effect,
     targets: &[Target],
     generations: &[Option<u32>],
 ) -> bool {
-    fn has_classified_destroy(effect: &Effect) -> bool {
+    fn has_classified_departure(effect: &Effect) -> bool {
         match effect {
-            Effect::DestroyTarget { .. } => true,
-            Effect::Multiple(children) => children.iter().any(has_classified_destroy),
+            Effect::DestroyTarget { .. } | Effect::BounceTo { .. }
+                | Effect::ShuffleIntoLibrary { .. } | Effect::PutOnBottomOfLibrary { .. } => true,
+            Effect::Multiple(children) => children.iter().any(has_classified_departure),
             _ => false,
         }
     }
-    if !has_classified_destroy(effect) { return true; }
+    if !has_classified_departure(effect) { return true; }
     let SpellTargeting::Single(spec) = effect_targeting(effect) else {
         return true;
     };

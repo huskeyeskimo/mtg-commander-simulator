@@ -35,6 +35,12 @@ mod destruction_migration_tests {
                 trigger: TriggerCondition::LeavesBattlefield,
                 effect: Effect::GainLife { amount: 1 }, description: "leave".into(),
             }], ..Default::default() });
+        db.insert(CardDef { id: 995_005, name: "Departure watcher".into(),
+            card_types: vec![CardType::Creature], power: Some(2), toughness: Some(2),
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::APermanentLeaves,
+                effect: Effect::GainLife { amount: 1 }, description: "leave".into(),
+            }], ..Default::default() });
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
         state
@@ -69,6 +75,99 @@ mod destruction_migration_tests {
 
     fn exact(state: &GameState, id: ObjectId) -> ExactObjectRef {
         ExactObjectRef { id, generation: state.objects[&id].zone_change_count }
+    }
+
+    #[test]
+    fn mass_bounce_is_one_event_and_departing_watcher_observes_every_member() {
+        let mut state = fixture();
+        let watcher = state.create_card_in_zone(995_005, 1, ZoneType::Battlefield);
+        let other = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        resolve_effect(&mut state, &Effect::BounceAllNonlandOpponents, 0, &[], &[], None);
+        let contexts: Vec<_> = state.pending_triggers.iter()
+            .filter(|p| p.source_id == watcher)
+            .filter_map(|p| p.context.zone_transition.as_ref()).collect();
+        assert_eq!(contexts.len(), 2);
+        assert_eq!(contexts[0].group_id, contexts[1].group_id);
+        assert!(contexts.iter().any(|c| c.subject.before.object.id == watcher));
+        assert!(contexts.iter().any(|c| c.subject.before.object.id == other));
+        assert!(contexts.iter().all(|c| !c.subject.creature_died()));
+    }
+
+    #[test]
+    fn successive_bounces_have_distinct_groups_and_earlier_watcher_cannot_observe() {
+        let mut state = fixture();
+        let watcher = state.create_card_in_zone(995_005, 1, ZoneType::Battlefield);
+        let subjects = [watcher,
+            state.create_card_in_zone(995_001, 1, ZoneType::Battlefield),
+            state.create_card_in_zone(995_004, 1, ZoneType::Battlefield)];
+        let effect = Effect::BounceTo { zone: ZoneType::Hand, target: TargetSpec::AnyPermanent };
+        for &subject in &subjects {
+            let generation = state.objects[&subject].zone_change_count;
+            resolve_effect(&mut state, &effect, 0, &[Target::Object(subject)],
+                &[Some(generation)], None);
+        }
+        assert_eq!(state.next_zone_event_group_id, 3);
+        let seen: Vec<_> = state.pending_triggers.iter().filter(|p| p.source_id == watcher)
+            .map(|p| p.context.zone_transition.as_ref().unwrap()).collect();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].subject.before.object.id, watcher);
+        let artifact = state.pending_triggers.iter().find(|p| p.source_id == subjects[2]).unwrap();
+        assert_ne!(artifact.context.zone_transition.as_ref().unwrap().group_id, seen[0].group_id);
+    }
+
+    #[test]
+    fn targeted_departure_batch_rejects_one_stale_member_before_any_movement() {
+        for effect in [
+            Effect::BounceTo { zone: ZoneType::Hand, target: TargetSpec::AnyPermanent },
+            Effect::ShuffleIntoLibrary { target: TargetSpec::AnyPermanent },
+            Effect::PutOnBottomOfLibrary { target: TargetSpec::AnyPermanent },
+        ] {
+            let mut state = fixture();
+            let first = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+            let stale = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+            let generations = [Some(state.objects[&first].zone_change_count), Some(99)];
+            let before = serde_json::to_value(&state).unwrap();
+            resolve_effect(&mut state, &effect, 0,
+                &[Target::Object(first), Target::Object(stale)], &generations, None);
+            assert_eq!(serde_json::to_value(&state).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn mass_bounce_invalid_member_rejects_complete_instruction_atomically() {
+        let mut state = fixture();
+        state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        let invalid = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        state.objects.get_mut(&invalid).unwrap().owner = 99;
+        let before = serde_json::to_value(&state).unwrap();
+        resolve_effect(&mut state, &Effect::BounceAllNonlandOpponents, 0, &[], &[], None);
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+    }
+
+    #[test]
+    fn bounce_instruction_group_relationship_survives_identical_placement_window() {
+        let mut simultaneous = fixture();
+        simultaneous.create_card_in_zone(995_005, 0, ZoneType::Battlefield);
+        let subjects = [
+            simultaneous.create_card_in_zone(995_004, 1, ZoneType::Battlefield),
+            simultaneous.create_card_in_zone(995_004, 1, ZoneType::Battlefield),
+        ];
+        let mut successive = simultaneous.clone();
+        resolve_effect(&mut simultaneous, &Effect::BounceAllNonlandOpponents, 0, &[], &[], None);
+        for &id in &subjects {
+            let generation = successive.objects[&id].zone_change_count;
+            resolve_effect(&mut successive,
+                &Effect::BounceTo { zone: ZoneType::Hand, target: TargetSpec::AnyPermanent },
+                0, &[Target::Object(id)], &[Some(generation)], None);
+        }
+        assert_eq!(simultaneous.pending_triggers.len(), 4);
+        assert_eq!(successive.pending_triggers.len(), 4);
+        let encoding = |state: &GameState| {
+            crate::info_set::InformationSet::normalize_retained_view(&state.visible_state(0)).encoding
+        };
+        assert_ne!(encoding(&simultaneous), encoding(&successive));
+        assert_eq!(simultaneous.next_zone_event_group_id, 1);
+        assert_eq!(successive.next_zone_event_group_id, 2);
     }
 
     fn replacement(state: &mut GameState, action: ReplacementAction) {
@@ -321,6 +420,27 @@ pub(super) fn resolve_effect(
         source_id, None, None, true);
 }
 
+/// Entry legality belongs to the classified spell/ability envelope. Preserve
+/// its selected generations here, then let the kernel preflight every member
+/// together; never bind a stale target to its current incarnation.
+fn targeted_departure(
+    state: &mut GameState,
+    targets: &[Target],
+    generations: &[Option<u32>],
+    destination: ZoneType,
+) -> Option<super::transitions::CommittedTransitionBatch> {
+    use super::transitions::{transition_batch, ExactObjectRef, MovementKind, TransitionRequest};
+    let requests: Option<Vec<_>> = targets.iter().enumerate().map(|(index, target)| {
+        let Target::Object(id) = target else { return None; };
+        Some(TransitionRequest {
+            object: ExactObjectRef { id: *id, generation: generations.get(index).copied().flatten()? },
+            from: ZoneType::Battlefield, to: destination, kind: MovementKind::Put,
+        })
+    }).collect();
+    let requests = requests.filter(|requests| !requests.is_empty())?;
+    transition_batch(state, &requests).ok()
+}
+
 /// Resolve an owned trigger instruction with its historical cast context.
 pub(super) fn resolve_trigger_effect(
     state: &mut GameState,
@@ -531,11 +651,7 @@ fn resolve_effect_inner(
         }
 
         Effect::BounceTo { zone, .. } => {
-            for target in targets {
-                if let Target::Object(id) = target {
-                    state.move_object(*id, ZoneType::Battlefield, *zone);
-                }
-            }
+            let _ = targeted_departure(state, targets, target_generations, *zone);
         }
 
         Effect::Buff {
@@ -827,26 +943,32 @@ fn resolve_effect_inner(
         }
 
         Effect::BounceAllNonlandOpponents => {
-            // Bounce all nonland permanents opponents control to their owners' hands.
-            let db = state.card_db();
-            let to_bounce: Vec<ObjectId> = state
+            // Select from one pre-event view; the whole instruction is one event.
+            let requests: Vec<_> = state
                 .battlefield
                 .iter()
                 .copied()
                 .filter(|&id| {
                     if let Some(inst) = state.objects.get(&id) {
                         if inst.controller == controller {
-                            return false; // skip own permanents
+                            return false;
                         }
-                        if let Some(def) = db.get(inst.card_def_id) {
+                        if let Some(def) = state.card_db().get(inst.card_def_id) {
                             return !def.is_land();
                         }
                     }
                     false
                 })
+                .map(|id| super::transitions::TransitionRequest {
+                    object: super::transitions::ExactObjectRef {
+                        id, generation: state.objects[&id].zone_change_count,
+                    },
+                    from: ZoneType::Battlefield, to: ZoneType::Hand,
+                    kind: super::transitions::MovementKind::Put,
+                })
                 .collect();
-            for id in to_bounce {
-                state.move_object(id, ZoneType::Battlefield, ZoneType::Hand);
+            if !requests.is_empty() {
+                let _ = super::transitions::transition_batch(state, &requests);
             }
         }
 
@@ -960,30 +1082,28 @@ fn resolve_effect_inner(
 
         Effect::ShuffleIntoLibrary { .. } => {
             use rand::seq::SliceRandom;
-            for target in targets {
-                if let Target::Object(id) = target {
-                    if state.battlefield.contains(id) {
-                        let owner = state.objects.get(id).map(|i| i.owner).unwrap_or(0);
-                        state.move_object(*id, ZoneType::Battlefield, ZoneType::Library);
-                        let mut rng = rand::thread_rng();
-                        state.players[owner].library.shuffle(&mut rng);
-                    }
+            if let Some(batch) = targeted_departure(state, targets, target_generations, ZoneType::Library) {
+                // Validated owners and library capacities make this infallible.
+                // Shuffle once per moved target, as the legacy instruction did,
+                // including a token which has already been purged by the bridge.
+                let mut rng = rand::thread_rng();
+                for moved in &batch.transitions {
+                    state.players[moved.before.owner].library.shuffle(&mut rng);
                 }
             }
         }
 
         Effect::PutOnBottomOfLibrary { .. } => {
-            for target in targets {
-                if let Target::Object(id) = target {
-                    if state.battlefield.contains(id) {
-                        let owner = state.objects.get(id).map(|i| i.owner).unwrap_or(0);
-                        state.move_object(*id, ZoneType::Battlefield, ZoneType::Library);
-                        // move_object puts it at the end (bottom) by default via push, which is correct
-                        // but we need to ensure it's at the end, not the front
-                        if let Some(pos) = state.players[owner].library.iter().position(|&x| x == *id) {
-                            let removed = state.players[owner].library.remove(pos);
-                            state.players[owner].library.push(removed);
-                        }
+            if let Some(batch) = targeted_departure(state, targets, target_generations, ZoneType::Library) {
+                // The kernel appends to each owner's library. Retain legacy
+                // bottom placement independently of event identity. These
+                // operations are infallible after preflight; absent tokens are
+                // deliberately skipped after their owned evidence was captured.
+                for moved in &batch.transitions {
+                    let library = &mut state.players[moved.before.owner].library;
+                    if let Some(pos) = library.iter().position(|&id| id == moved.after.id) {
+                        let id = library.remove(pos);
+                        library.push(id);
                     }
                 }
             }

@@ -180,7 +180,7 @@ fn resolve_activated_ability(
     };
 
     if let Some(effect) = effect {
-        if !crate::targeting::valid_destroy_ability_targets(
+        if !crate::targeting::valid_transition_ability_targets(
             state, controller, &effect, targets, generations,
         ) { return; }
         super::effects::resolve_effect(state, &effect, controller, targets, generations, Some(source_id));
@@ -196,7 +196,7 @@ fn resolve_triggered_ability(
     generations: &[Option<u32>],
     controller: PlayerIndex,
 ) {
-    if !crate::targeting::valid_destroy_ability_targets(
+    if !crate::targeting::valid_transition_ability_targets(
         state, controller, &context.effect, targets, generations,
     ) { return; }
     // The source is useful only while it is the same incarnation. Never let

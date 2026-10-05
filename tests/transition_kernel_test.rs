@@ -3576,9 +3576,8 @@ fn hidden_pending_self_source_does_not_reveal_current_private_incarnation() {
     transition_batch(&mut state, &requests).unwrap();
     rules::check_state_based_actions(&mut state);
     let view = state.visible_state(0);
-    // Pending ability sources may be retained for resolution, even after they
-    // enter a private zone. They are not evidence of current visibility.
-    assert!(view.objects.contains_key(&first));
+    // Owned history remains available without exposing a hidden current source.
+    assert!(!view.objects.contains_key(&first));
     let normalized = InformationSet::normalize_retained_view(&view);
     assert_eq!(normalized.pending_occurrences.len(), 4);
     for occurrence in normalized.pending_occurrences.iter().flatten() {
@@ -3735,7 +3734,7 @@ fn rotated_viewers_see_every_public_destination_and_only_their_own_private_hand(
 }
 
 #[test]
-fn later_opponent_hidden_source_in_view_map_does_not_expose_current_private_facts() {
+fn later_opponent_hidden_source_is_absent_from_current_view_but_history_is_retained() {
     let mut state = GameState::new(3);
     state.card_db = Some(database());
     state.phase = Phase::PreCombatMain;
@@ -3744,8 +3743,8 @@ fn later_opponent_hidden_source_in_view_map_does_not_expose_current_private_fact
     let req = request(&state, subject, ZoneType::Hand);
     transition_batch(&mut state, &[req]).unwrap();
     let view = state.visible_state(0);
-    assert!(view.objects.contains_key(&subject),
-        "the departing source is retained for ability resolution");
+    assert!(!view.objects.contains_key(&subject),
+        "owned historical context must not expose a current hidden instance");
     assert_eq!(multiplayer_subject_statuses(&state, 0), vec![false; 2]);
     assert_eq!(multiplayer_subject_statuses(&state, 1), vec![false; 2]);
     assert_eq!(multiplayer_subject_statuses(&state, 2), vec![true; 2]);

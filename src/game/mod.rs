@@ -791,12 +791,12 @@ pub struct PlayerView<'a> {
 
     // --- Object lookup (filtered, read-only) ---
     /// Card instances visible to the viewing player, keyed by ObjectId.
-    /// Includes objects on the battlefield, stack, both graveyards, both exile
-    /// zones, the viewing player's hand, and pending trigger sources.
-    /// Excludes the opponent's hand contents and both libraries (hidden zones).
+    /// Includes current objects in public zones from every seat, physical
+    /// spells on the stack, and the viewing player's hand. An ability source
+    /// reference grants no additional access to a current hidden instance.
+    /// Owned trigger contexts retain historical source information separately.
     pub objects: HashMap<ObjectId, &'a CardInstance>,
-    /// Public zone membership from every seat, separate from `objects`,
-    /// which can also retain a source in a private zone for ability resolution.
+    /// Authoritative public zone membership from every seat.
     pub(crate) public_zones: Vec<&'a [ObjectId]>,
     /// Evaluated facts for live sources of owned transition occurrences only.
     pub zone_live_sources: HashMap<ObjectId, crate::rules::transitions::LiveSourceInfo>,
@@ -806,9 +806,8 @@ pub struct PlayerView<'a> {
 
 impl PlayerView<'_> {
     /// A current incarnation is observable only in a public zone or this
-    /// player's own hand. `objects` can also contain a pending ability's
-    /// source after it moved into a hidden zone; that lookup is for resolving
-    /// the ability, not evidence of its current public state.
+    /// player's own hand. Use authoritative current zone membership rather
+    /// than a historical ability reference to confirm that incarnation.
     pub(crate) fn visible_current_generation(&self, id: ObjectId) -> Option<u32> {
         let in_visible_zone = self.public_zones.iter().any(|zone| zone.contains(&id))
             || self.my_hand.contains(&id)
@@ -827,9 +826,9 @@ impl GameState {
     /// that player is entitled to see under the MTG rules.
     ///
     /// The `objects` map is filtered to only include card instances in visible
-    /// zones: battlefield, stack, both graveyards, both exile zones, the viewing
-    /// player's hand, pending trigger sources, and combat participants.
-    /// Opponent hand contents and both libraries are excluded.
+    /// zones: battlefield, physical spells on the stack, all graveyards,
+    /// exile and command zones, and the viewing player's hand. Owned pending
+    /// and stacked trigger history does not reveal current hidden instances.
     pub fn visible_state(&self, player: PlayerIndex) -> PlayerView<'_> {
         let opp = self.opponent(player);
         let public_zones = std::iter::once(self.battlefield.as_slice())
@@ -847,12 +846,13 @@ impl GameState {
                 visible.insert(id, inst);
             }
         }
-        // Stack — spells/abilities are public
+        // Physical spells occupy a current public zone. Ability entries are
+        // public history, but their referenced sources can now be hidden.
+        // Such current sources enter this map only through visible zones.
         for entry in &self.stack {
             let source_id = match entry.source {
                 StackSource::Spell(id) => Some(id),
-                StackSource::ActivatedAbility { source_id, .. } => Some(source_id),
-                StackSource::TriggeredAbility { source_id, .. } => Some(source_id),
+                StackSource::ActivatedAbility { .. } | StackSource::TriggeredAbility { .. } => None,
                 StackSource::SpellCopy { .. } => None,
             };
             if let Some(source_id) = source_id {
@@ -888,12 +888,9 @@ impl GameState {
                 visible.insert(id, inst);
             }
         }
-        // Pending trigger sources — visible (they reference battlefield permanents)
-        for trigger in &self.pending_triggers {
-            if let Some(inst) = self.objects.get(&trigger.source_id) {
-                visible.insert(trigger.source_id, inst);
-            }
-        }
+        // Pending sources likewise grant no current-instance access. Their
+        // owned contexts remain available through PlayerView.pending_triggers;
+        // public-zone and own-hand membership provide all legitimate access.
         // Command zones — public (both players' commanders are visible)
         for p in &self.players {
             for &id in &p.command_zone {
@@ -902,20 +899,9 @@ impl GameState {
                 }
             }
         }
-        // Combat participants — attackers and blockers (both keys and values)
-        for &id in &self.combat.attackers {
-            if let Some(inst) = self.objects.get(&id) {
-                visible.insert(id, inst);
-            }
-        }
-        for (&blocker, &attacker) in &self.combat.blockers {
-            if let Some(inst) = self.objects.get(&blocker) {
-                visible.insert(blocker, inst);
-            }
-            if let Some(inst) = self.objects.get(&attacker) {
-                visible.insert(attacker, inst);
-            }
-        }
+        // Combat references can also outlive battlefield residence. Current
+        // participants are already included by visible-zone membership above;
+        // retaining a reference must not reveal a departed hidden source.
 
         // Mechanical per-view reuse: one evaluated current profile per
         // relevant live raw object, regardless of occurrence multiplicity.

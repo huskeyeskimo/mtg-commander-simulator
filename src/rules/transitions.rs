@@ -1,5 +1,6 @@
 //! Validated, synchronous zone transitions. `ExileTarget` and explicit
-//! destruction use this kernel; other movement families remain legacy.
+//! destruction, bounce, and battlefield-to-library effects use this kernel;
+//! other movement families remain legacy.
 //! A batch is one simultaneous event, independent of the later 2A trigger
 //! placement window. The batch itself is transient; occurrences own history.
 
