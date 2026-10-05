@@ -53,10 +53,12 @@ pub(super) fn resolve_effect(
     effect: &Effect,
     controller: PlayerIndex,
     targets: &[Target],
+    target_generations: &[Option<u32>],
     source_id: Option<ObjectId>,
 ) {
     if state.pending_copy_order.is_some() { return; }
-    resolve_effect_inner(state, effect, controller, targets, source_id, None, None, true);
+    resolve_effect_inner(state, effect, controller, targets, target_generations,
+        source_id, None, None, true);
 }
 
 /// Resolve an owned trigger instruction with its historical cast context.
@@ -65,6 +67,7 @@ pub(super) fn resolve_trigger_effect(
     context: &TriggerContext,
     controller: PlayerIndex,
     targets: &[Target],
+    target_generations: &[Option<u32>],
     live_source_id: Option<ObjectId>,
     original_source_id: ObjectId,
 ) {
@@ -73,7 +76,7 @@ pub(super) fn resolve_trigger_effect(
     let cast_context = context.cast_spell.as_ref().map(|spell| CastEffectContext {
         spell, source_id: original_source_id, source_generation: context.source_generation,
     });
-    resolve_effect_inner(state, &context.effect, controller, targets, live_source_id,
+    resolve_effect_inner(state, &context.effect, controller, targets, target_generations, live_source_id,
         Some(context.source_card_id), cast_context, true);
 }
 
@@ -82,6 +85,7 @@ fn resolve_effect_inner(
     effect: &Effect,
     controller: PlayerIndex,
     targets: &[Target],
+    target_generations: &[Option<u32>],
     source_id: Option<ObjectId>,
     last_known_source_card_id: Option<CardId>,
     cast_context: Option<CastEffectContext<'_>>,
@@ -103,6 +107,9 @@ fn resolve_effect_inner(
         | EffectRecipients::Children => None,
     };
     let targets = recipients.as_deref().unwrap_or(targets);
+    let recipient_generations = recipients.as_ref()
+        .map(|selected| crate::targeting::target_generations(state, selected));
+    let target_generations = recipient_generations.as_deref().unwrap_or(target_generations);
 
     match effect {
         Effect::CopyCastSpellForOtherCreatures => {
@@ -368,15 +375,25 @@ fn resolve_effect_inner(
         }
 
         Effect::ExileTarget { .. } => {
-            for target in targets {
-                if let Target::Object(id) = target {
-                    if state.battlefield.contains(id) {
-                        state.move_object(*id, ZoneType::Battlefield, ZoneType::Exile);
-                    }
-                }
+            // One effect instruction is one event, even when it has several
+            // selected objects. Spell target legality/generations were checked
+            // before resolution; the kernel independently validates the full
+            // exact-incarnation request before any mutation.
+            let requests: Option<Vec<_>> = targets.iter().enumerate().map(|(index, target)| {
+                let Target::Object(id) = target else { return None; };
+                let generation = target_generations.get(index).copied().flatten()?;
+                Some(super::transitions::TransitionRequest {
+                    object: super::transitions::ExactObjectRef {
+                        id: *id, generation,
+                    },
+                    from: ZoneType::Battlefield,
+                    to: ZoneType::Exile,
+                    kind: super::transitions::MovementKind::Put,
+                })
+            }).collect();
+            if let Some(requests) = requests.filter(|requests| !requests.is_empty()) {
+                let _ = super::transitions::transition_batch(state, &requests);
             }
-            state.refresh_continuous_effects();
-            state.refresh_replacement_effects();
         }
 
         Effect::DestroyAll => {
@@ -547,7 +564,8 @@ fn resolve_effect_inner(
 
         Effect::Multiple(effects) => {
             for (index, e) in effects.iter().enumerate() {
-                resolve_effect_inner(state, e, controller, targets, source_id, last_known_source_card_id, cast_context,
+                resolve_effect_inner(state, e, controller, targets, target_generations,
+                    source_id, last_known_source_card_id, cast_context,
                     terminal && index + 1 == effects.len());
             }
         }
@@ -907,7 +925,8 @@ fn resolve_effect_inner(
             // Simplified: for goldfish/AI, always choose the first N choices
             let selected_count = choices.len().min(*choose_count as usize);
             for (index, effect) in choices.iter().take(selected_count).enumerate() {
-                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id, cast_context,
+                resolve_effect_inner(state, effect, controller, targets, target_generations,
+                    source_id, last_known_source_card_id, cast_context,
                     terminal && index + 1 == selected_count);
             }
         }
@@ -915,9 +934,11 @@ fn resolve_effect_inner(
         Effect::Conditional { condition, if_true, if_false } => {
             let met = evaluate_condition(state, condition, controller);
             if met {
-                resolve_effect_inner(state, if_true, controller, targets, source_id, last_known_source_card_id, cast_context, terminal);
+                resolve_effect_inner(state, if_true, controller, targets, target_generations,
+                    source_id, last_known_source_card_id, cast_context, terminal);
             } else if let Some(else_effect) = if_false {
-                resolve_effect_inner(state, else_effect, controller, targets, source_id, last_known_source_card_id, cast_context, terminal);
+                resolve_effect_inner(state, else_effect, controller, targets, target_generations,
+                    source_id, last_known_source_card_id, cast_context, terminal);
             }
         }
 
@@ -933,7 +954,8 @@ fn resolve_effect_inner(
                 Some(&ctx),
             );
             for iteration in 0..n.max(0) {
-                resolve_effect_inner(state, effect, controller, targets, source_id, last_known_source_card_id, cast_context,
+                resolve_effect_inner(state, effect, controller, targets, target_generations,
+                    source_id, last_known_source_card_id, cast_context,
                     terminal && iteration + 1 == n.max(0));
             }
         }

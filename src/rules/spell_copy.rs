@@ -516,7 +516,8 @@ mod terminal_position_tests {
         state.pending_triggers.push(crate::game::PendingTrigger { source_id: 99, ability_index: 0,
             controller: 0, targets: vec![], context: crate::game::TriggerContext {
                 source_card_id: 982004, source_generation: 0,
-                effect: Effect::GainLife { amount: 1 }, cast_spell: None } });
+                effect: Effect::GainLife { amount: 1 }, cast_spell: None,
+                zone_transition: None } });
         let before = serde_json::to_value(&state).unwrap();
         assert_eq!(choose_next_copy(&mut state, 0), Err(CopyError::StackIdExhausted));
         assert_eq!(serde_json::to_value(&state).unwrap(), before);

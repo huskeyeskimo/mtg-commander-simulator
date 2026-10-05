@@ -1,6 +1,6 @@
 use rand::seq::SliceRandom;
 
-use crate::action::canonical::canonicalize;
+use crate::action::canonical::canonicalize_actions;
 use crate::action::{legal_actions, legal_actions_abstracted, Action};
 use crate::card::{Effect, KeywordAbility, ObjectId};
 use crate::game::{GameState, PlayerIndex, Target};
@@ -189,7 +189,8 @@ impl Strategy for GreedyStrategy {
         // the first ordering (FIFO). A real MCCFR solver would evaluate all
         // orderings; greedy just uses FIFO.
         for action in &actions {
-            if matches!(action, Action::OrderTriggers { .. } | Action::ChooseReplacementOrder { .. }) {
+            if matches!(action, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }
+                | Action::ChooseReplacementOrder { .. }) {
                 return action.clone();
             }
         }
@@ -461,13 +462,10 @@ impl Strategy for McfrStrategy {
         }
 
         // Canonicalize actions for stable regret table lookup
-        let canonical_actions: Vec<_> = actions
-            .iter()
-            .map(|a| canonicalize(a, state))
-            .collect();
-
         let view = state.visible_state(player);
-        let info_set = InformationSet::from_view(&view, state.card_db());
+        let normalized = InformationSet::normalize_retained_view(&view);
+        let canonical_actions = canonicalize_actions(&actions, state, &normalized);
+        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
         let info_hash = info_set.hash_value();
 
         let distribution = match self.policy.get(info_hash) {
@@ -520,13 +518,10 @@ impl Strategy for AbstractedMcfrStrategy {
             return actions[0].clone();
         }
 
-        let canonical_actions: Vec<_> = actions
-            .iter()
-            .map(|a| canonicalize(a, state))
-            .collect();
-
         let view = state.visible_state(player);
-        let info_set = InformationSet::from_view(&view, state.card_db());
+        let normalized = InformationSet::normalize_retained_view(&view);
+        let canonical_actions = canonicalize_actions(&actions, state, &normalized);
+        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
         let info_hash = self.abstraction.abstract_info_set(&info_set);
 
         let distribution = match self.policy.get(info_hash) {
@@ -588,6 +583,7 @@ impl Strategy for GoldfishStrategy {
             if matches!(
                 action,
                 Action::OrderTriggers { .. }
+                    | Action::OrderTriggerOccurrences { .. }
                     | Action::ChooseReplacementOrder { .. }
                     | Action::OrderDamageAssignment { .. }
             ) {

@@ -332,7 +332,8 @@ fn prune_actions(
     for action in actions {
         if matches!(
             action,
-            Action::OrderTriggers { .. } | Action::ChooseReplacementOrder { .. }
+            Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }
+                | Action::ChooseReplacementOrder { .. }
         ) {
             return vec![action.clone()];
         }

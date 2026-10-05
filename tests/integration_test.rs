@@ -4389,6 +4389,8 @@ fn test_multi_phase_abstraction() {
         battlefield: vec![],
         stack_entries: vec![],
         pending_cast_spells: vec![],
+        pending_zone_triggers: vec![],
+        zone_normalization: vec![],
         trigger_order_resume: None,
         cleanup_needs_repeat: false,
         cleanup_discard_in_progress: false,

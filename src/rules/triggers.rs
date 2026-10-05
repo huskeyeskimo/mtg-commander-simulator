@@ -8,6 +8,7 @@ fn captured_context(inst: &CardInstance, ability: &TriggeredAbility, cast_spell:
         source_generation: inst.zone_change_count,
         effect: ability.effect.clone(),
         cast_spell,
+        zone_transition: None,
     }
 }
 

@@ -171,6 +171,12 @@ pub enum CanonicalAction {
         card_id: CardId,
         graveyard_index: usize,
     },
+
+    /// Public source/subject facts and rank among semantic duplicates.
+    /// Appended to preserve existing canonical-action discriminants.
+    OrderTriggerOccurrences {
+        occurrences: Vec<crate::rules::transitions::ZoneOccurrenceInfo>,
+    },
 }
 
 /// Convert a concrete `Action` (with ObjectIds) into a `CanonicalAction`
@@ -184,6 +190,23 @@ pub enum CanonicalAction {
 /// the action has already moved objects to different zones will produce
 /// incorrect instance indices or panic on missing ObjectIds.
 pub fn canonicalize(action: &Action, state: &GameState) -> CanonicalAction {
+    let normalized = matches!(action, Action::OrderTriggerOccurrences { .. })
+        .then(|| normalize_player_retained(state, state.priority_player));
+    canonicalize_with_normalization(action, state, normalized.as_ref())
+}
+
+/// Reuse one immutable decision result, preserving every action and its order.
+pub fn canonicalize_actions(
+    actions: &[Action], state: &GameState,
+    normalized: &crate::rules::transitions::RetainedNormalization,
+) -> Vec<CanonicalAction> {
+    actions.iter().map(|action| canonicalize_with_normalization(action, state, Some(normalized))).collect()
+}
+
+fn canonicalize_with_normalization(
+    action: &Action, state: &GameState,
+    normalized: Option<&crate::rules::transitions::RetainedNormalization>,
+) -> CanonicalAction {
     match action {
         Action::ChooseNextCopy { item_index } => CanonicalAction::ChooseNextCopy { item_index: *item_index },
         Action::PassPriority => CanonicalAction::PassPriority,
@@ -295,6 +318,15 @@ pub fn canonicalize(action: &Action, state: &GameState) -> CanonicalAction {
                 })
                 .collect();
             CanonicalAction::OrderTriggers { source_card_ids }
+        }
+
+        Action::OrderTriggerOccurrences { ordering } => {
+            let normalized = normalized.expect("occurrence ordering requires one coherent witness");
+            let occurrences = ordering.iter().map(|&slot| {
+                canonical_pending_occurrence(state, slot, normalized)
+                    .expect("ordered occurrence must still be pending")
+            }).collect();
+            CanonicalAction::OrderTriggerOccurrences { occurrences }
         }
 
         Action::OrderDamageAssignment {
@@ -550,6 +582,21 @@ pub fn resolve(
             Some(Action::OrderTriggers { ordering })
         }
 
+        CanonicalAction::OrderTriggerOccurrences { occurrences } => {
+            let normalized = normalize_player_retained(state, player);
+            let mut ordering = Vec::with_capacity(occurrences.len());
+            let mut used = vec![false; state.pending_triggers.len()];
+            for wanted in occurrences {
+                let slot = state.pending_triggers.iter().enumerate()
+                    .find(|(slot, trigger)| !used[*slot] && trigger.controller == player
+                        && canonical_pending_occurrence(state, *slot, &normalized).as_ref() == Some(wanted))
+                    .map(|(slot, _)| slot)?;
+                used[slot] = true;
+                ordering.push(slot);
+            }
+            Some(Action::OrderTriggerOccurrences { ordering })
+        }
+
         CanonicalAction::OrderDamageAssignment {
             attacker_card_id,
             attacker_instance_index,
@@ -682,6 +729,29 @@ fn pending_source_index(state: &GameState, source_id: ObjectId, card_id: CardId)
 
 fn find_pending_source_by_index(state: &GameState, card_id: CardId, index: usize) -> Option<ObjectId> {
     pending_sources_with_card(state, card_id).get(index).copied()
+}
+
+fn canonical_pending_occurrence(
+    state: &GameState, slot: usize,
+    normalized: &crate::rules::transitions::RetainedNormalization,
+) -> Option<crate::rules::transitions::ZoneOccurrenceInfo> {
+    let trigger = state.pending_triggers.get(slot)?;
+    if trigger.context.zone_transition.is_some() {
+        return normalized.pending_occurrences.get(slot)?.clone();
+    }
+    Some(crate::rules::transitions::public_occurrence_info(
+        &trigger.context, trigger.ability_index, trigger.controller, None,
+        None, None, None, None,
+        Some(pending_source_index(state, trigger.source_id, trigger.context.source_card_id)),
+    ))
+}
+
+/// Public action keys use the same player-relative projection as information
+/// sets. Raw object lookups are used only after these coordinates are fixed.
+pub fn normalize_player_retained(
+    state: &GameState, player: PlayerIndex,
+) -> crate::rules::transitions::RetainedNormalization {
+    crate::info_set::InformationSet::normalize_retained_view(&state.visible_state(player))
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,5 +1161,50 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod retained_normalization_reuse_tests {
+    use super::*;
+    use crate::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility, ZoneType};
+    use crate::game::{CardDatabase, Phase};
+    use crate::info_set::InformationSet;
+    use crate::rules::transitions::{transition_batch, ExactObjectRef, MovementKind, TransitionRequest,
+        NORMALIZATION_CALLS};
+    #[test]
+    fn seven_hundred_twenty_actions_and_observation_normalize_once() {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 999_290, card_types: vec![CardType::Creature],
+            power: Some(2), toughness: Some(2), triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::LeavesBattlefield, effect: Effect::GainLife { amount: 1 },
+                description: String::new(),
+            }], ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(std::sync::Arc::new(db));
+        state.phase = Phase::PreCombatMain;
+        let requests: Vec<_> = (0..6).map(|_| {
+            let id = state.create_card_in_zone(999_290, 0, ZoneType::Battlefield);
+            TransitionRequest { object: ExactObjectRef { id, generation: 0 },
+                from: ZoneType::Battlefield, to: ZoneType::Exile, kind: MovementKind::Put }
+        }).collect();
+        transition_batch(&mut state, &requests).unwrap();
+        crate::rules::check_state_based_actions(&mut state);
+        let actions: Vec<_> = crate::action::legal_actions(&state).into_iter()
+            .filter(|a| matches!(a, Action::OrderTriggerOccurrences { .. })).collect();
+        assert_eq!(actions.len(), 720);
+        let view = state.visible_state(0);
+        NORMALIZATION_CALLS.with(|calls| calls.set(0));
+        let normalized = InformationSet::normalize_retained_view(&view);
+        let keys = canonicalize_actions(&actions, &state, &normalized);
+        let info = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
+        NORMALIZATION_CALLS.with(|calls| assert_eq!(calls.get(), 1));
+        assert_eq!(keys.len(), 720);
+        assert_eq!(keys.iter().collect::<std::collections::HashSet<_>>().len(), 720);
+        assert_eq!(info.zone_normalization, normalized.encoding);
+        println!("720 actions + information set: calls=1, nodes={}, rounds={}, cells={:?}, components={:?}, encoding_bytes={}, elapsed_ns={}",
+            normalized.stats.search_nodes, normalized.stats.refinement_rounds,
+            normalized.stats.tied_cell_sizes, normalized.stats.component_sizes,
+            normalized.encoding.len(), normalized.stats.elapsed_nanos);
     }
 }

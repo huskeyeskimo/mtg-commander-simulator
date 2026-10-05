@@ -8,6 +8,7 @@ mod sba;
 mod setup;
 mod tokens;
 mod triggers;
+pub mod transitions;
 
 use rand::Rng;
 
@@ -34,6 +35,21 @@ fn cleanup_discard_required(state: &GameState) -> bool {
             && state.players[state.active_player].hand.len() > 7)
 }
 
+/// A pending trigger-order decision owns the next action. The placement
+/// machinery established the resume context; keep its APNAP chooser intact
+/// even when an external caller supplies an action directly.
+fn mandatory_trigger_order_chooser(state: &GameState) -> Option<PlayerIndex> {
+    if state.trigger_order_resume.is_none()
+        || state.trigger_placement_deferred
+        || state.cleanup_discard_in_progress
+    { return None; }
+    (0..state.players.len()).map(|offset|
+        (state.active_player + offset) % state.players.len())
+        .find(|&player| state.pending_triggers.iter().any(|t| t.controller == player))
+        .filter(|&player| state.pending_triggers.iter()
+            .filter(|t| t.controller == player).count() > 1)
+}
+
 /// Apply an action to the game state, advancing it.
 pub fn apply_action(state: &mut GameState, action: &Action) {
     if state.pending_copy_order.is_some() {
@@ -53,6 +69,17 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
         {
             return;
         }
+    }
+    if let Some(chooser) = mandatory_trigger_order_chooser(state) {
+        let needs_occurrence_order = state.pending_triggers.iter().any(|trigger|
+            trigger.controller == chooser && trigger.context.zone_transition.is_some());
+        let valid_kind = match action {
+            Action::OrderTriggerOccurrences { .. } => needs_occurrence_order,
+            Action::OrderTriggers { .. } => !needs_occurrence_order,
+            Action::Concede => true,
+            _ => false,
+        };
+        if state.priority_player != chooser || !valid_kind { return; }
     }
     // Validate supplied targets before costs, zone changes, or cast events.
     let cast = match action {
@@ -452,7 +479,19 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             if state.cleanup_discard_in_progress || state.trigger_placement_deferred {
                 return;
             }
+            if state.pending_triggers.iter().any(|t|
+                t.controller == state.priority_player && t.context.zone_transition.is_some()) {
+                return;
+            }
             let player = state.priority_player;
+
+            let mut expected: Vec<_> = state.pending_triggers.iter()
+                .filter(|t| t.controller == player)
+                .map(|t| (t.source_id, t.ability_index)).collect();
+            let mut supplied = ordering.clone();
+            expected.sort_unstable();
+            supplied.sort_unstable();
+            if expected.len() <= 1 || supplied != expected { return; }
 
             // Place this player's triggers on the stack in the chosen order.
             for &(source_id, ability_index) in ordering {
@@ -467,6 +506,35 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             }
 
             // Continue flushing remaining triggers (the other player's).
+            if triggers::flush_triggers(state) {
+                match state.trigger_order_resume.take().unwrap_or(TriggerOrderResume::AfterResolution) {
+                    TriggerOrderResume::AfterResolution => restore_priority_after_resolution(state),
+                    TriggerOrderResume::Player(player) => state.priority_player = player,
+                    TriggerOrderResume::AfterAttackers => {
+                        phases::transition_to_phase(state, Phase::DeclareBlockers);
+                        state.priority_player = state.next_player(state.active_player);
+                    }
+                }
+            }
+        }
+
+        Action::OrderTriggerOccurrences { ordering } => {
+            if state.cleanup_discard_in_progress || state.trigger_placement_deferred { return; }
+            let player = state.priority_player;
+            let expected: Vec<usize> = state.pending_triggers.iter().enumerate()
+                .filter(|(_, t)| t.controller == player)
+                .map(|(index, _)| index).collect();
+            if expected.len() <= 1 || !expected.iter().any(|&index|
+                state.pending_triggers[index].context.zone_transition.is_some()) {
+                return;
+            }
+            let mut supplied = ordering.clone();
+            supplied.sort_unstable();
+            if supplied != expected { return; }
+            let chosen: Vec<_> = ordering.iter().map(|&index|
+                state.pending_triggers[index].clone()).collect();
+            for trigger in &chosen { triggers::push_trigger_to_stack(state, trigger); }
+            state.pending_triggers.retain(|t| t.controller != player);
             if triggers::flush_triggers(state) {
                 match state.trigger_order_resume.take().unwrap_or(TriggerOrderResume::AfterResolution) {
                     TriggerOrderResume::AfterResolution => restore_priority_after_resolution(state),
@@ -959,7 +1027,8 @@ fn auto_place_pending_triggers(state: &mut GameState) -> bool {
     }
     let order = crate::action::legal_actions(state)
         .into_iter()
-        .find(|action| matches!(action, Action::OrderTriggers { .. }));
+        .find(|action| matches!(action,
+            Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }));
     if let Some(order) = order {
         apply_action(state, &order);
         true

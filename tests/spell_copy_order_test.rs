@@ -304,7 +304,8 @@ fn deferred_triggers_flush_only_after_complete_batch_commit() {
     state.pending_triggers.push(PendingTrigger {
         source_id: 987654, ability_index: 0, controller: 0, targets: vec![],
         context: TriggerContext { source_card_id: CREATURE, source_generation: 0,
-            effect: Effect::GainLife { amount: 1 }, cast_spell: None },
+            effect: Effect::GainLife { amount: 1 }, cast_spell: None,
+            zone_transition: None },
     });
     let stack_len = state.stack.len();
     rules::check_state_based_actions(&mut state);
@@ -330,7 +331,8 @@ fn legacy_single_copy_apis_still_work() {
 fn trigger(source_id: u64, controller: usize, ability_index: usize) -> PendingTrigger {
     PendingTrigger { source_id, ability_index, controller, targets: vec![],
         context: TriggerContext { source_card_id: CREATURE, source_generation: 0,
-            effect: Effect::GainLife { amount: 1 }, cast_spell: None } }
+            effect: Effect::GainLife { amount: 1 }, cast_spell: None,
+            zone_transition: None } }
 }
 
 #[test]

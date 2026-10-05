@@ -150,6 +150,9 @@ pub enum TriggerCondition {
     YouDiscardACard,
     /// Whenever you cast an instant or sorcery targeting only this source.
     YouCastInstantOrSorceryTargetingOnlySelf,
+    /// Departure observer predicate for the transition kernel. No authored
+    /// card currently relies on this general predicate.
+    APermanentLeaves,
 }
 
 /// What spells a cost reduction applies to.

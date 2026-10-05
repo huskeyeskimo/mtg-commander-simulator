@@ -391,6 +391,10 @@ pub struct GameState {
     /// Next stack ID.
     pub next_stack_id: StackId,
 
+    /// Internal identity for each committed transition batch. The raw value
+    /// never enters canonical actions or information-set hashes.
+    pub next_zone_event_group_id: u64,
+
     /// Pending triggers waiting to be put on the stack.
     /// These accumulate during rule processing and are placed on the stack
     /// in APNAP order (active player's triggers first) before priority is given.
@@ -606,6 +610,9 @@ pub struct TriggerContext {
     pub source_generation: u32,
     pub effect: crate::card::Effect,
     pub cast_spell: Option<CastSpellSnapshot>,
+    /// Owned facts about the event subject. Legacy trigger paths have none.
+    #[serde(default)]
+    pub zone_transition: Option<crate::rules::transitions::ZoneTriggerContext>,
 }
 
 impl PendingTrigger {
@@ -629,6 +636,7 @@ impl PendingTrigger {
                 source_generation: inst.zone_change_count,
                 effect: ability.effect.clone(),
                 cast_spell: None,
+                zone_transition: None,
             },
         })
     }
@@ -680,6 +688,7 @@ pub struct GameStateSnapshot {
     combat: CombatState,
     next_object_id: ObjectId,
     next_stack_id: StackId,
+    next_zone_event_group_id: u64,
     pending_triggers: Vec<PendingTrigger>,
     trigger_order_resume: Option<TriggerOrderResume>,
     cleanup_needs_repeat: bool,
@@ -786,8 +795,31 @@ pub struct PlayerView<'a> {
     /// zones, the viewing player's hand, and pending trigger sources.
     /// Excludes the opponent's hand contents and both libraries (hidden zones).
     pub objects: HashMap<ObjectId, &'a CardInstance>,
+    /// Public zone membership from every seat, separate from `objects`,
+    /// which can also retain a source in a private zone for ability resolution.
+    pub(crate) public_zones: Vec<&'a [ObjectId]>,
+    /// Evaluated facts for live sources of owned transition occurrences only.
+    pub zone_live_sources: HashMap<ObjectId, crate::rules::transitions::LiveSourceInfo>,
     /// Card definitions database (shared, immutable).
     pub card_db: &'a CardDatabase,
+}
+
+impl PlayerView<'_> {
+    /// A current incarnation is observable only in a public zone or this
+    /// player's own hand. `objects` can also contain a pending ability's
+    /// source after it moved into a hidden zone; that lookup is for resolving
+    /// the ability, not evidence of its current public state.
+    pub(crate) fn visible_current_generation(&self, id: ObjectId) -> Option<u32> {
+        let in_visible_zone = self.public_zones.iter().any(|zone| zone.contains(&id))
+            || self.my_hand.contains(&id)
+            || self.stack.iter().any(|entry|
+                matches!(entry.source, StackSource::Spell(source_id) if source_id == id))
+            || self.pending_copy_order
+                .and_then(PendingCopyOrder::resolving_entry)
+                .is_some_and(|entry|
+                    matches!(entry.source, StackSource::Spell(source_id) if source_id == id));
+        in_visible_zone.then(|| self.objects.get(&id).map(|inst| inst.zone_change_count)).flatten()
+    }
 }
 
 impl GameState {
@@ -800,6 +832,11 @@ impl GameState {
     /// Opponent hand contents and both libraries are excluded.
     pub fn visible_state(&self, player: PlayerIndex) -> PlayerView<'_> {
         let opp = self.opponent(player);
+        let public_zones = std::iter::once(self.battlefield.as_slice())
+            .chain(self.players.iter().flat_map(|seat| [
+                seat.graveyard.as_slice(), seat.exile.as_slice(), seat.command_zone.as_slice(),
+            ]))
+            .collect();
 
         // Collect ObjectIds from all visible zones into the filtered objects map.
         let mut visible = HashMap::new();
@@ -880,6 +917,25 @@ impl GameState {
             }
         }
 
+        // Mechanical per-view reuse: one evaluated current profile per
+        // relevant live raw object, regardless of occurrence multiplicity.
+        let mut retained_live_ids = std::collections::HashSet::new();
+        for context in self.pending_triggers.iter().map(|trigger| &trigger.context)
+            .chain(self.stack.iter().filter_map(|entry| match &entry.source {
+                StackSource::TriggeredAbility { context, .. } => Some(context.as_ref()),
+                _ => None,
+            })) {
+            if let Some(zone) = &context.zone_transition {
+                let exact = zone.source_before.object;
+                if context.source_generation == exact.generation
+                    && self.objects.get(&exact.id).is_some_and(|inst| inst.zone_change_count == exact.generation) {
+                    retained_live_ids.insert(exact.id);
+                }
+            }
+        }
+        let zone_live_sources = retained_live_ids.into_iter().filter_map(|id|
+            crate::rules::transitions::capture_live_source(self, id).map(|info| (id, info))).collect();
+
         PlayerView {
             phase: self.phase,
             active_player: self.active_player,
@@ -918,6 +974,8 @@ impl GameState {
             pending_tutor: self.pending_tutor.clone(),
 
             objects: visible,
+            public_zones,
+            zone_live_sources,
             card_db: self.card_db(),
         }
     }
@@ -941,6 +999,7 @@ impl GameState {
             combat: CombatState::default(),
             next_object_id: 1,
             next_stack_id: 1,
+            next_zone_event_group_id: 0,
             pending_triggers: Vec::new(),
             trigger_order_resume: None,
             cleanup_needs_repeat: false,
@@ -982,6 +1041,7 @@ impl GameState {
             combat: CombatState::default(),
             next_object_id: 1,
             next_stack_id: 1,
+            next_zone_event_group_id: 0,
             pending_triggers: Vec::new(),
             trigger_order_resume: None,
             cleanup_needs_repeat: false,
@@ -1035,6 +1095,7 @@ impl GameState {
             combat: self.combat.clone(),
             next_object_id: self.next_object_id,
             next_stack_id: self.next_stack_id,
+            next_zone_event_group_id: self.next_zone_event_group_id,
             pending_triggers: self.pending_triggers.clone(),
             trigger_order_resume: self.trigger_order_resume,
             cleanup_needs_repeat: self.cleanup_needs_repeat,
@@ -1068,6 +1129,7 @@ impl GameState {
         self.combat = snap.combat;
         self.next_object_id = snap.next_object_id;
         self.next_stack_id = snap.next_stack_id;
+        self.next_zone_event_group_id = snap.next_zone_event_group_id;
         self.pending_triggers = snap.pending_triggers;
         self.trigger_order_resume = snap.trigger_order_resume;
         self.cleanup_needs_repeat = snap.cleanup_needs_repeat;
@@ -1148,6 +1210,35 @@ impl GameState {
         from: ZoneType,
         to: ZoneType,
     ) {
+        self.move_object_with_policy(obj_id, from, to, true, true, true);
+    }
+
+    /// Storage adapter for the validated transition kernel. The caller owns
+    /// committed notifications and trigger collection; the token remains in
+    /// its destination until its event context has been captured.
+    pub(crate) fn move_object_for_transition(&mut self, obj_id: ObjectId, from: ZoneType, to: ZoneType) {
+        self.move_object_with_policy(obj_id, from, to, false, false, false);
+    }
+
+    pub(crate) fn purge_transitioned_token(&mut self, obj_id: ObjectId, destination: ZoneType) {
+        let Some(inst) = self.objects.get(&obj_id) else { return; };
+        if !inst.is_token || destination == ZoneType::Battlefield { return; }
+        let owner = inst.owner;
+        match destination {
+            ZoneType::Library => self.players[owner].library.retain(|&id| id != obj_id),
+            ZoneType::Hand => self.players[owner].hand.retain(|&id| id != obj_id),
+            ZoneType::Graveyard => self.players[owner].graveyard.retain(|&id| id != obj_id),
+            ZoneType::Exile => self.players[owner].exile.retain(|&id| id != obj_id),
+            ZoneType::Command => self.players[owner].command_zone.retain(|&id| id != obj_id),
+            ZoneType::Stack | ZoneType::Battlefield => {},
+        }
+        self.objects.remove(&obj_id);
+    }
+
+    fn move_object_with_policy(
+        &mut self, obj_id: ObjectId, from: ZoneType, to: ZoneType,
+        purge_token: bool, emit_primary_event: bool, run_linked_followup: bool,
+    ) {
         // Commander redirect: graveyard/exile -> command zone (see doc above)
         let actual_to = if self.format == GameFormat::Commander
             && (to == ZoneType::Graveyard || to == ZoneType::Exile)
@@ -1161,11 +1252,13 @@ impl GameState {
         self.invalidate_characteristics_cache();
 
         // Emit zone change event
-        self.emit_event(GameEvent::ZoneChange {
-            object: obj_id,
-            from: crate::events::Zone::from(from),
-            to: crate::events::Zone::from(actual_to),
-        });
+        if emit_primary_event {
+            self.emit_event(GameEvent::ZoneChange {
+                object: obj_id,
+                from: crate::events::Zone::from(from),
+                to: crate::events::Zone::from(actual_to),
+            });
+        }
 
         // Increment zone-change counter (CR 400.7)
         if let Some(inst) = self.objects.get_mut(&obj_id) {
@@ -1174,29 +1267,8 @@ impl GameState {
 
         // When a permanent leaves the battlefield, move all cards exiled by it
         // to their owner's graveyard (e.g., Gustha's Scepter, Tidehollow Sculler).
-        if from == ZoneType::Battlefield {
-            let linked_exiles: Vec<(ObjectId, usize)> = self.players.iter().enumerate()
-                .flat_map(|(pi, p)| {
-                    p.exile.iter()
-                        .filter(|&&eid| self.objects.get(&eid).and_then(|i| i.exiled_by) == Some(obj_id))
-                        .map(move |&eid| (eid, pi))
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-            for (eid, player_idx) in linked_exiles {
-                if let Some(inst) = self.objects.get_mut(&eid) {
-                    inst.exiled_by = None;
-                    inst.zone_change_count += 1;
-                }
-                self.emit_event(GameEvent::ZoneChange {
-                    object: eid,
-                    from: crate::events::Zone::Exile,
-                    to: crate::events::Zone::Graveyard,
-                });
-                self.players[player_idx].exile.retain(|&id| id != eid);
-                let owner_idx = self.objects[&eid].owner;
-                self.players[owner_idx].graveyard.push(eid);
-            }
+        if from == ZoneType::Battlefield && run_linked_followup {
+            self.move_linked_exiles_for_departure(obj_id);
         }
 
         // Remove from all zones (brute force but correct)
@@ -1228,7 +1300,7 @@ impl GameState {
         // CR 111.7: Tokens that leave the battlefield cease to exist.
         // They briefly visit the destination zone then are removed.
         let is_token = self.objects.get(&obj_id).map_or(false, |i| i.is_token);
-        if is_token && actual_to != ZoneType::Battlefield {
+        if purge_token && is_token && actual_to != ZoneType::Battlefield {
             // Token ceases to exist — remove it entirely
             self.objects.remove(&obj_id);
             return;
@@ -1257,6 +1329,42 @@ impl GameState {
             ZoneType::Exile => self.players[owner].exile.push(obj_id),
             ZoneType::Stack => {} // handled by cast_spell
             ZoneType::Command => self.players[owner].command_zone.push(obj_id),
+        }
+    }
+
+    /// Existing linked-exile behavior. Transition batches call this only
+    /// after their entire primary event and owned occurrences have committed;
+    /// the secondary movement remains a legacy follow-up until 2B.5.
+    pub(crate) fn move_linked_exiles_for_departure(&mut self, obj_id: ObjectId) {
+        let linked_exiles: Vec<(ObjectId, usize)> = self.players.iter().enumerate()
+            .flat_map(|(pi, p)| {
+                p.exile.iter()
+                    .filter(|&&eid| self.objects.get(&eid).and_then(|i| i.exiled_by) == Some(obj_id))
+                    .map(move |&eid| (eid, pi))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        self.move_prevalidated_linked_exiles(&linked_exiles);
+    }
+
+    /// Consume only the exile occupants captured before a transition batch.
+    /// The kernel validates each identity and generation before any movement;
+    /// rescanning here would incorrectly treat a new batch member as an old
+    /// linked exile.
+    pub(crate) fn move_prevalidated_linked_exiles(&mut self, linked_exiles: &[(ObjectId, usize)]) {
+        for &(eid, player_idx) in linked_exiles {
+            if let Some(inst) = self.objects.get_mut(&eid) {
+                inst.exiled_by = None;
+                inst.zone_change_count += 1;
+            }
+            self.emit_event(GameEvent::ZoneChange {
+                object: eid,
+                from: crate::events::Zone::Exile,
+                to: crate::events::Zone::Graveyard,
+            });
+            self.players[player_idx].exile.retain(|&id| id != eid);
+            let owner_idx = self.objects[&eid].owner;
+            self.players[owner_idx].graveyard.push(eid);
         }
     }
 
@@ -1815,5 +1923,39 @@ impl GameState {
         self.get_characteristics(obj_id)
             .map(|c| c.card_types.contains(&crate::card::CardType::Creature))
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod player_view_zone_visibility_tests {
+    use super::*;
+
+    #[test]
+    fn every_seat_public_zone_is_currently_visible_but_only_own_hand_is_private_visible() {
+        let mut state = GameState::new(4);
+        state.card_db = Some(Arc::new(CardDatabase::new()));
+        let battlefield = state.create_card_in_zone(1, 3, ZoneType::Battlefield);
+        let mut public = vec![battlefield];
+        let mut hands = Vec::new();
+        let mut libraries = Vec::new();
+        for owner in 0..4 {
+            for zone in [ZoneType::Graveyard, ZoneType::Exile, ZoneType::Command] {
+                public.push(state.create_card_in_zone(1, owner, zone));
+            }
+            hands.push(state.create_card_in_zone(1, owner, ZoneType::Hand));
+            libraries.push(state.create_card_in_zone(1, owner, ZoneType::Library));
+        }
+        for viewer in 0..4 {
+            let view = state.visible_state(viewer);
+            for &id in &public {
+                assert_eq!(view.visible_current_generation(id), Some(0),
+                    "viewer {viewer} cannot see public object {id}");
+            }
+            for owner in 0..4 {
+                assert_eq!(view.visible_current_generation(hands[owner]),
+                    (viewer == owner).then_some(0));
+                assert_eq!(view.visible_current_generation(libraries[owner]), None);
+            }
+        }
     }
 }

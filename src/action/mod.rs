@@ -146,6 +146,11 @@ pub enum Action {
 
     /// Play a land from the graveyard (Crucible of Worlds, Conduit of Worlds, etc.).
     PlayLandFromGraveyard { object_id: ObjectId },
+
+    /// Exact pending-occurrence slots, first placed first. Required when the
+    /// same source/ability triggered for distinct transition subjects.
+    /// Appended to preserve existing serialized Action discriminants.
+    OrderTriggerOccurrences { ordering: Vec<usize> },
 }
 
 impl fmt::Display for Action {
@@ -171,6 +176,9 @@ impl fmt::Display for Action {
             Action::OrderDamageAssignment { .. } => write!(f, "Assign damage"),
             Action::OrderTriggers { ordering } => {
                 write!(f, "Order {} triggers", ordering.len())
+            }
+            Action::OrderTriggerOccurrences { ordering } => {
+                write!(f, "Order {} event occurrences", ordering.len())
             }
             Action::ChooseReplacementOrder { ordering } => {
                 write!(f, "Order {} replacement effects", ordering.len())
@@ -292,6 +300,16 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
             .collect();
 
         if player_triggers.len() > 1 {
+            if player_triggers.iter().any(|t| t.context.zone_transition.is_some()) {
+                let slots: Vec<usize> = state.pending_triggers.iter().enumerate()
+                    .filter(|(_, t)| t.controller == player)
+                    .map(|(index, _)| index).collect();
+                for ordering in generate_permutations(&slots) {
+                    actions.push(Action::OrderTriggerOccurrences { ordering });
+                }
+                actions.push(Action::Concede);
+                return actions;
+            }
             let keys: Vec<(ObjectId, usize)> = player_triggers
                 .iter()
                 .map(|t| (t.source_id, t.ability_index))

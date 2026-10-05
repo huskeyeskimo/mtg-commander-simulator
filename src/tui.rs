@@ -216,6 +216,7 @@ impl App {
         legal_actions(&self.state).iter().any(|action| matches!(action,
             Action::ChooseNextCopy { .. }
                 | Action::OrderTriggers { .. }
+                | Action::OrderTriggerOccurrences { .. }
                 | Action::ChooseTutorTarget { .. }
                 | Action::ChooseReplacementOrder { .. }
                 | Action::OrderDamageAssignment { .. }
@@ -1032,6 +1033,17 @@ pub fn format_action_short(state: &GameState, action: &Action, db: &CardDatabase
             format!("Flashback: {}", card_name(state, *object_id, db))
         }
         Action::OrderTriggers { ordering } => format!("Order {} triggers", ordering.len()),
+        Action::OrderTriggerOccurrences { ordering } => {
+            let subjects: Vec<_> = ordering.iter().filter_map(|&slot| {
+                let trigger = state.pending_triggers.get(slot)?;
+                let subject = trigger.context.zone_transition.as_ref()
+                    .map(|ctx| ctx.subject.before.card_id);
+                Some(format!("{}→{}", trigger.context.source_card_id,
+                    subject.map(|id| db.get(id).map_or_else(|| id.to_string(), |def| def.name.clone()))
+                        .unwrap_or_else(|| "event".into())))
+            }).collect();
+            format!("Order events: {}", subjects.join(", "))
+        }
         Action::ChooseReplacementOrder { ordering } => format!("Order {} replacements", ordering.len()),
         Action::OrderDamageAssignment { .. } => "Assign damage".into(),
         Action::Concede => "Concede".into(),

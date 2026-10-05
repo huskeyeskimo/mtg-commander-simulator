@@ -39,6 +39,7 @@ fn human_mandatory_choice_pending(state: &GameState) -> bool {
     legal_actions(state).iter().any(|action| matches!(action,
         Action::ChooseNextCopy { .. }
             | Action::OrderTriggers { .. }
+            | Action::OrderTriggerOccurrences { .. }
             | Action::ChooseTutorTarget { .. }
             | Action::ChooseReplacementOrder { .. }
             | Action::OrderDamageAssignment { .. }
@@ -568,6 +569,18 @@ fn format_action_rich(state: &GameState, action: &Action, db: &CardDatabase) -> 
                 format!("{}#{}", card_name(state, src, db), idx)
             }).collect();
             format!("Order triggers: [{}]", descs.join(", "))
+        }
+        Action::OrderTriggerOccurrences { ordering } => {
+            let subjects: Vec<_> = ordering.iter().filter_map(|&slot| {
+                let trigger = state.pending_triggers.get(slot)?;
+                let subject = trigger.context.zone_transition.as_ref()
+                    .map(|ctx| ctx.subject.before.card_id);
+                Some(format!("{}#{} → {}", trigger.context.source_card_id,
+                    trigger.ability_index,
+                    subject.map(|id| db.get(id).map_or_else(|| id.to_string(), |def| def.name.clone()))
+                        .unwrap_or_else(|| "event".into())))
+            }).collect();
+            format!("Order events: [{}]", subjects.join(", "))
         }
         Action::ChooseReplacementOrder { ordering } => {
             let descs: Vec<String> = ordering.iter().map(|&(src, idx)| {

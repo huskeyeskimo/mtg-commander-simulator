@@ -23,14 +23,16 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
             source_id,
             ability_index,
         } => {
-            resolve_activated_ability(state, *source_id, *ability_index, &entry.targets, entry.controller);
+            resolve_activated_ability(state, *source_id, *ability_index, &entry.targets,
+                &entry.target_generations, entry.controller);
         }
         StackSource::TriggeredAbility {
             source_id,
             ability_index: _,
             context,
         } => {
-            resolve_triggered_ability(state, *source_id, context, &entry.targets, entry.controller);
+            resolve_triggered_ability(state, *source_id, context, &entry.targets,
+                &entry.target_generations, entry.controller);
         }
     }
 
@@ -153,7 +155,7 @@ fn resolve_spell_effect(
         && crate::targeting::target_generations(state, targets) == generations;
     if legal {
         if let Some(ref effect) = definition.spell_effect {
-            super::effects::resolve_effect(state, effect, controller, targets, physical_source);
+            super::effects::resolve_effect(state, effect, controller, targets, generations, physical_source);
         }
     }
 }
@@ -164,6 +166,7 @@ fn resolve_activated_ability(
     source_id: ObjectId,
     ability_index: usize,
     targets: &[Target],
+    generations: &[Option<u32>],
     controller: PlayerIndex,
 ) {
     let effect = {
@@ -177,7 +180,7 @@ fn resolve_activated_ability(
     };
 
     if let Some(effect) = effect {
-        super::effects::resolve_effect(state, &effect, controller, targets, Some(source_id));
+        super::effects::resolve_effect(state, &effect, controller, targets, generations, Some(source_id));
     }
 }
 
@@ -187,6 +190,7 @@ fn resolve_triggered_ability(
     source_id: ObjectId,
     context: &crate::game::TriggerContext,
     targets: &[Target],
+    generations: &[Option<u32>],
     controller: PlayerIndex,
 ) {
     // The source is useful only while it is the same incarnation. Never let
@@ -196,7 +200,7 @@ fn resolve_triggered_ability(
             && inst.zone_change_count == context.source_generation)
         .map(|_| source_id);
     super::effects::resolve_trigger_effect(
-        state, context, controller, targets, live_source, source_id,
+        state, context, controller, targets, generations, live_source, source_id,
     );
 }
 

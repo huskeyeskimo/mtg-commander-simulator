@@ -71,6 +71,11 @@ pub struct InformationSet {
     pub stack_entries: Vec<StackInfo>,
     /// Cast relationships retained by triggers waiting for APNAP ordering.
     pub pending_cast_spells: Vec<Option<CastSpellInfo>>,
+    /// Public historical subjects for pending transition occurrences. This
+    /// multiset excludes runtime ObjectIds and absolute generations.
+    pub pending_zone_triggers: Vec<crate::rules::transitions::ZoneOccurrenceInfo>,
+    /// Complete exact retained projection, not only refinement colors/labels.
+    pub zone_normalization: Vec<u8>,
     pub trigger_order_resume: Option<TriggerOrderResume>,
     pub cleanup_needs_repeat: bool,
     pub cleanup_discard_in_progress: bool,
@@ -124,6 +129,7 @@ pub struct StackInfo {
     pub target_summary: Vec<u64>, // hashed target descriptions
     /// Historical cast relationship, distinct from this ability's targets.
     pub cast_spell: Option<CastSpellInfo>,
+    pub zone_occurrence: Option<crate::rules::transitions::ZoneOccurrenceInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -139,7 +145,24 @@ impl InformationSet {
     ///
     /// This is the sole entry point — MCCFR never reads raw `GameState`.
     pub fn from_view(view: &PlayerView, _card_db: &CardDatabase) -> Self {
+        let normalized = Self::normalize_retained_view(view);
+        Self::from_view_with_normalization(view, _card_db, &normalized)
+    }
+
+    pub fn normalize_retained_view(view: &PlayerView) -> crate::rules::transitions::RetainedNormalization {
+        crate::rules::transitions::normalize_retained(view.pending_triggers, view.stack,
+            |context| view_source_info(view, context),
+            |id| view.visible_current_generation(id))
+    }
+
+    /// Observations and action coordinates share one immutable witness.
+    pub fn from_view_with_normalization(
+        view: &PlayerView, _card_db: &CardDatabase,
+        normalized: &crate::rules::transitions::RetainedNormalization,
+    ) -> Self {
         let phase = phase_to_u8(view.phase);
+        let group_ranks = &normalized.group_ranks;
+        let source_ranks = &normalized.source_ranks;
 
         // Hand: sorted CardIds for canonical representation
         let mut my_hand: Vec<u64> = view
@@ -171,12 +194,16 @@ impl InformationSet {
         let stack_entries: Vec<StackInfo> = view
             .stack
             .iter()
-            .map(|entry| stack_entry_to_info(entry, &view.objects, view.stack))
+            .enumerate()
+            .map(|(position, entry)| stack_entry_to_info(entry, view, &group_ranks, &source_ranks,
+                normalized.stack_occurrences[position].clone()))
             .collect();
         let pending_cast_spells = view.pending_triggers.iter()
             .map(|trigger| trigger.context.cast_spell.as_ref()
                 .map(|spell| cast_spell_to_info(spell, &view.objects, view.stack)))
             .collect();
+        let mut pending_zone_triggers: Vec<_> = normalized.pending_occurrences.iter().flatten().cloned().collect();
+        pending_zone_triggers.sort_by_cached_key(crate::rules::transitions::typed_bytes);
         let pending_copy_order = view.pending_copy_order.map(|pending| PendingCopyInfo {
             controller: pending.controller(),
             items: pending.items().iter().map(|item| PreparedCopyInfo {
@@ -186,7 +213,7 @@ impl InformationSet {
             }).collect(),
             selected_order: pending.selected_order().to_vec(),
             resolving_entry: pending.resolving_entry()
-                .map(|entry| stack_entry_to_info(entry, &view.objects, view.stack)),
+                .map(|entry| stack_entry_to_info(entry, view, &group_ranks, &source_ranks, None)),
         });
 
         // Graveyards: sorted CardIds
@@ -258,6 +285,8 @@ impl InformationSet {
             battlefield,
             stack_entries,
             pending_cast_spells,
+            pending_zone_triggers,
+            zone_normalization: normalized.encoding.clone(),
             trigger_order_resume: view.trigger_order_resume,
             cleanup_needs_repeat: view.cleanup_needs_repeat,
             cleanup_discard_in_progress: view.cleanup_discard_in_progress,
@@ -293,6 +322,8 @@ impl InformationSet {
         self.battlefield.hash(&mut hasher);
         self.stack_entries.hash(&mut hasher);
         self.pending_cast_spells.hash(&mut hasher);
+        self.pending_zone_triggers.hash(&mut hasher);
+        if !self.zone_normalization.is_empty() { self.zone_normalization.hash(&mut hasher); }
         self.trigger_order_resume.hash(&mut hasher);
         self.cleanup_needs_repeat.hash(&mut hasher);
         self.cleanup_discard_in_progress.hash(&mut hasher);
@@ -333,11 +364,30 @@ fn phase_to_u8(phase: crate::game::Phase) -> u8 {
 }
 
 /// Convert a `StackEntry` into observable `StackInfo`.
+fn view_source_info(
+    view: &PlayerView,
+    context: &crate::game::TriggerContext,
+) -> crate::rules::transitions::ZoneSourceInfo {
+    let zone = context.zone_transition.as_ref().expect("zone occurrence");
+    let exact = zone.source_before.object;
+    let live = (context.source_generation == exact.generation
+        && view.battlefield.contains(&exact.id)
+        && view.objects.get(&exact.id).is_some_and(|inst|
+            inst.zone_change_count == exact.generation))
+        .then(|| view.zone_live_sources.get(&exact.id))
+        .flatten();
+    zone.source_public_info(live)
+}
+
 fn stack_entry_to_info(
     entry: &StackEntry,
-    objects: &std::collections::HashMap<crate::card::ObjectId, &CardInstance>,
-    stack: &[StackEntry],
+    view: &PlayerView,
+    group_ranks: &std::collections::HashMap<u64, usize>,
+    source_ranks: &std::collections::HashMap<crate::rules::transitions::ExactObjectRef, usize>,
+    captured_zone: Option<crate::rules::transitions::ZoneOccurrenceInfo>,
 ) -> StackInfo {
+    let objects = &view.objects;
+    let stack = view.stack;
     let source_card_id = match &entry.source {
         StackSource::Spell(obj_id) => objects
             .get(obj_id)
@@ -357,6 +407,21 @@ fn stack_entry_to_info(
             .map(|spell| cast_spell_to_info(spell, objects, stack)),
         _ => None,
     };
+    let zone_occurrence = captured_zone.or_else(|| match &entry.source {
+        StackSource::TriggeredAbility { ability_index, context, .. }
+            if context.zone_transition.is_some() => {
+                let transition = context.zone_transition.as_ref().unwrap();
+                Some(crate::rules::transitions::public_occurrence_info(
+                    context, *ability_index, entry.controller,
+                    Some(view_source_info(view, context)),
+                    view.visible_current_generation(transition.subject.after.id),
+                    group_ranks.get(&transition.group_id).copied(),
+                    source_ranks.get(&transition.source_before.object).copied(),
+                    source_ranks.get(&transition.subject.before.object).copied(), None,
+                ))
+            }
+        _ => None,
+    });
 
     StackInfo {
         controller: entry.controller,
@@ -364,6 +429,7 @@ fn stack_entry_to_info(
         is_spell_copy: matches!(entry.source, StackSource::SpellCopy { .. }),
         target_summary,
         cast_spell,
+        zone_occurrence,
     }
 }
 
@@ -566,6 +632,15 @@ impl InfoSetAbstraction for BucketedAbstraction {
         // Stack: just hash whether stack is empty or has items
         let stack_nonempty = !info_set.stack_entries.is_empty();
         stack_nonempty.hash(&mut hasher);
+        if !info_set.zone_normalization.is_empty() { info_set.zone_normalization.hash(&mut hasher); }
+        if !info_set.pending_zone_triggers.is_empty() {
+            info_set.pending_zone_triggers.hash(&mut hasher);
+        }
+        if info_set.stack_entries.iter().any(|entry| entry.zone_occurrence.is_some()) {
+            for entry in &info_set.stack_entries {
+                entry.zone_occurrence.hash(&mut hasher);
+            }
+        }
         info_set.pending_copy_order.hash(&mut hasher);
         info_set.trigger_order_resume.hash(&mut hasher);
         info_set.cleanup_needs_repeat.hash(&mut hasher);
@@ -711,6 +786,15 @@ impl<'a> InfoSetAbstraction for CardAwareBucketedAbstraction<'a> {
         // Stack size bucket
         let stack_size = info_set.stack_entries.len().min(3) as u8;
         stack_size.hash(&mut hasher);
+        if !info_set.zone_normalization.is_empty() { info_set.zone_normalization.hash(&mut hasher); }
+        if !info_set.pending_zone_triggers.is_empty() {
+            info_set.pending_zone_triggers.hash(&mut hasher);
+        }
+        if info_set.stack_entries.iter().any(|entry| entry.zone_occurrence.is_some()) {
+            for entry in &info_set.stack_entries {
+                entry.zone_occurrence.hash(&mut hasher);
+            }
+        }
         info_set.pending_copy_order.hash(&mut hasher);
         info_set.trigger_order_resume.hash(&mut hasher);
         info_set.cleanup_needs_repeat.hash(&mut hasher);

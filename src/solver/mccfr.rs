@@ -59,7 +59,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use rand::Rng;
 
-use crate::action::canonical::canonicalize;
+use crate::action::canonical::canonicalize_actions;
 use crate::action::{legal_actions, legal_actions_abstracted, Action};
 use crate::game::{GameState, PlayerIndex};
 use crate::info_set::{IdentityAbstraction, InfoSetAbstraction, InformationSet};
@@ -237,14 +237,10 @@ fn traverse(
         }
 
         // Canonicalize all legal actions for stable regret table keying
-        let canonical_actions: Vec<_> = actions
-            .iter()
-            .map(|a| canonicalize(a, &state))
-            .collect();
-
-        // Compute information set for the acting player, apply abstraction
         let view = state.visible_state(player);
-        let info_set = InformationSet::from_view(&view, state.card_db());
+        let normalized = InformationSet::normalize_retained_view(&view);
+        let canonical_actions = canonicalize_actions(&actions, &state, &normalized);
+        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
         let info_hash = abstraction.abstract_info_set(&info_set);
 
         // Get or create regret table entry and compute current strategy
@@ -873,14 +869,10 @@ pub fn warm_start_from_greedy(
             }
 
             // Canonicalize actions
-            let canonical_actions: Vec<_> = actions
-                .iter()
-                .map(|a| canonicalize(a, &state))
-                .collect();
-
-            // Compute info set hash
             let view = state.visible_state(player);
-            let info_set = InformationSet::from_view(&view, state.card_db());
+            let normalized = InformationSet::normalize_retained_view(&view);
+            let canonical_actions = canonicalize_actions(&actions, &state, &normalized);
+            let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
             let info_hash = abstraction.abstract_info_set(&info_set);
 
             // Pre-populate the info set entry with all legal actions.
@@ -1092,13 +1084,10 @@ pub fn collect_policy_snapshots(
             continue;
         }
 
-        let canonical_actions: Vec<_> = actions
-            .iter()
-            .map(|a| canonicalize(a, &state))
-            .collect();
-
         let view = state.visible_state(player);
-        let info_set = InformationSet::from_view(&view, state.card_db());
+        let normalized = InformationSet::normalize_retained_view(&view);
+        let canonical_actions = canonicalize_actions(&actions, &state, &normalized);
+        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
         let info_hash = abstraction.abstract_info_set(&info_set);
 
         let (distribution, visit_count) = match regret_tables[player].get(info_hash) {
@@ -1311,14 +1300,10 @@ fn traverse_goldfish(
         }
 
         // Canonicalize actions
-        let canonical_actions: Vec<_> = actions
-            .iter()
-            .map(|a| canonicalize(a, &state))
-            .collect();
-
-        // Compute info set
         let view = state.visible_state(pilot);
-        let info_set = InformationSet::from_view(&view, state.card_db());
+        let normalized = InformationSet::normalize_retained_view(&view);
+        let canonical_actions = canonicalize_actions(&actions, &state, &normalized);
+        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
         let info_hash = abstraction.abstract_info_set(&info_set);
 
         // Get current strategy via regret matching
