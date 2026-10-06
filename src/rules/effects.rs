@@ -1241,17 +1241,32 @@ fn resolve_effect_inner(
         }
 
         Effect::EachOpponentSacrifices { count } => {
-            let opponents: Vec<usize> = (0..state.players.len())
-                .filter(|&i| i != controller)
-                .collect();
-            for opp in opponents {
-                let mut creatures = state.creatures_controlled_by(opp);
-                creatures.sort_by_key(|&id| state.effective_power(id));
-                for &id in creatures.iter().take(*count as usize) {
-                    state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
-                }
+            // Controller-relative opponents select in APNAP seat order from
+            // one common pre-event view. The approved pilot uses weakest
+            // effective power, with stable battlefield-order ties.
+            let mut opponents = state.opponents(controller);
+            let seats = state.players.len();
+            opponents.sort_by_key(|&player| (player + seats - state.active_player) % seats);
+            let mut selected = Vec::new();
+            for player in opponents {
+                let mut candidates: Vec<_> = state.battlefield.iter().filter_map(|&id| {
+                    let chars = state.get_characteristics(id)?;
+                    (chars.controller == player
+                        && chars.card_types.contains(&crate::card::CardType::Creature))
+                        .then_some((id, chars.power))
+                }).collect();
+                candidates.sort_by_key(|&(_, power)| power);
+                selected.extend(candidates.into_iter().take(*count as usize).map(|(id, _)|
+                    super::transitions::ResolvedSacrificeSubject {
+                        player,
+                        object: super::transitions::ExactObjectRef {
+                            id, generation: state.objects[&id].zone_change_count,
+                        },
+                    }));
             }
-            state.refresh_continuous_effects();
+            // Validate all nominal intents before replacement/prevention and
+            // commit one event group. Invalid batches never use legacy movement.
+            let _ = super::transitions::resolved_sacrifice_batch(state, &selected);
         }
 
         Effect::DrawThenDiscard { draw, discard, .. } => {
@@ -1550,6 +1565,65 @@ fn evaluate_condition(
                 state.objects.get(&id).map_or(false, |inst| inst.controller == controller)
             }).count();
             matching >= *count as usize
+        }
+    }
+}
+
+#[cfg(test)]
+mod each_opponent_sacrifice_tests {
+    use super::*;
+    use crate::card::{CardDef, CardType};
+    use crate::game::CardDatabase;
+    use crate::replacement::{ReplacementAction, ReplacementEffect, ReplacementEventKind};
+    use std::sync::Arc;
+
+    fn fixture() -> GameState {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 996_201, name: "Opponent subject".into(),
+            card_types: vec![CardType::Creature], power: Some(2), toughness: Some(2),
+            ..Default::default() });
+        let mut state = GameState::new(4);
+        state.card_db = Some(Arc::new(db));
+        state
+    }
+
+    #[test]
+    fn lost_controller_still_defines_opponents_in_constructible_resolution() {
+        let mut state = fixture();
+        state.active_player = 2;
+        state.players[1].has_lost = true;
+        state.players[3].has_lost = true;
+        let ids: Vec<_> = (0..4).map(|p| state.create_card_in_zone(996_201, p, ZoneType::Battlefield)).collect();
+        resolve_effect(&mut state, &Effect::EachOpponentSacrifices { count: 1 }, 1, &[], &[], None);
+        for (p, id) in ids.into_iter().enumerate() {
+            assert_eq!(state.players[p].graveyard.contains(&id), p == 0 || p == 2);
+        }
+        assert_eq!(state.next_zone_event_group_id, 1);
+    }
+
+    #[test]
+    fn malformed_prevented_member_rejects_whole_each_instruction_unchanged() {
+        for prevented in [false, true] {
+            let mut state = fixture();
+            state.active_player = 3;
+            let _a = state.create_card_in_zone(996_201, 1, ZoneType::Battlefield);
+            let b = state.create_card_in_zone(996_201, 2, ZoneType::Battlefield);
+            state.objects.get_mut(&b).unwrap().is_token = true;
+            let linked = state.create_card_in_zone(996_201, 3, ZoneType::Exile);
+            state.objects.get_mut(&linked).unwrap().exiled_by = Some(b);
+            state.objects.get_mut(&linked).unwrap().zone_change_count = u32::MAX;
+            if prevented {
+                state.replacement_effects.push(ReplacementEffect {
+                    source_id: 0, controller: 0, applies_to: ReplacementEventKind::WouldDie,
+                    action: ReplacementAction::Prevent, is_self_replacement: true,
+                    description: "represented prevention".into(),
+                });
+            }
+            let before = serde_json::to_value(&state).unwrap();
+            let events = state.pending_events.clone();
+            resolve_effect(&mut state, &Effect::EachOpponentSacrifices { count: 1 }, 0, &[], &[], None);
+            assert_eq!(serde_json::to_value(&state).unwrap(), before);
+            assert_eq!(state.pending_events, events);
         }
     }
 }
