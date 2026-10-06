@@ -453,6 +453,14 @@ pub(super) fn resolve_trigger_effect(
 ) {
     if state.pending_copy_order.is_some() { return; }
     if copy_instruction_is_nonterminal(&context.effect, true) { return; }
+    if let Effect::ReturnWithDeathKeyword { keyword } = context.effect {
+        if let Some(zone) = &context.zone_transition {
+            // Only the owned instruction can identify the historical subject.
+            // A generic effect/source lookup must never substitute a new object.
+            let _ = super::transitions::return_death_keyword(state, zone, keyword);
+        }
+        return;
+    }
     let cast_context = context.cast_spell.as_ref().map(|spell| CastEffectContext {
         spell, source_id: original_source_id, source_generation: context.source_generation,
     });
@@ -492,6 +500,9 @@ fn resolve_effect_inner(
     let target_generations = recipient_generations.as_deref().unwrap_or(target_generations);
 
     match effect {
+        // Requires an owned death occurrence; generic effect execution cannot
+        // reconstruct its exact graveyard incarnation or historical condition.
+        Effect::ReturnWithDeathKeyword { .. } => {}
         Effect::CopyCastSpellForOtherCreatures => {
             if terminal {
                 if let Some(cast) = cast_context {

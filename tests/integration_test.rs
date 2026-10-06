@@ -22,6 +22,597 @@ fn queue_test_trigger(state: &mut GameState, source_id: u64, ability_index: usiz
     state.pending_triggers.push(trigger);
 }
 
+// Ordinary keyword prerequisite: generic executable fixtures, no card certification.
+mod ordinary_keyword_prerequisite {
+    use super::*;
+    use mtg_gto::card::{CardDef, CardType};
+    use mtg_gto::game::CardDatabase;
+    use mtg_gto::layers::LayerModification;
+    use mtg_gto::rules::transitions::{transition_batch, ExactObjectRef, MovementKind, TransitionRequest};
+
+    fn fixture(keywords: Vec<KeywordAbility>) -> (GameState, u64) {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 996_701, name: "Keyword subject".into(),
+            card_types: vec![CardType::Creature], power: Some(2), toughness: Some(2),
+            keywords, ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::PreCombatMain;
+        let id = state.create_card_in_zone(996_701, 0, ZoneType::Battlefield);
+        (state, id)
+    }
+
+    fn lethal_sba(state: &mut GameState, id: u64) {
+        state.objects.get_mut(&id).unwrap().damage_marked = 2;
+        rules::check_state_based_actions(state);
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_return_waits_for_ordinary_trigger_resolution() {
+        for keyword in [KeywordAbility::Undying, KeywordAbility::Persist] {
+            let (mut state, id) = fixture(vec![keyword]);
+            lethal_sba(&mut state, id);
+            assert!(state.players[0].graveyard.contains(&id),
+                "{keyword:?}: death must leave the card in graveyard until resolution");
+            assert!(!state.battlefield.contains(&id));
+            assert!(state.pending_triggers.is_empty());
+            assert_eq!(state.stack.len(), 1);
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_counter_lki_precedes_legacy_cancellation() {
+        for keyword in [KeywordAbility::Undying, KeywordAbility::Persist] {
+            let (mut state, id) = fixture(vec![keyword]);
+            let inst = state.objects.get_mut(&id).unwrap();
+            inst.plus_counters = 1;
+            inst.minus_counters = 1;
+            lethal_sba(&mut state, id);
+            assert!(state.players[0].graveyard.contains(&id),
+                "{keyword:?}: canceled stored counters must not erase historical disqualification");
+            assert!(state.pending_triggers.is_empty());
+            assert!(state.stack.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_granted_keyword_uses_effective_lki() {
+        for keyword in [KeywordAbility::Undying, KeywordAbility::Persist] {
+            let (mut state, id) = fixture(vec![]);
+            targeting_layer(&mut state, id, LayerModification::AddKeyword(keyword));
+            assert!(state.has_keyword(id, keyword));
+            lethal_sba(&mut state, id);
+            assert!(state.players[0].graveyard.contains(&id));
+            assert_eq!(state.stack.len(), 1, "{keyword:?}: granted ability triggers");
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_removed_keyword_does_not_trigger() {
+        for keyword in [KeywordAbility::Undying, KeywordAbility::Persist] {
+            let (mut state, id) = fixture(vec![keyword]);
+            targeting_layer(&mut state, id, LayerModification::RemoveKeyword(keyword));
+            assert!(!state.has_keyword(id, keyword));
+            lethal_sba(&mut state, id);
+            assert!(state.players[0].graveyard.contains(&id),
+                "{keyword:?}: removed printed keyword must not return the card");
+            assert!(state.pending_triggers.is_empty());
+            assert!(state.stack.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_both_keywords_own_independent_transition_occurrences() {
+        let (mut state, id) = fixture(vec![KeywordAbility::Undying, KeywordAbility::Persist]);
+        let before = ExactObjectRef { id, generation: state.objects[&id].zone_change_count };
+        transition_batch(&mut state, &[TransitionRequest {
+            object: before, from: ZoneType::Battlefield, to: ZoneType::Graveyard,
+            kind: MovementKind::Put,
+        }]).unwrap();
+        assert!(state.players[0].graveyard.contains(&id));
+        assert_eq!(state.pending_triggers.len(), 2, "each eligible keyword owns one occurrence");
+        for occurrence in &state.pending_triggers {
+            let zone = occurrence.context.zone_transition.as_ref().unwrap();
+            assert_eq!(zone.subject.before.object, before);
+            assert_eq!(zone.subject.after.generation, before.generation + 1);
+            assert_eq!(zone.subject.destination.zone, ZoneType::Graveyard);
+        }
+    }
+
+    fn depart(state: &mut GameState, ids: &[u64], to: ZoneType) {
+        let requests: Vec<_> = ids.iter().map(|&id| TransitionRequest {
+            object: ExactObjectRef { id, generation: state.objects[&id].zone_change_count },
+            from: ZoneType::Battlefield, to, kind: MovementKind::Put,
+        }).collect();
+        transition_batch(state, &requests).unwrap();
+    }
+
+    fn place(state: &mut GameState) {
+        rules::check_state_based_actions(state);
+        while !state.pending_triggers.is_empty() {
+            let action = legal_actions(state).into_iter().find(|action|
+                matches!(action, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }))
+                .expect("ordinary ordering action");
+            rules::apply_action(state, &action);
+        }
+    }
+
+    fn resolve_one(state: &mut GameState) {
+        assert!(!state.stack.is_empty());
+        let before = state.stack.last().unwrap().id;
+        for _ in 0..state.players.len() {
+            rules::apply_action(state, &Action::PassPriority);
+            if !state.stack.iter().any(|entry| entry.id == before) { return; }
+        }
+        panic!("top entry did not resolve");
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_printed_counter_eligibility_matrix() {
+        for keyword in [KeywordAbility::Undying, KeywordAbility::Persist] {
+            for disqualified in [false, true] {
+                let (mut state, id) = fixture(vec![keyword]);
+                if disqualified {
+                    let inst = state.objects.get_mut(&id).unwrap();
+                    if keyword == KeywordAbility::Undying { inst.plus_counters = 1; }
+                    else { inst.minus_counters = 1; }
+                }
+                depart(&mut state, &[id], ZoneType::Graveyard);
+                assert_eq!(state.pending_triggers.len(), usize::from(!disqualified));
+                assert!(state.players[0].graveyard.contains(&id));
+                if !disqualified {
+                    place(&mut state);
+                    resolve_one(&mut state);
+                    assert!(state.battlefield.contains(&id));
+                    assert_eq!(state.objects[&id].plus_counters, i32::from(keyword == KeywordAbility::Undying));
+                    assert_eq!(state.objects[&id].minus_counters, i32::from(keyword == KeywordAbility::Persist));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_migrated_effective_keyword_matrix() {
+        for keyword in [KeywordAbility::Undying, KeywordAbility::Persist] {
+            for removed in [false, true] {
+                let (mut state, id) = fixture(if removed { vec![keyword] } else { vec![] });
+                targeting_layer(&mut state, id, if removed { LayerModification::RemoveAllAbilities }
+                    else { LayerModification::AddKeyword(keyword) });
+                depart(&mut state, &[id], ZoneType::Graveyard);
+                assert_eq!(state.pending_triggers.len(), usize::from(!removed));
+            }
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_graveyard_departure_and_newer_incarnation_no_return() {
+        for reenter in [false, true] {
+            for stacked in [false, true] {
+                let (mut state, id) = fixture(vec![KeywordAbility::Undying]);
+                depart(&mut state, &[id], ZoneType::Graveyard);
+                if stacked { place(&mut state); }
+                let expected = state.objects[&id].zone_change_count;
+                state.move_object(id, ZoneType::Graveyard, ZoneType::Exile);
+                if reenter { state.move_object(id, ZoneType::Exile, ZoneType::Graveyard); }
+                for mut candidate in boundary_2b3a_review_roundtrips(&state) {
+                    place(&mut candidate);
+                    resolve_one(&mut candidate);
+                    assert!(!candidate.battlefield.contains(&id));
+                    assert_eq!(candidate.objects[&id].zone_change_count, expected + if reenter { 2 } else { 1 });
+                    assert_eq!(candidate.objects[&id].plus_counters, 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_exact_return_entry_state_owner_and_etb() {
+        use mtg_gto::card::{Effect, TriggerCondition, TriggeredAbility};
+        for keyword in [KeywordAbility::Undying, KeywordAbility::Persist] {
+            let (mut state, id) = fixture(vec![keyword]);
+            let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+            let mut subject = db.get(996_701).unwrap().clone();
+            subject.enters_tapped = true;
+            subject.triggered_abilities.push(TriggeredAbility { trigger: TriggerCondition::EntersBattlefield,
+                effect: Effect::GainDynamicLife { amount: mtg_gto::card::DynamicValue::TappedCreaturesControlled },
+                description: "Observe returned power".into() });
+            db.insert(subject);
+            db.insert(CardDef { id: 996_702, name: "Other entry watcher".into(),
+                card_types: vec![CardType::Artifact], triggered_abilities: vec![TriggeredAbility {
+                    trigger: TriggerCondition::ACreatureEnters, effect: Effect::GainLife { amount: 5 },
+                    description: "Observe creature entry".into() }], ..Default::default() });
+            state.create_card_in_zone(996_702, 1, ZoneType::Battlefield);
+            let inst = state.objects.get_mut(&id).unwrap();
+            inst.controller = 1;
+            inst.damage_marked = 7;
+            inst.temp_power_mod = 9;
+            inst.temp_toughness_mod = 9;
+            inst.temp_keywords.push(KeywordAbility::Haste);
+            if keyword == KeywordAbility::Undying { inst.minus_counters = 2; }
+            else { inst.plus_counters = 2; }
+            depart(&mut state, &[id], ZoneType::Graveyard);
+            assert_eq!(state.pending_triggers[0].controller, 1, "ability belongs to historical controller");
+            let graveyard_generation = state.objects[&id].zone_change_count;
+            for mut candidate in boundary_2b3a_review_roundtrips(&state) {
+                place(&mut candidate);
+                resolve_one(&mut candidate);
+                let returned = &candidate.objects[&id];
+                assert!(candidate.battlefield.contains(&id));
+                assert_eq!(returned.controller, 0);
+                assert_eq!(returned.zone_change_count, graveyard_generation + 1);
+                assert!(returned.tapped, "definition entry state preserved");
+                assert!(returned.summoning_sick);
+                assert_eq!(returned.damage_marked, 0);
+                assert_eq!(returned.temp_power_mod, 0);
+                assert_eq!(returned.temp_toughness_mod, 0);
+                assert!(returned.temp_keywords.is_empty());
+                assert_eq!(returned.plus_counters, i32::from(keyword == KeywordAbility::Undying));
+                assert_eq!(returned.minus_counters, i32::from(keyword == KeywordAbility::Persist));
+                assert_eq!(candidate.stack.len(), 2, "self and other entry watcher collected");
+                assert_eq!(candidate.stack[0].controller, 0);
+                assert_eq!(candidate.stack[1].controller, 1);
+                resolve_one(&mut candidate);
+                resolve_one(&mut candidate);
+                assert_eq!(candidate.players[1].life, state.players[1].life + 5);
+                assert_eq!(candidate.players[0].life, state.players[0].life + 1);
+                assert_eq!(candidate.priority_player, candidate.active_player);
+            }
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_entry_counter_replacements_and_later_sba() {
+        for keyword in [KeywordAbility::Undying, KeywordAbility::Persist] {
+            let (mut state, id) = fixture(vec![keyword]);
+            let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+            let mut def = db.get(996_701).unwrap().clone();
+            def.toughness = Some(0);
+            db.insert(def);
+            // Both are legal departures while a represented bonus keeps them alive.
+            state.objects.get_mut(&id).unwrap().temp_toughness_mod = 1;
+            depart(&mut state, &[id], ZoneType::Graveyard);
+            place(&mut state);
+            resolve_one(&mut state);
+            if keyword == KeywordAbility::Undying {
+                assert!(state.battlefield.contains(&id), "entry counter saves 0-toughness creature");
+                assert_eq!(state.effective_toughness(id), 1);
+            } else {
+                assert!(state.players[0].graveyard.contains(&id));
+                assert!(state.stack.is_empty(), "returned disqualifying counter prevents repeat Persist");
+            }
+        }
+        let (mut state, id) = fixture(vec![KeywordAbility::Undying]);
+        depart(&mut state, &[id], ZoneType::Graveyard);
+        state.replacement_effects.push(ReplacementEffect { source_id: 0, controller: 0,
+            applies_to: ReplacementEventKind::EntersBattlefield,
+            action: ReplacementAction::EntersModified { enters_tapped: true, extra_counters: 2 },
+            is_self_replacement: true, description: "Entry replacement".into(), });
+        place(&mut state);
+        resolve_one(&mut state);
+        assert!(state.objects[&id].tapped);
+        assert_eq!(state.objects[&id].plus_counters, 3);
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_actual_endpoint_and_commander_negative() {
+        use mtg_gto::game::GameFormat;
+        for to in [ZoneType::Exile, ZoneType::Hand, ZoneType::Library, ZoneType::Command] {
+            let (mut state, id) = fixture(vec![KeywordAbility::Undying, KeywordAbility::Persist]);
+            depart(&mut state, &[id], to);
+            assert!(state.pending_triggers.is_empty());
+        }
+        for legacy in [false, true] {
+            let (mut state, id) = fixture(vec![KeywordAbility::Undying]);
+            state.format = GameFormat::Commander;
+            state.players[0].commander_object_id = Some(id);
+            if legacy { lethal_sba(&mut state, id); }
+            else { depart(&mut state, &[id], ZoneType::Graveyard); }
+            assert!(state.players[0].command_zone.contains(&id));
+            assert!(state.pending_triggers.is_empty());
+            assert!(state.stack.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_tokens_retain_occurrence_without_recreation() {
+        for legacy in [false, true] {
+            let (mut state, id) = fixture(vec![KeywordAbility::Undying, KeywordAbility::Persist]);
+            state.objects.get_mut(&id).unwrap().is_token = true;
+            if legacy { lethal_sba(&mut state, id); }
+            else { depart(&mut state, &[id], ZoneType::Graveyard); }
+            assert!(!state.objects.contains_key(&id));
+            assert_eq!(state.pending_triggers.len(), 2);
+            for mut candidate in boundary_2b3a_review_roundtrips(&state) {
+                place(&mut candidate);
+                resolve_one(&mut candidate);
+                resolve_one(&mut candidate);
+                assert!(!candidate.objects.contains_key(&id));
+                assert!(candidate.battlefield.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_both_return_once_and_do_not_duplicate_legacy_path() {
+        for legacy in [false, true] {
+            let (mut state, id) = fixture(vec![KeywordAbility::Undying, KeywordAbility::Persist]);
+            if legacy { lethal_sba(&mut state, id); }
+            else { depart(&mut state, &[id], ZoneType::Graveyard); }
+            rules::check_state_based_actions(&mut state);
+            rules::check_state_based_actions(&mut state);
+            assert_eq!(state.pending_triggers.len(), 2);
+            place(&mut state);
+            assert_eq!(state.stack.len(), 2);
+            resolve_one(&mut state);
+            let generation = state.objects[&id].zone_change_count;
+            let counters = (state.objects[&id].plus_counters, state.objects[&id].minus_counters);
+            resolve_one(&mut state);
+            assert_eq!(state.objects[&id].zone_change_count, generation);
+            assert_eq!((state.objects[&id].plus_counters, state.objects[&id].minus_counters), counters);
+            assert!(state.battlefield.contains(&id));
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_prevented_redirected_and_indestructible_controls() {
+        use mtg_gto::rules::transitions::{destroy_batch, ResolvedSacrificeSubject, resolved_sacrifice_batch};
+        for legacy in [false, true] {
+            for action in [ReplacementAction::Prevent, ReplacementAction::RedirectToZone(ZoneType::Exile)] {
+                let (mut state, id) = fixture(vec![KeywordAbility::Undying]);
+                state.replacement_effects.push(ReplacementEffect { source_id: 0, controller: 0,
+                    applies_to: ReplacementEventKind::WouldDie, action: action.clone(),
+                    is_self_replacement: true, description: "Death control".into() });
+                if legacy { lethal_sba(&mut state, id); }
+                else { destroy_batch(&mut state, &[ExactObjectRef { id, generation: 0 }]).unwrap(); }
+                assert!(state.pending_triggers.is_empty());
+                assert!(state.stack.is_empty());
+                assert!(!state.players[0].graveyard.contains(&id));
+                assert_eq!(state.battlefield.contains(&id), action == ReplacementAction::Prevent);
+            }
+        }
+        let (mut state, id) = fixture(vec![KeywordAbility::Undying, KeywordAbility::Indestructible]);
+        assert!(destroy_batch(&mut state, &[ExactObjectRef { id, generation: 0 }]).unwrap().is_none());
+        assert!(state.pending_triggers.is_empty());
+        resolved_sacrifice_batch(&mut state, &[ResolvedSacrificeSubject { player: 0,
+            object: ExactObjectRef { id, generation: 0 } }]).unwrap();
+        assert_eq!(state.pending_triggers.len(), 1, "sacrifice ignores indestructible");
+        place(&mut state);
+        assert_eq!(state.stack.len(), 1);
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_keyword_permanent_need_not_be_creature() {
+        for legacy in [false, true] {
+            let (mut state, id) = fixture(vec![KeywordAbility::Undying]);
+            let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+            let mut def = db.get(996_701).unwrap().clone();
+            def.card_types = vec![CardType::Enchantment];
+            def.subtypes = vec![mtg_gto::card::Subtype("Aura".into())];
+            db.insert(def);
+            state.invalidate_characteristics_cache();
+            if legacy { rules::check_state_based_actions(&mut state); }
+            else { depart(&mut state, &[id], ZoneType::Graveyard); }
+            let context = if legacy {
+                match &state.stack[0].source {
+                    mtg_gto::game::StackSource::TriggeredAbility { context, .. } => context.as_ref(),
+                    _ => panic!("expected keyword trigger"),
+                }
+            } else { &state.pending_triggers[0].context };
+            assert!(matches!(context.effect, mtg_gto::card::Effect::ReturnWithDeathKeyword { .. }));
+            assert!(!context.zone_transition.as_ref().unwrap().subject.creature_died());
+        }
+    }
+
+    fn simultaneous_fixture(reverse: bool, prefix: usize, count: usize) -> (GameState, Vec<u64>) {
+        let (mut state, original) = fixture(vec![KeywordAbility::Undying]);
+        // Preserve only allocation history, not a visible extra card.
+        state.move_object(original, ZoneType::Battlefield, ZoneType::Exile);
+        state.objects.remove(&original);
+        state.players[0].exile.clear();
+        for _ in 0..prefix {
+            let token = state.create_card_in_zone(996_701, 0, ZoneType::Battlefield);
+            state.objects.get_mut(&token).unwrap().is_token = true;
+            state.move_object(token, ZoneType::Battlefield, ZoneType::Exile);
+        }
+        let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+        let mut persist = db.get(996_701).unwrap().clone();
+        persist.id = 996_703;
+        persist.name = "Other keyword subject".into();
+        persist.keywords = vec![KeywordAbility::Persist];
+        db.insert(persist);
+        let mut roles: Vec<_> = (0..count).collect();
+        if reverse { roles.reverse(); }
+        let mut ids = vec![0; count];
+        for role in roles {
+            let definition = if role % 2 == 0 { 996_701 } else { 996_703 };
+            let id = state.create_card_in_zone(definition, 0, ZoneType::Battlefield);
+            state.objects.get_mut(&id).unwrap().tapped = role % 3 == 0;
+            ids[role] = id;
+        }
+        // Graveyard order follows semantic roles, independent of allocation.
+        depart(&mut state, &ids, ZoneType::Graveyard);
+        state.pending_events.clear();
+        (state, ids)
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_simultaneous_death_watchers_and_apnap_roundtrips() {
+        use mtg_gto::card::{Effect, TriggerCondition, TriggeredAbility};
+        let (mut state, first) = fixture(vec![KeywordAbility::Undying, KeywordAbility::Persist]);
+        Arc::make_mut(state.card_db.as_mut().unwrap()).insert(CardDef { id: 996_704,
+            name: "Departing death watcher".into(), card_types: vec![CardType::Creature],
+            power: Some(2), toughness: Some(2), keywords: vec![KeywordAbility::Persist],
+            triggered_abilities: vec![TriggeredAbility { trigger: TriggerCondition::ACreatureDies,
+                effect: Effect::GainLife { amount: 1 }, description: "Watch deaths".into() }],
+            ..Default::default() });
+        let watcher = state.create_card_in_zone(996_704, 1, ZoneType::Battlefield);
+        depart(&mut state, &[first, watcher], ZoneType::Graveyard);
+        assert_eq!(state.pending_triggers.len(), 5, "two subject keywords, watcher keyword and two watched deaths");
+        let group = state.pending_triggers[0].context.zone_transition.as_ref().unwrap().group_id;
+        assert!(state.pending_triggers.iter().all(|t| t.context.zone_transition.as_ref().unwrap().group_id == group));
+        for mut candidate in boundary_2b3a_review_roundtrips(&state) {
+            place(&mut candidate);
+            assert_eq!(candidate.stack.iter().map(|entry| entry.controller).collect::<Vec<_>>(), vec![0, 0, 1, 1, 1]);
+            // Persist/Undying and watched deaths participate in the same ordinary window.
+            while !candidate.stack.is_empty() { resolve_one(&mut candidate); }
+            assert!(candidate.battlefield.contains(&first));
+            assert!(candidate.battlefield.contains(&watcher));
+            assert_eq!(candidate.players[1].life, state.players[1].life + 2);
+            assert!(candidate.pending_triggers.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_pending_and_stacked_roundtrips_return_end_to_end() {
+        for stacked in [false, true] {
+            let (mut state, ids) = simultaneous_fixture(false, 0, 3);
+            if stacked { place(&mut state); }
+            for mut candidate in boundary_2b3a_review_roundtrips(&state) {
+                place(&mut candidate);
+                while !candidate.stack.is_empty() { resolve_one(&mut candidate); }
+                assert_eq!(candidate.battlefield.len(), ids.len());
+                for &id in &ids {
+                    assert_eq!(candidate.objects[&id].zone_change_count, 2);
+                    let undying = candidate.objects[&id].card_def_id == 996_701;
+                    assert_eq!(candidate.objects[&id].plus_counters, i32::from(undying));
+                    assert_eq!(candidate.objects[&id].minus_counters, i32::from(!undying));
+                }
+                assert!(candidate.pending_triggers.is_empty());
+                assert_eq!(candidate.priority_player, candidate.active_player);
+                assert_eq!(serde_json::to_value(&candidate).unwrap(), {
+                    let mut expected = state.clone(); place(&mut expected);
+                    while !expected.stack.is_empty() { resolve_one(&mut expected); }
+                    serde_json::to_value(&expected).unwrap()
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_id_allocation_invariance_and_strong_small_choices() {
+        use mtg_gto::info_set::InformationSet;
+        let (mut a, _) = simultaneous_fixture(false, 0, 3);
+        let (mut b, _) = simultaneous_fixture(true, 7, 3);
+        rules::check_state_based_actions(&mut a);
+        rules::check_state_based_actions(&mut b);
+        assert_eq!(InformationSet::from_view(&a.visible_state(0), a.card_db()).hash_value(),
+            InformationSet::from_view(&b.visible_state(0), b.card_db()).hash_value());
+        let choices = |state: &GameState| legal_actions(state).into_iter().filter(|action|
+            matches!(action, Action::OrderTriggerOccurrences { .. })).map(|action|
+            canonicalize(&action, state)).collect::<std::collections::HashSet<_>>();
+        assert_eq!(choices(&a).len(), 6);
+        assert_eq!(choices(&a), choices(&b));
+        for action in legal_actions(&a).into_iter().filter(|action|
+            matches!(action, Action::OrderTriggerOccurrences { .. })) {
+            let canonical = canonicalize(&action, &a);
+            let translated = resolve(&canonical, &b, 0).unwrap();
+            let mut first = a.clone(); let mut second = b.clone();
+            rules::apply_action(&mut first, &action);
+            rules::apply_action(&mut second, &translated);
+            assert_eq!(InformationSet::from_view(&first.visible_state(0), first.card_db()).hash_value(),
+                InformationSet::from_view(&second.visible_state(0), second.card_db()).hash_value());
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_seven_occurrences_semantic_and_own_fifo_boundary() {
+        use mtg_gto::info_set::InformationSet;
+        let (mut a, _) = simultaneous_fixture(false, 0, 7);
+        let (mut b, _) = simultaneous_fixture(true, 2, 7);
+        rules::check_state_based_actions(&mut a);
+        rules::check_state_based_actions(&mut b);
+        assert_eq!(InformationSet::from_view(&a.visible_state(0), a.card_db()).hash_value(),
+            InformationSet::from_view(&b.visible_state(0), b.card_db()).hash_value());
+        for state in [&mut a, &mut b] {
+            let original = state.pending_triggers.clone();
+            let choices: Vec<_> = legal_actions(state).into_iter().filter(|action|
+                matches!(action, Action::OrderTriggerOccurrences { .. })).collect();
+            assert_eq!(choices.len(), 1);
+            let action = &choices[0];
+            assert_eq!(resolve(&canonicalize(action, state), state, 0), Some(action.clone()));
+            rules::apply_action(state, action);
+            assert_eq!(state.stack.iter().map(|entry| match entry.source {
+                mtg_gto::game::StackSource::TriggeredAbility { source_id, .. } => source_id,
+                _ => panic!("keyword entry"),
+            }).collect::<Vec<_>>(), original.iter().map(|t| t.source_id).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_return_validation_is_atomic() {
+        use mtg_gto::rules::transitions::{return_death_keyword, TransitionError};
+        let (mut state, id) = fixture(vec![KeywordAbility::Undying]);
+        depart(&mut state, &[id], ZoneType::Graveyard);
+        let context = state.pending_triggers[0].context.zone_transition.as_ref().unwrap().clone();
+        for case in 0..5 {
+            let mut candidate = state.clone(); let mut context = context.clone();
+            match case {
+                0 => { candidate.objects.get_mut(&id).unwrap().zone_change_count = u32::MAX;
+                    context.subject.after.generation = u32::MAX;
+                    context.subject.before.object.generation = u32::MAX - 1;
+                    context.source_before.object.generation = u32::MAX - 1; },
+                1 => { candidate.objects.get_mut(&id).unwrap().owner = 1; },
+                2 => { context.subject.destination.player = 1; },
+                3 => { candidate.battlefield.push(id); },
+                _ => { candidate.replacement_effects.push(ReplacementEffect { source_id: 0,
+                    controller: 0, applies_to: ReplacementEventKind::EntersBattlefield,
+                    action: ReplacementAction::EntersModified { enters_tapped: false, extra_counters: i32::MAX },
+                    is_self_replacement: true, description: "Overflow control".into() }); },
+            }
+            let original = bincode::serialize(&candidate).unwrap();
+            let result = return_death_keyword(&mut candidate, &context, KeywordAbility::Undying);
+            assert_eq!(result, Err(match case {
+                0 => TransitionError::GenerationExhausted(id),
+                1 | 2 => TransitionError::StaleIncarnation(id),
+                3 => TransitionError::WrongZone(id),
+                _ => TransitionError::CapacityExhausted,
+            }));
+            assert_eq!(bincode::serialize(&candidate).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_resolution_uses_historical_not_graveyard_counters() {
+        for keyword in [KeywordAbility::Undying, KeywordAbility::Persist] {
+            let (mut state, id) = fixture(vec![keyword]);
+            depart(&mut state, &[id], ZoneType::Graveyard);
+            // Deliberate graveyard-state probe: eligibility is owned LKI, not
+            // these retained storage fields on the post-transition object.
+            let inst = state.objects.get_mut(&id).unwrap();
+            inst.plus_counters = 4;
+            inst.minus_counters = 5;
+            place(&mut state);
+            resolve_one(&mut state);
+            assert!(state.battlefield.contains(&id));
+            assert_eq!(state.objects[&id].plus_counters, i32::from(keyword == KeywordAbility::Undying));
+            assert_eq!(state.objects[&id].minus_counters, i32::from(keyword == KeywordAbility::Persist));
+        }
+    }
+
+    #[test]
+    fn test_keyword_prerequisite_effective_controller_owns_trigger_but_owner_gets_return() {
+        use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration};
+        let (mut state, id) = fixture(vec![KeywordAbility::Undying]);
+        let generation = state.objects[&id].zone_change_count;
+        let timestamp = state.new_timestamp();
+        state.continuous_effects.push(ContinuousEffect { source_id: id, controller: 1,
+            timestamp, duration: Duration::Permanent,
+            affected: AffectedObjects::SpecificIncarnation { object_id: id, zone_change_count: generation },
+            modification: LayerModification::ChangeController(1) });
+        state.invalidate_characteristics_cache();
+        assert_eq!(state.objects[&id].controller, 0);
+        assert_eq!(mtg_gto::layers::compute_characteristics(id, &state.continuous_effects, &state.objects,
+            &state.battlefield.iter().copied().collect(), state.card_db()).unwrap().controller, 1);
+        depart(&mut state, &[id], ZoneType::Graveyard);
+        assert_eq!(state.pending_triggers[0].controller, 1);
+        place(&mut state);
+        resolve_one(&mut state);
+        assert_eq!(state.objects[&id].controller, 0);
+        assert_eq!(mtg_gto::layers::compute_characteristics(id, &state.continuous_effects, &state.objects,
+            &state.battlefield.iter().copied().collect(), state.card_db()).unwrap().controller, 0);
+    }
+}
+
 #[test]
 fn test_2a_mana_choice_restrictions_and_failed_cast_are_atomic() {
     use mtg_gto::card::{CardDef, CardType, ManaAbility};
@@ -7992,7 +8583,14 @@ fn test_2a_restored_copy_completion_keeps_sba_triggers_deferred() {
             candidate.priority_player,
         ));
     }
-    assert_eq!(outcomes[0].0, vec!["death", "return", "death", "placement"]);
+    assert_eq!(outcomes[0].0, vec!["death", "placement"]);
+    for candidate in &mut candidates {
+        assert!(candidate.players[0].graveyard.contains(&persist));
+        // The keyword is above the copies and original spell after completion.
+        targeting_resolve(candidate);
+        assert_eq!(sba_window_events(candidate, persist), vec!["return", "death", "placement"]);
+        assert!(candidate.players[0].graveyard.contains(&persist));
+    }
     assert!(
         outcomes.iter().all(|outcome| outcome == &outcomes[0]),
         "{outcomes:?}"
@@ -8260,39 +8858,50 @@ fn test_2a_shared_sba_stabilizes_before_placing_persist_etb() {
             state.objects.get_mut(&creature).unwrap().damage_marked = 1;
             rules::check_state_based_actions(&mut state);
         }
-        assert_eq!(
-            sba_window_events(&mut state, creature),
-            vec!["death", "return", "death", "placement"]
-        );
+        assert_eq!(sba_window_events(&mut state, creature), vec!["death", "placement"]);
+        assert!(state.players[0].graveyard.contains(&creature));
         assert_eq!(state.stack.len(), 1);
         assert!(state.pending_triggers.is_empty());
+        targeting_resolve(&mut state);
+        assert_eq!(sba_window_events(&mut state, creature), vec!["return", "death", "placement"]);
+        assert_eq!(state.stack.len(), 1, "self ETB waits until return settlement is complete");
     }
 }
 
 #[test]
 fn test_2a_sba_multiple_passes_keep_all_occurrences_pending_for_choice() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::layers::{AffectedObjects, StaticAbility};
     let mut state = sba_window_fixture();
-    let first = state.create_card_in_zone(990602, 0, ZoneType::Battlefield);
-    let second = state.create_card_in_zone(990602, 0, ZoneType::Battlefield);
-    let land = state.create_card_in_zone(990601, 0, ZoneType::Hand);
-    rules::apply_action(&mut state, &Action::PlayLand { object_id: land });
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let dies = TriggeredAbility { trigger: TriggerCondition::Dies,
+        effect: Effect::GainLife { amount: 1 }, description: "Cascade death".into() };
+    db.insert(CardDef { id: 990604, name: "Cascade lord".into(),
+        card_types: vec![CardType::Creature], power: Some(1), toughness: Some(1),
+        static_abilities: vec![StaticAbility::Anthem { power: 0, toughness: 1,
+            affected: AffectedObjects::OtherCreaturesControlledBy(0) }],
+        triggered_abilities: vec![dies.clone()], ..Default::default() });
+    db.insert(CardDef { id: 990605, name: "Cascade dependent".into(),
+        card_types: vec![CardType::Creature], power: Some(1), toughness: Some(0),
+        triggered_abilities: vec![dies], ..Default::default() });
+    let lord = state.create_card_in_zone(990604, 0, ZoneType::Battlefield);
+    let dependent = state.create_card_in_zone(990605, 0, ZoneType::Battlefield);
+    state.refresh_continuous_effects();
+    assert_eq!(state.effective_toughness(dependent), 1);
+    state.objects.get_mut(&lord).unwrap().damage_marked = 1;
+    rules::check_state_based_actions(&mut state);
+    assert!(state.players[0].graveyard.contains(&lord));
+    assert!(state.players[0].graveyard.contains(&dependent));
     let events = state.drain_events();
-    let last_death = events
-        .iter()
-        .rposition(|event| {
-            matches!(event,
+    let deaths: Vec<_> = events.iter().filter_map(|event| match event {
         GameEvent::ZoneChange { object, from: Zone::Battlefield, to: Zone::Graveyard }
-            if *object == first || *object == second)
-        })
-        .unwrap();
-    assert!(!events[..=last_death]
-        .iter()
-        .any(|event| matches!(event, GameEvent::AbilityTriggered { .. })));
+            if *object == lord || *object == dependent => Some(*object), _ => None,
+    }).collect();
+    assert_eq!(deaths, vec![lord, dependent], "dependent dies after loss of lord's effect");
+    assert!(!events.iter().any(|event| matches!(event, GameEvent::AbilityTriggered { .. })));
     assert_eq!(state.pending_triggers.len(), 2);
     assert!(state.stack.is_empty());
-    assert!(legal_actions(&state)
-        .iter()
-        .any(|action| matches!(action, Action::OrderTriggers { .. })));
+    assert!(legal_actions(&state).iter().any(|action| matches!(action, Action::OrderTriggers { .. })));
 }
 
 #[test]
@@ -8312,8 +8921,12 @@ fn test_2a_enclosing_resolution_retains_sba_placement_deferral() {
     rules::apply_action(&mut state, &Action::PassPriority);
     assert_eq!(
         sba_window_events(&mut state, creature),
-        vec!["death", "return", "death", "placement"]
+        vec!["death", "placement"]
     );
+    assert_eq!(state.stack.len(), 1);
+    assert!(state.players[0].graveyard.contains(&creature));
+    targeting_resolve(&mut state);
+    assert_eq!(sba_window_events(&mut state, creature), vec!["return", "death", "placement"]);
     assert_eq!(state.stack.len(), 1);
 }
 // Complete-action settlement fixtures deliberately use generic cards: these

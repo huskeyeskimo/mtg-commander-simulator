@@ -374,68 +374,6 @@ fn apply_prowess(state: &mut GameState, caster: PlayerIndex) {
     }
 }
 
-/// Check for Undying and Persist keyword abilities on creatures that just died.
-/// - Undying: if the creature had no +1/+1 counters, return it from graveyard
-///   with a +1/+1 counter.
-/// - Persist: if the creature had no -1/-1 counters, return it from graveyard
-///   with a -1/-1 counter.
-pub(super) fn check_undying_persist(state: &mut GameState, died: &[ObjectId]) {
-    if state.pending_copy_order.is_some() { return; }
-    use crate::card::KeywordAbility;
-
-    let mut to_return: Vec<(ObjectId, bool)> = Vec::new(); // (id, is_undying)
-
-    for &obj_id in died {
-        let (has_undying, has_persist, plus_counters, minus_counters) = {
-            let inst = match state.objects.get(&obj_id) {
-                Some(i) => i,
-                None => continue,
-            };
-            let db = state.card_db();
-            let def = match db.get(inst.card_def_id) {
-                Some(d) => d,
-                None => continue,
-            };
-            let has_undying = def.keywords.contains(&KeywordAbility::Undying);
-            let has_persist = def.keywords.contains(&KeywordAbility::Persist);
-            (has_undying, has_persist, inst.plus_counters, inst.minus_counters)
-        };
-
-        if has_undying && plus_counters == 0 {
-            to_return.push((obj_id, true));
-        } else if has_persist && minus_counters == 0 {
-            to_return.push((obj_id, false));
-        }
-    }
-
-    for (obj_id, is_undying) in to_return {
-        // Check if still in graveyard
-        let in_graveyard = state.players.iter().any(|p| p.graveyard.contains(&obj_id));
-        if !in_graveyard {
-            continue;
-        }
-
-        let owner = state.objects.get(&obj_id).map(|i| i.owner).unwrap_or(0);
-        state.move_object(obj_id, crate::card::ZoneType::Graveyard, crate::card::ZoneType::Battlefield);
-
-        // Reset the instance and add the appropriate counter
-        if let Some(inst) = state.objects.get_mut(&obj_id) {
-            inst.controller = owner;
-            inst.damage_marked = 0;
-            inst.tapped = false;
-            inst.summoning_sick = true;
-            if is_undying {
-                inst.plus_counters += 1;
-            } else {
-                inst.minus_counters += 1;
-            }
-        }
-
-        // Fire ETB triggers for the returned creature
-        let _ = fire_triggers(state, crate::card::TriggerCondition::EntersBattlefield, Some(obj_id));
-    }
-}
-
 /// Fire card-draw triggers when a player draws a card.
 /// `drawing_player` is the player who drew. This fires `OpponentDrawsCard`
 /// on permanents controlled by each opponent of the drawing player.

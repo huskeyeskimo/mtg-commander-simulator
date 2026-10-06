@@ -502,32 +502,22 @@ fn test_etb_trigger_draws_card() {
 
 #[test]
 fn test_undying_returns_with_counter() {
+    use mtg_gto::card::{CardDef, CardType, KeywordAbility};
     let mut state = base_state();
-    // Strangleroot Geist: 2/1 haste undying
-    let geist = add_creature(&mut state, ids::STRANGLEROOT_GEIST, 0);
-
-    assert_eq!(state.objects[&geist].plus_counters, 0);
-
-    state.objects.get_mut(&geist).unwrap().damage_marked = 1;
+    Arc::make_mut(state.card_db.as_mut().unwrap()).insert(CardDef { id: 996_801,
+        name: "Executable Undying fixture".into(), card_types: vec![CardType::Creature],
+        power: Some(2), toughness: Some(1), keywords: vec![KeywordAbility::Undying],
+        ..Default::default() });
+    let subject = add_creature(&mut state, 996_801, 0);
+    let generation = state.objects[&subject].zone_change_count;
+    state.objects.get_mut(&subject).unwrap().damage_marked = 1;
     rules::check_state_based_actions(&mut state);
-
-    let mut safety = 0;
-    while !state.stack.is_empty() && safety < 50 {
-        rules::apply_action(&mut state, &Action::PassPriority);
-        safety += 1;
-    }
-
-    let returned = state
-        .battlefield
-        .iter()
-        .find(|&&id| state.objects[&id].card_def_id == ids::STRANGLEROOT_GEIST);
-
-    if let Some(&ret_id) = returned {
-        assert_eq!(
-            state.objects[&ret_id].plus_counters, 1,
-            "Undying creature should return with a +1/+1 counter"
-        );
-    }
+    assert!(state.players[0].graveyard.contains(&subject));
+    assert_eq!(state.stack.len(), 1, "ordinary Undying trigger must be placed");
+    resolve_stack(&mut state);
+    assert!(state.battlefield.contains(&subject));
+    assert_eq!(state.objects[&subject].plus_counters, 1);
+    assert_eq!(state.objects[&subject].zone_change_count, generation + 2);
 }
 
 // ===========================================================================

@@ -67,6 +67,7 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
         let mut any_sba = false;
 
         loop {
+            let keyword_observations = super::transitions::capture_legacy_death_keywords(state);
             let mut any_action = false;
 
             // CR 704.5a: Player with 0 or less life loses
@@ -162,7 +163,7 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
                 });
             for &id in &legendary_dupes {
                 captured_dies_triggers.extend(super::triggers::capture_source_triggers(state, TriggerCondition::Dies, id));
-                state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
+                super::transitions::move_legacy_sba_with_keywords(state, id, ZoneType::Graveyard, &keyword_observations);
                 any_action = true;
             }
             if !legendary_dupes.is_empty() {
@@ -178,7 +179,7 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
                 });
             for &id in &pw_dupes {
                 captured_dies_triggers.extend(super::triggers::capture_source_triggers(state, TriggerCondition::Dies, id));
-                state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
+                super::transitions::move_legacy_sba_with_keywords(state, id, ZoneType::Graveyard, &keyword_observations);
                 any_action = true;
             }
             if !pw_dupes.is_empty() {
@@ -210,7 +211,7 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
                     .collect();
                 for &id in &pw_zero_loyalty {
                     captured_dies_triggers.extend(super::triggers::capture_source_triggers(state, TriggerCondition::Dies, id));
-                    state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
+                    super::transitions::move_legacy_sba_with_keywords(state, id, ZoneType::Graveyard, &keyword_observations);
                     any_action = true;
                 }
                 if !pw_zero_loyalty.is_empty() {
@@ -247,7 +248,7 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
                     })
                     .collect();
                 for &id in &aura_to_remove {
-                    state.move_object(id, ZoneType::Battlefield, ZoneType::Graveyard);
+                    super::transitions::move_legacy_sba_with_keywords(state, id, ZoneType::Graveyard, &keyword_observations);
                     any_action = true;
                 }
                 if !aura_to_remove.is_empty() {
@@ -318,7 +319,7 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
                     continue;
                 }
                 captured_dies_triggers.extend(super::triggers::capture_source_triggers(state, TriggerCondition::Dies, obj_id));
-                state.move_object(obj_id, ZoneType::Battlefield, dest_zone);
+                super::transitions::move_legacy_sba_with_keywords(state, obj_id, dest_zone, &keyword_observations);
                 any_action = true;
             }
             if !to_die.is_empty() {
@@ -359,8 +360,6 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
                 .collect();
             super::triggers::check_your_creature_dies_triggers(state, &dying_controllers);
         }
-        // Check Undying/Persist for creatures that died this round
-        super::triggers::check_undying_persist(state, &died_this_round);
 
         let triggers_queued = state.pending_triggers.len() > triggers_before;
 

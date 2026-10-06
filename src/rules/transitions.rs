@@ -11,7 +11,7 @@ use bincode::Options;
 use serde::{Deserialize, Serialize};
 
 use crate::card::{
-    CardId, CardType, KeywordAbility, ObjectId, Subtype, TriggerCondition, ZoneType,
+    CardId, CardType, Effect, KeywordAbility, ObjectId, Subtype, TriggerCondition, ZoneType,
 };
 use crate::events::GameEvent;
 use crate::game::{GameState, PendingTrigger, PlayerIndex, Target, TriggerContext};
@@ -1370,6 +1370,167 @@ fn collect_occurrences(
     found
 }
 
+fn eligible_death_keywords(before: &LastKnownObject) -> impl Iterator<Item = KeywordAbility> + '_ {
+    [KeywordAbility::Undying, KeywordAbility::Persist].into_iter().filter(|keyword| {
+        before.keywords.contains(keyword) && match keyword {
+            KeywordAbility::Undying => before.plus_counters == 0,
+            KeywordAbility::Persist => before.minus_counters == 0,
+            _ => false,
+        }
+    })
+}
+
+/// One owner of keyword occurrences for both migrated departures and the
+/// temporary legacy observer. No current object state participates in matching.
+fn collect_death_keywords(batch: &CommittedTransitionBatch) -> Vec<PendingTrigger> {
+    let mut found = Vec::new();
+    for subject in &batch.transitions {
+        if subject.before.location.zone != ZoneType::Battlefield
+            || subject.destination.zone != ZoneType::Graveyard { continue; }
+        for keyword in eligible_death_keywords(&subject.before) {
+            found.push(PendingTrigger {
+                source_id: subject.before.object.id,
+                // Synthetic keyword instructions have their own namespace,
+                // independent of printed triggered-ability vector positions.
+                ability_index: match keyword {
+                    KeywordAbility::Undying => usize::MAX - 1,
+                    KeywordAbility::Persist => usize::MAX,
+                    _ => unreachable!(),
+                },
+                controller: subject.before.controller,
+                targets: Vec::new(),
+                context: TriggerContext {
+                    source_card_id: subject.before.card_id,
+                    source_generation: subject.before.object.generation,
+                    effect: Effect::ReturnWithDeathKeyword { keyword },
+                    cast_spell: None,
+                    zone_transition: Some(ZoneTriggerContext {
+                        subject: subject.clone(), source_before: subject.before.clone(),
+                        source_was_subject: true, group_id: batch.group_id,
+                    }),
+                },
+            });
+        }
+    }
+    found
+}
+
+/// Owned snapshots taken before each legacy inner SBA iteration mutates
+/// counters or characteristics. Core common-pass work will replace this source.
+pub(super) fn capture_legacy_death_keywords(state: &GameState) -> HashMap<ObjectId, LastKnownObject> {
+    state.battlefield.iter().filter_map(|&id| {
+        let before = capture_subject(state, id);
+        let eligible = eligible_death_keywords(&before).next().is_some();
+        eligible.then_some((id, before))
+    }).collect()
+}
+
+/// Observe an actual legacy movement without changing its sequential semantics.
+/// The snapshot is not a attempted-death list and is never matched post-move.
+pub(super) fn move_legacy_sba_with_keywords(
+    state: &mut GameState, id: ObjectId, to: ZoneType,
+    observations: &HashMap<ObjectId, LastKnownObject>,
+) {
+    let Some(before) = observations.get(&id).filter(|before| {
+        state.battlefield.contains(&id) && state.objects.get(&id)
+            .is_some_and(|inst| inst.zone_change_count == before.object.generation)
+    }) else {
+        state.move_object(id, ZoneType::Battlefield, to);
+        return;
+    };
+    // Legacy SBA failure propagation remains core 2B.3b work. Guard the
+    // observer's event identity before mutation rather than wrapping it.
+    let next_group = state.next_zone_event_group_id.checked_add(1)
+        .expect("legacy keyword event group exhausted");
+    state.move_object_for_keyword_observation(id, to);
+    let destination = actual_destination(state, id, to);
+    if destination == ZoneType::Graveyard && state.players[before.owner].graveyard.contains(&id) {
+        let after = ExactObjectRef { id, generation: state.objects[&id].zone_change_count };
+        let batch = CommittedTransitionBatch { group_id: state.next_zone_event_group_id,
+            transitions: vec![CommittedTransition { before: before.clone(), after,
+                destination: ZoneLocation { zone: destination, player: before.owner },
+                kind: MovementKind::Put }] };
+        state.pending_triggers.extend(collect_death_keywords(&batch));
+        state.next_zone_event_group_id = next_group;
+    }
+    state.purge_transitioned_token(id, destination);
+}
+
+/// Narrow exact graveyard-return adapter for owned Undying/Persist. A stale or
+/// missing subject is an ordinary no-return resolution; malformed live intent
+/// is rejected before any movement. This is not an arbitrary-zone framework.
+pub fn return_death_keyword(
+    state: &mut GameState, context: &ZoneTriggerContext, keyword: KeywordAbility,
+) -> Result<bool, TransitionError> {
+    let subject = &context.subject;
+    let before = &subject.before;
+    if !context.source_was_subject || context.source_before.object != before.object
+        || before.location.zone != ZoneType::Battlefield
+        || subject.destination.zone != ZoneType::Graveyard
+        || !eligible_death_keywords(before).any(|eligible| eligible == keyword) {
+        return Err(TransitionError::UnsupportedPath);
+    }
+    let id = subject.after.id;
+    let Some(inst) = state.objects.get(&id) else { return Ok(false); };
+    if inst.zone_change_count != subject.after.generation { return Ok(false); }
+    let owner = before.owner;
+    if owner >= state.players.len() { return Err(TransitionError::InvalidPlayer(id)); }
+    if !state.players[owner].graveyard.contains(&id) { return Ok(false); }
+    if inst.owner != owner || subject.destination.player != owner || id != before.object.id
+        || inst.card_def_id != before.card_id || subject.after.generation != before.object.generation
+            .checked_add(1).ok_or(TransitionError::GenerationExhausted(id))? {
+        return Err(TransitionError::StaleIncarnation(id));
+    }
+    let memberships = state.players.iter().map(|player| {
+        [&player.library, &player.hand, &player.graveyard, &player.exile, &player.command_zone]
+            .iter().map(|zone| zone.iter().filter(|&&object| object == id).count()).sum::<usize>()
+    }).sum::<usize>();
+    if memberships != 1 || state.battlefield.contains(&id) || state.stack.iter().any(|entry|
+        matches!(entry.source, crate::game::StackSource::Spell(spell) if spell == id)) {
+        return Err(TransitionError::WrongZone(id));
+    }
+    let db = state.card_db.as_ref().ok_or(TransitionError::MissingDatabase)?;
+    let definition = db.get(inst.card_def_id).ok_or(TransitionError::MissingDefinition(inst.card_def_id))?;
+    if inst.zone_change_count == u32::MAX { return Err(TransitionError::GenerationExhausted(id)); }
+    if inst.controller >= state.players.len() { return Err(TransitionError::InvalidPlayer(id)); }
+    state.battlefield.len().checked_add(1).ok_or(TransitionError::CapacityExhausted)?;
+    state.pending_events.len().checked_add(1).ok_or(TransitionError::CapacityExhausted)?;
+    // Preflight represented entry-counter additions before applying replacements.
+    let initial_plus: i32 = i32::from(keyword == KeywordAbility::Undying);
+    let initial_minus: i32 = i32::from(keyword == KeywordAbility::Persist);
+    let (entry_replacements, _) = crate::replacement::find_applicable_replacements(
+        &state.replacement_effects, &crate::replacement::ReplacementEventKind::EntersBattlefield, owner);
+    entry_replacements.iter().try_fold(initial_plus, |count, &index| {
+        if let crate::replacement::ReplacementAction::EntersModified { extra_counters, .. } =
+            state.replacement_effects[index].action {
+            if extra_counters > 0 { return count.checked_add(extra_counters)
+                .ok_or(TransitionError::CapacityExhausted); }
+        }
+        Ok(count)
+    })?;
+    let starting_loyalty = definition.starting_loyalty.unwrap_or(0);
+
+    state.move_object(id, ZoneType::Graveyard, ZoneType::Battlefield);
+    let inst = state.objects.get_mut(&id).expect("validated return subject");
+    inst.controller = owner;
+    inst.plus_counters = initial_plus;
+    inst.minus_counters = initial_minus;
+    inst.loyalty_counters = starting_loyalty;
+    inst.loyalty_activated_this_turn = false;
+    inst.attached_to = None;
+    inst.attachments.clear();
+    inst.exiled_by = None;
+    state.apply_etb_replacements(id);
+    state.refresh_continuous_effects();
+    state.refresh_replacement_effects();
+    state.invalidate_characteristics_cache();
+    super::triggers::check_triggers(state, TriggerCondition::EntersBattlefield, Some(id));
+    if state.is_creature(id) {
+        super::triggers::check_triggers(state, TriggerCondition::ACreatureEnters, None);
+    }
+    Ok(true)
+}
+
 /// Commit one simultaneous departure event. All validation and pre-event
 /// capture finish before any mutation. Occurrences enter 2A's pending queue;
 /// this function never places triggers, grants priority, or advances time.
@@ -1441,6 +1602,7 @@ fn commit_batch(
     state
         .pending_triggers
         .extend(collect_occurrences(&observers, &batch));
+    state.pending_triggers.extend(collect_death_keywords(&batch));
 
     // Temporary 2B.1 bridge: purge only after event and occurrence ownership.
     // Correct token residence/cessation at SBA time remains 2C.

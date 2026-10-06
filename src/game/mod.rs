@@ -1206,6 +1206,13 @@ impl GameState {
         self.move_object_with_policy(obj_id, from, to, false, false, false);
     }
 
+    /// Temporary legacy-SBA keyword observer retains a token only until owned
+    /// history is collected. Existing notifications and linked follow-ups stay
+    /// on their legacy path; this does not turn the movement into a batch.
+    pub(crate) fn move_object_for_keyword_observation(&mut self, obj_id: ObjectId, to: ZoneType) {
+        self.move_object_with_policy(obj_id, ZoneType::Battlefield, to, false, true, true);
+    }
+
     pub(crate) fn purge_transitioned_token(&mut self, obj_id: ObjectId, destination: ZoneType) {
         let Some(inst) = self.objects.get(&obj_id) else { return; };
         if !inst.is_token || destination == ZoneType::Battlefield { return; }

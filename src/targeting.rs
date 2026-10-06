@@ -182,6 +182,7 @@ pub(crate) fn effect_recipients(effect: &Effect) -> EffectRecipients<'_> {
         | CreateTokenCopyOfSource
         | CreateTokenFromDef { card_def_id: _ }
         | CopyCastSpellForOtherCreatures
+        | ReturnWithDeathKeyword { keyword: _ }
         | Unimplemented(_) => Independent,
     }
 }

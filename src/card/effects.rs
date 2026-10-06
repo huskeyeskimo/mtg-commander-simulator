@@ -485,6 +485,11 @@ pub enum Effect {
     /// Copy a captured cast spell for each other currently legal creature.
     /// Requires a cast-trigger snapshot and must be terminal on resolution.
     CopyCastSpellForOtherCreatures,
+
+    /// Owned Undying/Persist instruction. Its exact graveyard subject and
+    /// historical eligibility are supplied by the trigger's transition context.
+    /// Appended to preserve the binary tags of existing production effects.
+    ReturnWithDeathKeyword { keyword: KeywordAbility },
 }
 
 /// Conditions that can be checked at runtime for conditional effects.
