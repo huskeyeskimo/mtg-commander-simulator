@@ -52,22 +52,154 @@ fn mandatory_trigger_order_chooser(state: &GameState) -> Option<PlayerIndex> {
 
 /// Apply an action to the game state, advancing it.
 pub fn apply_action(state: &mut GameState, action: &Action) {
+    // These handlers complete synchronously. Defer their existing internal
+    // flush attempts until costs, action consequences and SBA stabilization
+    // have all finished. Continuation actions own their separate 2A boundaries.
+    let owns_boundary = state.pending_copy_order.is_none()
+        && !cleanup_discard_required(state)
+        && (mandatory_trigger_order_chooser(state).is_none() || matches!(action, Action::Concede))
+        && matches!(action,
+            Action::PlayLand { .. } | Action::PlayLandFromGraveyard { .. }
+            | Action::CastSpell { .. } | Action::CastCommander { .. }
+            | Action::CastFromGraveyard { .. } | Action::ActivateManaAbility { .. }
+            | Action::ActivateAbility { .. } | Action::ActivateLoyalty { .. }
+            | Action::Equip { .. } | Action::ActivateMacro { .. }
+            | Action::ChooseTutorTarget { .. } | Action::Concede);
+    if !owns_boundary {
+        apply_action_inner(state, action);
+        return;
+    }
+    let caller_deferred = std::mem::replace(&mut state.trigger_placement_deferred, true);
+    let completed = apply_action_inner(state, action);
+    finish_complete_action(state, caller_deferred, completed);
+}
+
+fn finish_complete_action(state: &mut GameState, caller_deferred: bool, completed: bool) {
+    state.trigger_placement_deferred = caller_deferred;
+    if completed && !caller_deferred {
+        // Costs and action handlers also write hand/graveyard membership and
+        // tapped state directly. Evaluate SBAs from the completed action.
+        state.invalidate_characteristics_cache();
+        sba::check_state_based_actions(state);
+        clear_lost_tutor_choice(state);
+        // Loss processing can remove the actor during this settlement. Keep
+        // both immediate priority and a later ordering resume on a live player.
+        if !state.game_over {
+            if state.players[state.priority_player].has_lost {
+                state.priority_player = state.next_player(state.priority_player);
+            }
+            if let Some(TriggerOrderResume::Player(player)) = state.trigger_order_resume {
+                if state.players[player].has_lost {
+                    state.trigger_order_resume = Some(TriggerOrderResume::Player(state.next_player(player)));
+                }
+            }
+            // Elimination may remove the last pending chooser's occurrences.
+            // Complete that existing placement continuation even without an
+            // OrderTriggers action to consume it.
+            if state.pending_triggers.is_empty() && state.trigger_order_resume.is_some() {
+                resume_after_trigger_placement(state);
+            }
+        }
+    }
+}
+
+/// Consume a completed placement window's existing continuation once.
+fn resume_after_trigger_placement(state: &mut GameState) {
+    match state.trigger_order_resume.take().unwrap_or(TriggerOrderResume::AfterResolution) {
+        TriggerOrderResume::AfterResolution => restore_priority_after_resolution(state),
+        TriggerOrderResume::Player(player) => {
+            state.priority_player = if state.players[player].has_lost {
+                state.next_player(player)
+            } else { player };
+        }
+        TriggerOrderResume::AfterAttackers => {
+            phases::transition_to_phase(state, Phase::DeclareBlockers);
+            state.priority_player = state.next_player(state.active_player);
+        }
+    }
+}
+
+#[cfg(test)]
+mod settlement_2b3a_boundary_tests {
+    use super::*;
+    use crate::card::CardDef;
+    use crate::game::CardDatabase;
+    use crate::layers::{AffectedObjects, StaticAbility};
+    use crate::mana::ManaCost;
+    use std::sync::Arc;
+
+    fn fixture() -> (GameState, Action, ObjectId) {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 995101, name: "Boundary victim".into(),
+            card_types: vec![CardType::Creature], power: Some(1), toughness: Some(1),
+            ..Default::default() });
+        db.insert(CardDef { id: 995102, name: "Boundary equipment".into(),
+            card_types: vec![CardType::Artifact], equip_cost: Some(ManaCost::zero()),
+            static_abilities: vec![StaticAbility::Anthem { power: 0, toughness: -1,
+                affected: AffectedObjects::AttachedTo }], ..Default::default() });
+        let mut state = GameState::new(2);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::PreCombatMain;
+        let equipment_id = state.create_card_in_zone(995102, 0, ZoneType::Battlefield);
+        let target_id = state.create_card_in_zone(995101, 0, ZoneType::Battlefield);
+        (state, Action::Equip { equipment_id, target_id }, target_id)
+    }
+
+    #[test]
+    fn restored_private_post_action_seam_finishes_once() {
+        let (mut state, action, victim) = fixture();
+        state.trigger_placement_deferred = true;
+        assert!(apply_action_inner(&mut state, &action));
+        assert!(state.battlefield.contains(&victim));
+        let mut snapshot = state.clone();
+        snapshot.restore(state.snapshot());
+        let mut variants = [state.clone(), snapshot,
+            serde_json::from_slice::<GameState>(&serde_json::to_vec(&state).unwrap()).unwrap(),
+            bincode::deserialize::<GameState>(&bincode::serialize(&state).unwrap()).unwrap()];
+        let mut outcomes = Vec::new();
+        for candidate in &mut variants {
+            candidate.card_db = state.card_db.clone();
+            // Resume this private complete-action seam explicitly; no new
+            // persisted production continuation or between-pass state exists.
+            finish_complete_action(candidate, false, true);
+            assert!(candidate.players[0].graveyard.contains(&victim));
+            let before = bincode::serialize(candidate).unwrap();
+            sba::check_state_based_actions(candidate);
+            assert_eq!(before, bincode::serialize(candidate).unwrap());
+            outcomes.push(serde_json::to_value(&*candidate).unwrap());
+        }
+        assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
+    }
+
+    #[test]
+    fn enclosing_atomic_operation_retains_deferral_and_owns_settlement() {
+        let (mut state, action, victim) = fixture();
+        state.trigger_placement_deferred = true;
+        apply_action(&mut state, &action);
+        assert!(state.trigger_placement_deferred);
+        assert!(state.battlefield.contains(&victim));
+        finish_complete_action(&mut state, false, true);
+        assert!(state.players[0].graveyard.contains(&victim));
+    }
+}
+
+fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
     if state.pending_copy_order.is_some() {
         if let Action::ChooseNextCopy { item_index } = action {
             let _ = spell_copy::choose_next_copy(state, *item_index);
         }
-        return;
+        return false;
     }
-    if matches!(action, Action::ChooseNextCopy { .. }) { return; }
+    if matches!(action, Action::ChooseNextCopy { .. }) { return false; }
     if cleanup_discard_required(state) {
-        let Action::Discard { object_id } = action else { return; };
+        let Action::Discard { object_id } = action else { return false; };
         if state.phase != Phase::Cleanup
             || state.cleanup_needs_repeat
             || state.priority_player != state.active_player
             || state.players[state.active_player].hand.len() <= 7
             || !state.players[state.active_player].hand.contains(object_id)
         {
-            return;
+            return false;
         }
     }
     if let Some(chooser) = mandatory_trigger_order_chooser(state) {
@@ -79,7 +211,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             Action::Concede => true,
             _ => false,
         };
-        if state.priority_player != chooser || !valid_kind { return; }
+        if state.priority_player != chooser || !valid_kind { return false; }
     }
     // Validate supplied targets before costs, zone changes, or cast events.
     let cast = match action {
@@ -95,9 +227,9 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             ZoneType::Graveyard => &state.players[player].graveyard,
             _ => &state.players[player].command_zone,
         };
-        if !zone_cards.contains(&id) { return; }
-        let Some(def) = state.objects.get(&id).and_then(|inst| state.card_db().get(inst.card_def_id)) else { return; };
-        if !crate::targeting::valid_spell_targets(state, player, def, targets) { return; }
+        if !zone_cards.contains(&id) { return false; }
+        let Some(def) = state.objects.get(&id).and_then(|inst| state.card_db().get(inst.card_def_id)) else { return false; };
+        if !crate::targeting::valid_spell_targets(state, player, def, targets) { return false; }
     }
     match action {
         Action::ChooseNextCopy { .. } => unreachable!(),
@@ -106,7 +238,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             // clear it and return without advancing priority normally.
             if state.pending_tutor.is_some() {
                 state.pending_tutor = None;
-                return;
+                return false;
             }
 
             if state.phase == Phase::Cleanup
@@ -117,7 +249,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                     false,
                     "PassPriority during cleanup discard is illegal; choose a Discard action."
                 );
-                return;
+                return false;
             }
             state.consecutive_passes += 1;
             phases::handle_priority_pass(state);
@@ -125,20 +257,20 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
 
         Action::Discard { object_id } => {
             if state.phase != Phase::Cleanup {
-                return;
+                return false;
             }
             if state.cleanup_needs_repeat {
-                return;
+                return false;
             }
             if state.priority_player != state.active_player {
-                return;
+                return false;
             }
             let player = state.active_player;
             if !state.players[player].hand.contains(object_id) {
-                return;
+                return false;
             }
             if state.players[player].hand.len() <= 7 {
-                return;
+                return false;
             }
 
             state.cleanup_discard_in_progress = true;
@@ -173,7 +305,6 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             triggers::check_triggers(state, TriggerCondition::ALandYouControlEnters, None);
             // Fire "whenever you play a land" triggers
             triggers::check_triggers(state, TriggerCondition::YouPlayALand, None);
-            sba::check_state_based_actions(state);
             state.consecutive_passes = 0;
         }
 
@@ -193,7 +324,6 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             triggers::check_triggers(state, TriggerCondition::ALandYouControlEnters, None);
             // Fire "whenever you play a land" triggers
             triggers::check_triggers(state, TriggerCondition::YouPlayALand, None);
-            sba::check_state_based_actions(state);
             state.consecutive_passes = 0;
         }
 
@@ -217,7 +347,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 reduced_cost.generic += tax;
                 // First, auto-tap lands to generate mana if pool is insufficient
                 if !mana::pay_cost(state, player, &reduced_cost, None) {
-                    return;
+                    return false;
                 }
             }
 
@@ -260,7 +390,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             let player = state.priority_player;
 
             if !state.can_pay_tap_cost(obj_id) {
-                return;
+                return false;
             }
 
             // Read mana ability and source properties in one borrow scope
@@ -347,12 +477,12 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
 
             if let Some(ability) = ability {
                 if ability.requires_tap && !state.can_pay_tap_cost(obj_id) {
-                    return;
+                    return false;
                 }
                 // Pay mana cost
                 if !mana::pay_cost(state, player, &ability.cost,
                     ability.requires_tap.then_some(obj_id)) {
-                    return;
+                    return false;
                 }
 
                 // Pay life cost (e.g., fetch lands pay 1 life)
@@ -433,6 +563,11 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                     triggers::check_triggers(state, TriggerCondition::Attacks, Some(attacker_id));
                 }
                 state.trigger_order_resume = Some(TriggerOrderResume::AfterAttackers);
+                if !state.trigger_placement_deferred {
+                    state.invalidate_characteristics_cache();
+                    sba::check_state_based_actions(state);
+                }
+                if state.game_over { return true; }
                 let flushed = triggers::flush_triggers(state);
 
                 if flushed {
@@ -477,11 +612,11 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
 
         Action::OrderTriggers { ordering } => {
             if state.cleanup_discard_in_progress || state.trigger_placement_deferred {
-                return;
+                return false;
             }
             if state.pending_triggers.iter().any(|t|
                 t.controller == state.priority_player && t.context.zone_transition.is_some()) {
-                return;
+                return false;
             }
             let player = state.priority_player;
 
@@ -491,7 +626,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             let mut supplied = ordering.clone();
             expected.sort_unstable();
             supplied.sort_unstable();
-            if expected.len() <= 1 || supplied != expected { return; }
+            if expected.len() <= 1 || supplied != expected { return false; }
 
             // Place this player's triggers on the stack in the chosen order.
             for &(source_id, ability_index) in ordering {
@@ -507,43 +642,29 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
 
             // Continue flushing remaining triggers (the other player's).
             if triggers::flush_triggers(state) {
-                match state.trigger_order_resume.take().unwrap_or(TriggerOrderResume::AfterResolution) {
-                    TriggerOrderResume::AfterResolution => restore_priority_after_resolution(state),
-                    TriggerOrderResume::Player(player) => state.priority_player = player,
-                    TriggerOrderResume::AfterAttackers => {
-                        phases::transition_to_phase(state, Phase::DeclareBlockers);
-                        state.priority_player = state.next_player(state.active_player);
-                    }
-                }
+                resume_after_trigger_placement(state);
             }
         }
 
         Action::OrderTriggerOccurrences { ordering } => {
-            if state.cleanup_discard_in_progress || state.trigger_placement_deferred { return; }
+            if state.cleanup_discard_in_progress || state.trigger_placement_deferred { return false; }
             let player = state.priority_player;
             let expected: Vec<usize> = state.pending_triggers.iter().enumerate()
                 .filter(|(_, t)| t.controller == player)
                 .map(|(index, _)| index).collect();
             if expected.len() <= 1 || !expected.iter().any(|&index|
                 state.pending_triggers[index].context.zone_transition.is_some()) {
-                return;
+                return false;
             }
             let mut supplied = ordering.clone();
             supplied.sort_unstable();
-            if supplied != expected { return; }
+            if supplied != expected { return false; }
             let chosen: Vec<_> = ordering.iter().map(|&index|
                 state.pending_triggers[index].clone()).collect();
             for trigger in &chosen { triggers::push_trigger_to_stack(state, trigger); }
             state.pending_triggers.retain(|t| t.controller != player);
             if triggers::flush_triggers(state) {
-                match state.trigger_order_resume.take().unwrap_or(TriggerOrderResume::AfterResolution) {
-                    TriggerOrderResume::AfterResolution => restore_priority_after_resolution(state),
-                    TriggerOrderResume::Player(player) => state.priority_player = player,
-                    TriggerOrderResume::AfterAttackers => {
-                        phases::transition_to_phase(state, Phase::DeclareBlockers);
-                        state.priority_player = state.next_player(state.active_player);
-                    }
-                }
+                resume_after_trigger_placement(state);
             }
         }
 
@@ -570,7 +691,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 taxed_cost.generic += tax * 2;
                 let final_cost = mana::apply_cost_reduction(&taxed_cost, reduction);
                 if !mana::pay_cost(state, player, &final_cost, None) {
-                    return;
+                    return false;
                 }
             }
 
@@ -624,7 +745,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             };
             if let Some(cost) = equip_cost {
                 if !mana::pay_cost(state, player, &cost, None) {
-                    return;
+                    return false;
                 }
             }
 
@@ -711,7 +832,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                     let reduction = mana::total_cost_reduction(state, player, is_creature);
                     let reduced_cost = mana::apply_cost_reduction(fb_cost, reduction);
                     if !mana::pay_cost(state, player, &reduced_cost, None) {
-                        return;
+                        return false;
                     }
                 }
             } else if let Some(exile_count) = escape_exile_count {
@@ -720,7 +841,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                     let reduction = mana::total_cost_reduction(state, player, is_creature);
                     let reduced_cost = mana::apply_cost_reduction(cost, reduction);
                     if !mana::pay_cost(state, player, &reduced_cost, None) {
-                        return;
+                        return false;
                     }
                 }
                 // Exile N other cards from graveyard as additional cost
@@ -845,10 +966,6 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
             if let Some(combo) = combo {
                 crate::combo::apply_combo_effect(state, player, &combo);
                 state.consecutive_passes = 0;
-                // Immediately check if the combo ended the game (e.g., infinite
-                // damage killed the opponent). Without this, the game would keep
-                // offering actions until the next scheduled SBA check.
-                sba::check_state_based_actions(state);
             }
         }
 
@@ -857,6 +974,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
         }
 
     }
+    true
 }
 
 /// Check if a player controls a permanent with a given static ability.
@@ -988,6 +1106,9 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
 /// have had a chance to establish their mandatory chooser.
 pub(super) fn complete_stack_resolution(state: &mut GameState) {
     state.trigger_order_resume = Some(TriggerOrderResume::AfterResolution);
+    // Copies and abilities need not move a physical spell to invalidate the
+    // cache; their completed effects can still change dynamic characteristics.
+    state.invalidate_characteristics_cache();
     sba::check_state_based_actions(state);
     state.trigger_placement_deferred = false;
     if !state.pending_triggers.is_empty() && !triggers::flush_triggers(state) {
@@ -998,10 +1119,21 @@ pub(super) fn complete_stack_resolution(state: &mut GameState) {
 }
 
 fn restore_priority_after_resolution(state: &mut GameState) {
+    clear_lost_tutor_choice(state);
     if let Some(tutor) = &state.pending_tutor {
         state.priority_player = tutor.controller;
     } else if state.pending_copy_order.is_none() && state.pending_triggers.is_empty() {
-        state.priority_player = state.active_player;
+        state.priority_player = if state.players[state.active_player].has_lost {
+            state.next_player(state.active_player)
+        } else { state.active_player };
+    }
+}
+
+/// A completed settlement cannot offer a controller-owned choice to a player
+/// who has lost. Retire the choice without selecting or moving a library card.
+fn clear_lost_tutor_choice(state: &mut GameState) {
+    if state.pending_tutor.as_ref().is_some_and(|tutor| state.players[tutor.controller].has_lost) {
+        state.pending_tutor = None;
     }
 }
 

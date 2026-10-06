@@ -99,6 +99,7 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
                     inst.summoning_sick = false;
                 }
             }
+            state.invalidate_characteristics_cache();
             // Reset land plays (base 1 + extra from static abilities)
             let extra = count_extra_land_drops(state, active);
             state.players[active].land_plays_remaining = 1 + extra;
@@ -112,23 +113,40 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
 
         Phase::Draw => {
             state.priority_player = active;
+            let caller_deferred = std::mem::replace(&mut state.trigger_placement_deferred, true);
             // Active player draws a card (skip on turn 1 for first player in standard rules)
             if !(state.turn_number == 1 && active == 0) {
                 super::draw_cards(state, active, 1);
             }
+            state.trigger_placement_deferred = caller_deferred;
+            if !caller_deferred {
+                state.invalidate_characteristics_cache();
+                super::sba::check_state_based_actions(state);
+            }
             // A draw trigger may require another controller's mandatory order
             // choice. That choice restores active-player priority afterward.
             if state.pending_triggers.is_empty() {
-                state.priority_player = active;
+                state.priority_player = if state.players[active].has_lost {
+                    state.next_player(active)
+                } else { active };
             }
         }
 
         Phase::Upkeep => {
-            // Fire beginning-of-upkeep triggers.
+            // Untap has no priority window. Collect upkeep occurrences before
+            // settling its completed turn-based action at the first window.
             state.priority_player = active;
-            let flushed = super::triggers::fire_triggers(state, TriggerCondition::BeginningOfUpkeep, None);
-            if flushed {
-                state.priority_player = active;
+            let caller_deferred = std::mem::replace(&mut state.trigger_placement_deferred, true);
+            let _ = super::triggers::fire_triggers(state, TriggerCondition::BeginningOfUpkeep, None);
+            state.trigger_placement_deferred = caller_deferred;
+            if !caller_deferred {
+                state.invalidate_characteristics_cache();
+                super::sba::check_state_based_actions(state);
+            }
+            if state.pending_triggers.is_empty() {
+                state.priority_player = if state.players[active].has_lost {
+                    state.next_player(active)
+                } else { active };
             }
         }
 
@@ -161,6 +179,7 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
             if has_first_strike {
                 super::combat::resolve_combat_damage(state, true);
                 state.trigger_order_resume = Some(crate::game::TriggerOrderResume::AfterResolution);
+                state.invalidate_characteristics_cache();
                 super::sba::check_state_based_actions(state);
                 if state.pending_triggers.is_empty() {
                     state.trigger_order_resume = None;
@@ -175,6 +194,7 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
         Phase::CombatDamage => {
             super::combat::resolve_combat_damage(state, false);
             state.trigger_order_resume = Some(crate::game::TriggerOrderResume::AfterResolution);
+            state.invalidate_characteristics_cache();
             super::sba::check_state_based_actions(state);
             if state.pending_triggers.is_empty() {
                 state.trigger_order_resume = None;

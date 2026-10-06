@@ -7810,9 +7810,15 @@ fn test_2a_resolution_and_sba_triggers_share_later_placement_window() {
     use mtg_gto::card::Effect;
     let mut state = settlement_fixture(Effect::DrawCards { count: 1 });
     let draw_observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(990001, 0, ZoneType::Hand);
+    rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![] });
+    // Casting now settles too. Construct the unstable resolution fixture only
+    // afterward so this test still isolates resolution's shared SBA window.
     let doomed = state.create_card_in_zone(990004, 0, ZoneType::Battlefield);
     state.effective_toughness(doomed); // warm the characteristic cache
-    let spell = settlement_resolve(&mut state);
+    state.drain_events();
+    rules::apply_action(&mut state, &Action::PassPriority);
+    rules::apply_action(&mut state, &Action::PassPriority);
     assert!(!state.battlefield.contains(&doomed));
     let events = state.drain_events();
     let death = events.iter().position(|event| matches!(event,
@@ -8309,4 +8315,718 @@ fn test_2a_enclosing_resolution_retains_sba_placement_deferral() {
         vec!["death", "return", "death", "placement"]
     );
     assert_eq!(state.stack.len(), 1);
+}
+// Complete-action settlement fixtures deliberately use generic cards: these
+// tests exercise caller boundaries, not attachment or SBA rule corrections.
+fn boundary_2b3a_game() -> GameState {
+    use mtg_gto::mana::ManaCost;
+    use mtg_gto::card::{ActivatedAbility, CardDef, CardType, Effect, LoyaltyAbility, SacrificeCost};
+    use mtg_gto::layers::{AffectedObjects, StaticAbility};
+    let mut db = mtg_gto::game::CardDatabase::new();
+    db.insert(CardDef { id: 995001, name: "Boundary victim".into(),
+        card_types: vec![CardType::Creature], power: Some(1), toughness: Some(1),
+        ..Default::default() });
+    db.insert(CardDef { id: 995002, name: "Boundary equipment".into(),
+        card_types: vec![CardType::Artifact], equip_cost: Some(ManaCost::zero()),
+        static_abilities: vec![StaticAbility::Anthem { power: 0, toughness: -1,
+            affected: AffectedObjects::AttachedTo }], ..Default::default() });
+    db.insert(CardDef { id: 995003, name: "Boundary walker".into(),
+        card_types: vec![CardType::Planeswalker], starting_loyalty: Some(1),
+        loyalty_abilities: vec![LoyaltyAbility { cost: -1,
+            effect: Effect::GainLife { amount: 1 }, description: "minus".into() }],
+        ..Default::default() });
+    db.insert(CardDef { id: 995004, name: "Boundary cost source".into(),
+        card_types: vec![CardType::Artifact],
+        static_abilities: vec![StaticAbility::Anthem { power: 0, toughness: 1,
+            affected: AffectedObjects::AllCreatures }],
+        activated_abilities: vec![ActivatedAbility { cost: ManaCost::zero(),
+            requires_tap: false, sacrifice_cost: Some(SacrificeCost::SelfSacrifice),
+            life_cost: 1, effect: Effect::GainLife { amount: 3 }, description: "cost".into() }],
+        ..Default::default() });
+    let mut state = GameState::new(3);
+    state.card_db = Some(Arc::new(db));
+    state.phase = Phase::PreCombatMain;
+    state
+}
+
+#[test]
+fn test_2b3a_equip_settles_before_priority_and_legal_actions() {
+    let mut state = boundary_2b3a_game();
+    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    rules::apply_action(&mut state, &Action::Equip { equipment_id: equipment, target_id: victim });
+    assert!(state.players[0].graveyard.contains(&victim), "Equip must settle before returning");
+    assert_eq!(state.priority_player, 0);
+    assert!(!legal_actions(&state).iter().any(|a| matches!(a,
+        Action::Equip { target_id, .. } if *target_id == victim)));
+    rules::apply_action(&mut state, &Action::PassPriority);
+    assert_eq!(state.priority_player, 1);
+    assert!(!state.battlefield.contains(&victim));
+}
+
+#[test]
+fn test_2b3a_loyalty_cost_settles_after_ability_is_stacked() {
+    let mut state = boundary_2b3a_game();
+    let walker = state.create_card_in_zone(995003, 0, ZoneType::Battlefield);
+    state.objects.get_mut(&walker).unwrap().loyalty_counters = 1;
+    rules::apply_action(&mut state, &Action::ActivateLoyalty { object_id: walker, ability_index: 0 });
+    assert!(state.players[0].graveyard.contains(&walker));
+    assert!(matches!(state.stack[0].source, mtg_gto::game::StackSource::ActivatedAbility { source_id, .. } if source_id == walker));
+    assert_eq!(state.players[0].life, 20, "ability has not resolved");
+}
+
+#[test]
+fn test_2b3a_self_sacrifice_cost_settles_dependents_after_payment() {
+    let mut state = boundary_2b3a_game();
+    let source = state.create_card_in_zone(995004, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    state.objects.get_mut(&victim).unwrap().temp_toughness_mod = -1;
+    state.refresh_continuous_effects();
+    assert_eq!(state.effective_toughness(victim), 1);
+    rules::apply_action(&mut state, &Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] });
+    assert_eq!(state.players[0].life, 19);
+    assert!(state.players[0].graveyard.contains(&source));
+    assert!(state.players[0].graveyard.contains(&victim));
+    assert_eq!(state.stack.len(), 1, "cost and stacking complete before SBA");
+}
+
+#[test]
+fn test_2b3a_life_cost_settles_loss_before_return() {
+    let mut state = boundary_2b3a_game();
+    let source = state.create_card_in_zone(995004, 0, ZoneType::Battlefield);
+    state.players[0].life = 1;
+    rules::apply_action(&mut state, &Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] });
+    assert!(state.players[0].has_lost);
+    assert!(!state.stack.iter().any(|entry| entry.controller == 0), "existing elimination removes stacked ability");
+    assert_eq!(state.priority_player, 1);
+}
+
+#[test]
+fn test_2b3a_all_cast_zones_settle_cast_side_life_changes() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    for zone in [ZoneType::Hand, ZoneType::Command, ZoneType::Graveyard] {
+        let mut state = boundary_2b3a_game();
+        let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+        db.insert(CardDef { id: 995005, name: "Cast boundary".into(),
+            card_types: if zone == ZoneType::Command { vec![CardType::Creature] } else { vec![CardType::Instant] },
+            supertypes: if zone == ZoneType::Command { vec![mtg_gto::card::Supertype::Legendary] } else { vec![] },
+            mana_cost: Some(mtg_gto::mana::ManaCost::zero()),
+            flashback_cost: if zone == ZoneType::Graveyard { Some(mtg_gto::mana::ManaCost::zero()) } else { None },
+            power: Some(1), toughness: Some(1),
+            spell_effect: Some(Effect::GainLife { amount: 1 }), ..Default::default() });
+        db.insert(CardDef { id: 995006, name: "Cast observer".into(), card_types: vec![CardType::Enchantment],
+            keywords: vec![KeywordAbility::Extort], triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::YouCastSpell, effect: Effect::GainLife { amount: 1 }, description: "cast".into()
+            }], ..Default::default() });
+        state.create_card_in_zone(995006, 0, ZoneType::Battlefield);
+        let lost_permanent = state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
+        state.players[1].life = 1;
+        let spell = state.create_card_in_zone(995005, 0, zone);
+        if zone == ZoneType::Command {
+            state.format = mtg_gto::game::GameFormat::Commander;
+            state.players[0].commander_card_id = Some(995005);
+        }
+        let action = match zone {
+            ZoneType::Hand => Action::CastSpell { object_id: spell, targets: vec![] },
+            ZoneType::Command => Action::CastCommander { object_id: spell, targets: vec![] },
+            _ => Action::CastFromGraveyard { object_id: spell, targets: vec![] },
+        };
+        assert!(legal_actions(&state).contains(&action));
+        state.drain_events();
+        rules::apply_action(&mut state, &action);
+        assert!(state.players[1].has_lost);
+        assert!(state.players[1].exile.contains(&lost_permanent));
+        let events = state.drain_events();
+        let removal = events.iter().position(|e| matches!(e, GameEvent::ZoneChange { object, from: Zone::Battlefield, .. } if *object == lost_permanent)).unwrap();
+        let placement = events.iter().position(|e| matches!(e, GameEvent::AbilityTriggered { .. })).unwrap();
+        assert!(removal < placement, "cast consequences settle before placement");
+        assert_eq!(state.stack.len(), 2);
+        assert_eq!(state.priority_player, 0);
+    }
+}
+
+#[test]
+fn test_2b3a_attack_consequences_settle_before_ordering_and_progression() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    let mut state = boundary_2b3a_game();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    db.insert(CardDef { id: 995005, name: "Attacker".into(), card_types: vec![CardType::Creature],
+        power: Some(3), toughness: Some(3), annihilator_count: Some(1),
+        triggered_abilities: (0..2).map(|_| TriggeredAbility { trigger: TriggerCondition::Attacks,
+            effect: Effect::GainLife { amount: 1 }, description: "attack".into() }).collect(),
+        ..Default::default() });
+    state.phase = Phase::DeclareAttackers;
+    let attacker = state.create_card_in_zone(995005, 0, ZoneType::Battlefield);
+    let lord = state.create_card_in_zone(995004, 1, ZoneType::Battlefield);
+    let dependent = state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
+    state.objects.get_mut(&dependent).unwrap().temp_toughness_mod = -1;
+    state.refresh_continuous_effects();
+    assert_eq!(state.effective_toughness(dependent), 1);
+    rules::apply_action(&mut state, &Action::DeclareAttackers { attackers: vec![attacker] });
+    assert!(state.players[1].graveyard.contains(&lord));
+    assert!(state.players[1].graveyard.contains(&dependent));
+    assert_eq!(state.phase, Phase::DeclareAttackers);
+    assert_eq!(state.priority_player, 0);
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert!(legal_actions(&state).iter().all(|a| matches!(a, Action::OrderTriggers { .. } | Action::Concede)));
+    let order = legal_actions(&state).into_iter().find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+    rules::apply_action(&mut state, &order);
+    assert_eq!(state.phase, Phase::DeclareBlockers);
+    assert_eq!(state.priority_player, 1);
+}
+
+#[test]
+fn test_2b3a_multiple_children_do_not_settle_between_toughness_changes() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TargetSpec};
+    let mut state = boundary_2b3a_game();
+    Arc::make_mut(state.card_db.as_mut().unwrap()).insert(CardDef { id: 995005,
+        name: "Atomic toughness".into(), card_types: vec![CardType::Instant],
+        mana_cost: Some(mtg_gto::mana::ManaCost::zero()),
+        spell_effect: Some(Effect::Multiple(vec![
+            Effect::SetPowerToughness { power: 1, toughness: 0, until_eot: true, target: TargetSpec::AnyCreature },
+            Effect::Buff { power: 0, toughness: 1, until_eot: true },
+        ])), ..Default::default() });
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(995005, 0, ZoneType::Hand);
+    rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![Target::Object(victim)] });
+    for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
+    assert!(state.battlefield.contains(&victim), "zero only between effect children");
+    assert_eq!(state.effective_toughness(victim), 1);
+    assert!(!state.drain_events().iter().any(|e| matches!(e, GameEvent::ZoneChange { object, from: Zone::Battlefield, .. } if *object == victim)));
+}
+
+#[test]
+fn test_2b3a_draw_step_settles_loss_before_priority() {
+    let mut state = boundary_2b3a_game();
+    state.phase = Phase::Upkeep;
+    state.turn_number = 2;
+    let permanent = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
+    assert_eq!(state.phase, Phase::Draw);
+    assert!(state.players[0].has_lost);
+    assert!(state.players[0].exile.contains(&permanent));
+    assert_eq!(state.priority_player, 1);
+}
+
+#[test]
+fn test_2b3a_resolution_completion_restores_live_priority() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TargetSpec};
+    let mut state = boundary_2b3a_game();
+    Arc::make_mut(state.card_db.as_mut().unwrap()).insert(CardDef { id: 995005,
+        name: "Resolution priority".into(), card_types: vec![CardType::Instant],
+        mana_cost: Some(mtg_gto::mana::ManaCost::zero()),
+        spell_effect: Some(Effect::LoseLife { amount: 1, target: TargetSpec::Controller }),
+        ..Default::default() });
+    state.players[0].life = 1;
+    let spell = state.create_card_in_zone(995005, 0, ZoneType::Hand);
+    rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![] });
+    for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
+    assert!(state.players[0].has_lost);
+    assert_eq!(state.priority_player, 1);
+}
+
+#[test]
+fn test_2b3a_equip_roundtrips_before_action_and_counted_solver_boundary() {
+    let mut state = boundary_2b3a_game();
+    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    let action = Action::Equip { equipment_id: equipment, target_id: victim };
+    let mut snapshot = state.clone();
+    snapshot.restore(state.snapshot());
+    let mut variants = [state.clone(), snapshot,
+        serde_json::from_slice::<GameState>(&serde_json::to_vec(&state).unwrap()).unwrap(),
+        bincode::deserialize::<GameState>(&bincode::serialize(&state).unwrap()).unwrap()];
+    let mut outcomes = Vec::new();
+    for candidate in &mut variants {
+        candidate.card_db = state.card_db.clone();
+        let legal = legal_actions(candidate);
+        assert!(simulation::apply_counted_action(candidate, &action, &legal).unwrap());
+        assert!(candidate.players[0].graveyard.contains(&victim));
+        assert!(!legal_actions_abstracted(candidate).iter().any(|a| matches!(a, Action::Equip { target_id, .. } if *target_id == victim)));
+        rules::check_state_based_actions(candidate); // retained periodic check
+        outcomes.push(serde_json::to_value(&*candidate).unwrap());
+    }
+    assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
+}
+
+#[test]
+fn test_2b3a_failed_payment_does_not_settle_or_mutate() {
+    let mut state = boundary_2b3a_game();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut equipment = db.get(995002).unwrap().clone();
+    equipment.equip_cost = Some(mtg_gto::mana::ManaCost::new(1, 0, 0, 0, 0, 0));
+    db.insert(equipment);
+    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    state.objects.get_mut(&victim).unwrap().temp_toughness_mod = -1;
+    state.invalidate_characteristics_cache();
+    let before = bincode::serialize(&state).unwrap();
+    rules::apply_action(&mut state, &Action::Equip { equipment_id: equipment, target_id: victim });
+    assert_eq!(before, bincode::serialize(&state).unwrap());
+    assert!(state.battlefield.contains(&victim));
+}
+
+#[test]
+fn test_2b3a_partial_cleanup_does_not_enter_action_epilogue() {
+    let mut state = boundary_2b3a_game();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut victim_def = db.get(995001).unwrap().clone();
+    victim_def.toughness = Some(0);
+    db.insert(victim_def);
+    state.phase = Phase::Cleanup;
+    state.cleanup_discard_in_progress = true;
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    for _ in 0..9 { state.create_card_in_zone(995002, 0, ZoneType::Hand); }
+    let first = state.players[0].hand[0];
+    rules::apply_action(&mut state, &Action::Discard { object_id: first });
+    assert!(state.battlefield.contains(&victim));
+    assert_eq!(state.players[0].hand.len(), 8);
+    let mut snapshot = state.clone();
+    snapshot.restore(state.snapshot());
+    let mut variants = [state.clone(), snapshot,
+        serde_json::from_slice::<GameState>(&serde_json::to_vec(&state).unwrap()).unwrap(),
+        bincode::deserialize::<GameState>(&bincode::serialize(&state).unwrap()).unwrap()];
+    let mut outcomes = Vec::new();
+    for candidate in &mut variants {
+        candidate.card_db = state.card_db.clone();
+        let second = candidate.players[0].hand[0];
+        rules::apply_action(candidate, &Action::Discard { object_id: second });
+        assert!(candidate.players[0].graveyard.contains(&victim));
+        assert!(!candidate.cleanup_discard_in_progress);
+        outcomes.push(serde_json::to_value(&*candidate).unwrap());
+    }
+    assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
+}
+
+#[test]
+fn test_2b3a_equip_death_triggers_order_only_after_settlement() {
+    use mtg_gto::card::{Effect, TriggerCondition, TriggeredAbility};
+    let mut state = boundary_2b3a_game();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut victim_def = db.get(995001).unwrap().clone();
+    victim_def.triggered_abilities = (0..2).map(|_| TriggeredAbility { trigger: TriggerCondition::Dies,
+        effect: Effect::GainLife { amount: 1 }, description: "death".into() }).collect();
+    db.insert(victim_def);
+    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    rules::apply_action(&mut state, &Action::Equip { equipment_id: equipment, target_id: victim });
+    assert!(state.players[0].graveyard.contains(&victim));
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert!(state.stack.is_empty());
+    assert_eq!(state.priority_player, 0);
+    let legal = legal_actions(&state);
+    assert!(legal.iter().all(|a| matches!(a, Action::OrderTriggers { .. } | Action::Concede)));
+    let before = bincode::serialize(&state).unwrap();
+    rules::check_state_based_actions(&mut state);
+    assert_eq!(before, bincode::serialize(&state).unwrap(), "periodic recheck must not duplicate death");
+    rules::apply_action(&mut state, legal.iter().find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap());
+    assert_eq!(state.stack.len(), 2);
+    assert!(state.pending_triggers.is_empty());
+    assert_eq!(state.priority_player, 0);
+}
+
+#[test]
+fn test_2b3a_concession_during_ordering_resumes_on_live_player() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    let mut state = boundary_2b3a_game();
+    Arc::make_mut(state.card_db.as_mut().unwrap()).insert(CardDef { id: 995005,
+        name: "Ordering observer".into(), card_types: vec![CardType::Enchantment],
+        triggered_abilities: (0..2).map(|_| TriggeredAbility {
+            trigger: TriggerCondition::BeginningOfUpkeep, effect: Effect::GainLife { amount: 1 },
+            description: "order".into() }).collect(), ..Default::default() });
+    for player in [0, 1] {
+        let source = state.create_card_in_zone(995005, player, ZoneType::Battlefield);
+        for index in 0..2 { queue_test_trigger(&mut state, source, index, player); }
+    }
+    state.trigger_order_resume = Some(mtg_gto::game::TriggerOrderResume::Player(0));
+    rules::apply_action(&mut state, &Action::Concede);
+    assert!(state.players[0].has_lost);
+    assert_eq!(state.priority_player, 1);
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert_eq!(state.trigger_order_resume, Some(mtg_gto::game::TriggerOrderResume::Player(1)));
+    let order = legal_actions(&state).into_iter().find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+    rules::apply_action(&mut state, &order);
+    assert_eq!(state.priority_player, 1);
+    assert_eq!(state.stack.len(), 2);
+}
+
+#[cfg(feature = "tui")]
+#[test]
+fn test_2b3a_tui_equip_uses_shared_settlement_before_cached_actions() {
+    let mut state = boundary_2b3a_game();
+    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    let db = state.card_db().clone();
+    let mut app = mtg_gto::tui::App::new(state, db);
+    let index = app.cached_actions.iter().position(|a| matches!(a, Action::Equip { equipment_id, target_id } if *equipment_id == equipment && *target_id == victim)).unwrap();
+    app.execute_action(index);
+    assert!(app.state.players[0].graveyard.contains(&victim));
+    assert!(!app.cached_actions.iter().any(|a| matches!(a, Action::Equip { target_id, .. } if *target_id == victim)));
+}
+
+fn boundary_2b3a_dynamic_game(dynamic: mtg_gto::card::DynamicValue) -> GameState {
+    use mtg_gto::card::{CardDef, CardType, Effect, TargetSpec};
+    use mtg_gto::mana::ManaCost;
+    let mut state = boundary_2b3a_game();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    db.insert(CardDef { id: 995201, name: "Dynamic boundary creature".into(),
+        card_types: vec![CardType::Creature], power: Some(1), dynamic_toughness: Some(dynamic),
+        ..Default::default() });
+    db.insert(CardDef { id: 995202, name: "Boundary untap spell".into(),
+        card_types: vec![CardType::Instant], mana_cost: Some(ManaCost::zero()),
+        flashback_cost: Some(ManaCost::zero()),
+        spell_effect: Some(Effect::UntapTarget { target: TargetSpec::AnyCreature }),
+        ..Default::default() });
+    state
+}
+
+#[test]
+fn test_2b3a_cast_invalidates_cached_hand_and_graveyard_toughness() {
+    use mtg_gto::card::DynamicValue;
+    for zone in [ZoneType::Hand, ZoneType::Graveyard] {
+        let mut state = boundary_2b3a_dynamic_game(if zone == ZoneType::Hand {
+            DynamicValue::CardsInHand
+        } else { DynamicValue::CardTypesInGraveyards });
+        let victim = state.create_card_in_zone(995201, 0, ZoneType::Battlefield);
+        let target = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+        let spell = state.create_card_in_zone(995202, 0, zone);
+        assert_eq!(state.effective_toughness(victim), 1); // warm cache before payment
+        let targets = vec![Target::Object(target)];
+        let action = if zone == ZoneType::Hand {
+            Action::CastSpell { object_id: spell, targets }
+        } else { Action::CastFromGraveyard { object_id: spell, targets } };
+        assert!(legal_actions(&state).contains(&action));
+        rules::apply_action(&mut state, &action);
+        assert!(state.players[0].graveyard.contains(&victim));
+        assert_eq!(state.stack.len(), 1, "settlement follows the complete cast");
+        assert_eq!(state.priority_player, 0);
+    }
+}
+
+#[test]
+fn test_2b3a_spell_copy_resolution_invalidates_cached_tapped_toughness() {
+    use mtg_gto::card::DynamicValue;
+    let mut state = boundary_2b3a_dynamic_game(DynamicValue::TappedCreaturesControlled);
+    let victim = state.create_card_in_zone(995201, 0, ZoneType::Battlefield);
+    let target = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    state.objects.get_mut(&target).unwrap().tapped = true;
+    state.invalidate_characteristics_cache();
+    let spell = state.create_card_in_zone(995202, 0, ZoneType::Hand);
+    rules::apply_action(&mut state, &Action::CastSpell { object_id: spell,
+        targets: vec![Target::Object(target)] });
+    let original = state.stack[0].id;
+    rules::copy_stack_spell(&mut state, original, 0, rules::CopyTargetPolicy::Preserve).unwrap();
+    assert_eq!(state.effective_toughness(victim), 1);
+    for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
+    assert!(!state.objects[&target].tapped);
+    assert!(state.players[0].graveyard.contains(&victim));
+    assert_eq!(state.stack.len(), 1);
+    assert_eq!(state.stack[0].id, original, "only the copy completed");
+    assert_eq!(state.priority_player, 0);
+}
+
+#[test]
+fn test_2b3a_untap_settles_at_upkeep_before_priority_and_trigger_order() {
+    use mtg_gto::card::{DynamicValue, Effect, TriggerCondition, TriggeredAbility};
+    let mut state = boundary_2b3a_dynamic_game(DynamicValue::TappedCreaturesControlled);
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut def = db.get(995201).unwrap().clone();
+    def.triggered_abilities = [TriggerCondition::BeginningOfUpkeep, TriggerCondition::Dies]
+        .into_iter().map(|trigger| TriggeredAbility { trigger,
+            effect: Effect::GainLife { amount: 1 }, description: "boundary".into() }).collect();
+    db.insert(def);
+    let victim = state.create_card_in_zone(995201, 0, ZoneType::Battlefield);
+    let target = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    state.objects.get_mut(&target).unwrap().tapped = true;
+    state.invalidate_characteristics_cache();
+    assert_eq!(state.effective_toughness(victim), 1);
+    state.active_player = 2;
+    state.priority_player = 2;
+    state.phase = Phase::EndStep;
+    for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
+    assert_eq!(state.phase, Phase::Upkeep);
+    assert!(!state.objects[&target].tapped);
+    assert!(state.players[0].graveyard.contains(&victim));
+    assert_eq!(state.pending_triggers.len(), 2, "upkeep and death share the placement window");
+    assert!(state.stack.is_empty());
+    let legal = legal_actions(&state);
+    assert!(legal.iter().all(|a| matches!(a, Action::OrderTriggers { .. } | Action::Concede)));
+    rules::apply_action(&mut state, legal.iter().find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap());
+    assert_eq!(state.priority_player, 0);
+    assert_eq!(state.stack.len(), 2);
+}
+
+fn boundary_2b3a_review_roundtrips(state: &GameState) -> [GameState; 4] {
+    let mut snapshot = state.clone();
+    snapshot.restore(state.snapshot());
+    let mut variants = [state.clone(), snapshot,
+        serde_json::from_slice::<GameState>(&serde_json::to_vec(state).unwrap()).unwrap(),
+        bincode::deserialize::<GameState>(&bincode::serialize(state).unwrap()).unwrap()];
+    for candidate in &mut variants { candidate.card_db = state.card_db.clone(); }
+    variants
+}
+
+fn boundary_2b3a_review_wither_combat(first_strike: bool) {
+    use mtg_gto::card::{CardDef, CardType};
+    let mut state = boundary_2b3a_game();
+    state.phase = Phase::DeclareAttackers;
+    Arc::make_mut(state.card_db.as_mut().unwrap()).insert(CardDef { id: 996001,
+        name: "Boundary Wither attacker".into(), card_types: vec![CardType::Creature],
+        power: Some(1), toughness: Some(4), keywords: if first_strike {
+            vec![KeywordAbility::Wither, KeywordAbility::FirstStrike]
+        } else { vec![KeywordAbility::Wither] }, ..Default::default() });
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut blocker_def = db.get(995001).unwrap().clone();
+    blocker_def.power = Some(0);
+    db.insert(blocker_def);
+    let attacker = state.create_card_in_zone(996001, 0, ZoneType::Battlefield);
+    let blocker = state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
+    state.objects.get_mut(&attacker).unwrap().summoning_sick = false;
+    state.objects.get_mut(&blocker).unwrap().summoning_sick = false;
+    let attack = Action::DeclareAttackers { attackers: vec![attacker] };
+    assert!(legal_actions(&state).contains(&attack));
+    rules::apply_action(&mut state, &attack);
+    let block = Action::DeclareBlockers { blocks: vec![(blocker, attacker)] };
+    assert!(legal_actions(&state).contains(&block));
+    assert_eq!(state.effective_toughness(blocker), 1); // pre-damage cache
+    rules::apply_action(&mut state, &block);
+    assert!(state.players[1].graveyard.contains(&blocker), "complete damage must evaluate fresh toughness");
+    assert!(!state.battlefield.contains(&blocker));
+    assert_eq!(state.phase, if first_strike { Phase::FirstStrikeDamage } else { Phase::CombatDamage });
+    assert_eq!(state.priority_player, 0);
+    let before = serde_json::to_value(&state).unwrap();
+    rules::check_state_based_actions(&mut state);
+    assert_eq!(before, serde_json::to_value(&state).unwrap());
+}
+
+#[test]
+fn test_2b3a_review_ordinary_wither_damage_refreshes_completion_cache() {
+    boundary_2b3a_review_wither_combat(false);
+}
+
+#[test]
+fn test_2b3a_review_first_strike_wither_damage_refreshes_completion_cache() {
+    boundary_2b3a_review_wither_combat(true);
+}
+
+#[test]
+fn test_2b3a_review_draw_loss_ordering_restores_live_priority_in_all_roundtrips() {
+    use mtg_gto::card::{Effect, TriggerCondition, TriggeredAbility};
+    let mut state = boundary_2b3a_game();
+    state.phase = Phase::Upkeep;
+    state.turn_number = 2;
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    let mut victim = db.get(995001).unwrap().clone();
+    victim.toughness = Some(0);
+    victim.triggered_abilities = (0..2).map(|_| TriggeredAbility {
+        trigger: TriggerCondition::Dies, effect: Effect::GainLife { amount: 1 },
+        description: "draw-loss boundary".into() }).collect();
+    db.insert(victim);
+    state.create_card_in_zone(995004, 0, ZoneType::Battlefield);
+    let dependent = state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
+    state.refresh_continuous_effects();
+    assert_eq!(state.effective_toughness(dependent), 1);
+    for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
+    assert_eq!(state.phase, Phase::Draw);
+    assert!(state.players[0].has_lost);
+    assert!(state.players[1].graveyard.contains(&dependent));
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert_eq!(state.priority_player, 1);
+    let mut outcomes = Vec::new();
+    for mut candidate in boundary_2b3a_review_roundtrips(&state) {
+        let order = legal_actions(&candidate).into_iter().find(|a|
+            matches!(a, Action::OrderTriggers { .. })).unwrap();
+        rules::apply_action(&mut candidate, &order);
+        assert_eq!(candidate.priority_player, 1);
+        assert!(!candidate.players[candidate.priority_player].has_lost);
+        assert!(candidate.pending_triggers.is_empty());
+        assert!(candidate.trigger_order_resume.is_none());
+        assert_eq!(candidate.stack.len(), 2);
+        outcomes.push(serde_json::to_value(&candidate).unwrap());
+    }
+    assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
+}
+
+#[test]
+fn test_2b3a_review_last_chooser_concession_finishes_attack_continuation() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    let mut state = boundary_2b3a_game();
+    state.phase = Phase::DeclareAttackers;
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    db.insert(CardDef { id: 996002, name: "Boundary annihilator".into(),
+        card_types: vec![CardType::Creature], power: Some(2), toughness: Some(3),
+        annihilator_count: Some(1), ..Default::default() });
+    let mut victim = db.get(995001).unwrap().clone();
+    victim.toughness = Some(0);
+    victim.triggered_abilities = (0..2).map(|_| TriggeredAbility {
+        trigger: TriggerCondition::Dies, effect: Effect::GainLife { amount: 1 },
+        description: "attack boundary".into() }).collect();
+    db.insert(victim);
+    let attacker = state.create_card_in_zone(996002, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(995004, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
+    state.refresh_continuous_effects();
+    state.objects.get_mut(&attacker).unwrap().summoning_sick = false;
+    let attack = Action::DeclareAttackers { attackers: vec![attacker] };
+    assert!(legal_actions(&state).contains(&attack));
+    rules::apply_action(&mut state, &attack);
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert_eq!(state.priority_player, 1);
+    assert_eq!(state.trigger_order_resume, Some(mtg_gto::game::TriggerOrderResume::AfterAttackers));
+    let mut outcomes = Vec::new();
+    for mut candidate in boundary_2b3a_review_roundtrips(&state) {
+        rules::apply_action(&mut candidate, &Action::Concede);
+        assert!(candidate.players[1].has_lost);
+        assert!(candidate.pending_triggers.is_empty());
+        assert_eq!(candidate.phase, Phase::DeclareBlockers);
+        assert_eq!(candidate.priority_player, 2);
+        assert!(candidate.trigger_order_resume.is_none());
+        assert!(legal_actions(&candidate).contains(&Action::DeclareBlockers { blocks: vec![] }));
+        let settled = serde_json::to_value(&candidate).unwrap();
+        rules::check_state_based_actions(&mut candidate);
+        assert_eq!(settled, serde_json::to_value(&candidate).unwrap());
+        outcomes.push(settled);
+    }
+    assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
+}
+
+#[test]
+fn test_2b3a_review_last_chooser_concession_finishes_resolution_continuation() {
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    let mut state = boundary_2b3a_game();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    db.insert(CardDef { id: 996003, name: "Boundary draw observer".into(),
+        card_types: vec![CardType::Enchantment], triggered_abilities: (0..2).map(|_| TriggeredAbility {
+            trigger: TriggerCondition::OpponentDrawsCard, effect: Effect::GainLife { amount: 1 },
+            description: "resolution boundary".into() }).collect(), ..Default::default() });
+    db.insert(CardDef { id: 996004, name: "Boundary draw spell".into(),
+        card_types: vec![CardType::Sorcery], mana_cost: Some(mtg_gto::mana::ManaCost::zero()),
+        spell_effect: Some(Effect::DrawCards { count: 1 }), ..Default::default() });
+    state.create_card_in_zone(996003, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(995001, 0, ZoneType::Library);
+    let spell = state.create_card_in_zone(996004, 0, ZoneType::Hand);
+    let cast = Action::CastSpell { object_id: spell, targets: vec![] };
+    assert!(legal_actions(&state).contains(&cast));
+    rules::apply_action(&mut state, &cast);
+    for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert_eq!(state.priority_player, 1);
+    assert_eq!(state.trigger_order_resume, Some(mtg_gto::game::TriggerOrderResume::AfterResolution));
+    let mut outcomes = Vec::new();
+    for mut candidate in boundary_2b3a_review_roundtrips(&state) {
+        rules::apply_action(&mut candidate, &Action::Concede);
+        assert!(candidate.players[1].has_lost);
+        assert!(candidate.pending_triggers.is_empty());
+        assert_eq!(candidate.priority_player, 0);
+        assert!(candidate.trigger_order_resume.is_none());
+        assert!(candidate.stack.is_empty());
+        let settled = serde_json::to_value(&candidate).unwrap();
+        rules::check_state_based_actions(&mut candidate);
+        assert_eq!(settled, serde_json::to_value(&candidate).unwrap());
+        outcomes.push(settled);
+    }
+    assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
+}
+
+fn boundary_2b3a_tutor_ordering_window(victim_controller: usize) -> (GameState, u64) {
+    use mtg_gto::card::{CardDef, CardType, Effect, Subtype, TargetSpec, TriggerCondition, TriggeredAbility};
+    let mut state = boundary_2b3a_game();
+    let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+    db.insert(CardDef { id: 997001, name: "Tutor boundary victim".into(),
+        card_types: vec![CardType::Creature], power: Some(1), toughness: Some(1),
+        triggered_abilities: (0..2).map(|_| TriggeredAbility {
+            trigger: TriggerCondition::Dies, effect: Effect::GainLife { amount: 1 },
+            description: "tutor boundary".into() }).collect(), ..Default::default() });
+    db.insert(CardDef { id: 997002, name: "Tutor boundary Forest".into(),
+        card_types: vec![CardType::Land], subtypes: vec![Subtype("Forest".into())],
+        ..Default::default() });
+    db.insert(CardDef { id: 997003, name: "Destroy then search boundary".into(),
+        card_types: vec![CardType::Sorcery], mana_cost: Some(mtg_gto::mana::ManaCost::zero()),
+        spell_effect: Some(Effect::Multiple(vec![
+            Effect::DestroyTarget { target: TargetSpec::AnyCreature },
+            Effect::SearchLibrary { destination: ZoneType::Hand,
+                subtype_filter: vec![Subtype("Forest".into())] },
+        ])), ..Default::default() });
+    let victim = state.create_card_in_zone(997001, victim_controller, ZoneType::Battlefield);
+    let forest = state.create_card_in_zone(997002, 0, ZoneType::Library);
+    let spell = state.create_card_in_zone(997003, 0, ZoneType::Hand);
+    let cast = Action::CastSpell { object_id: spell, targets: vec![Target::Object(victim)] };
+    assert!(legal_actions(&state).contains(&cast));
+    rules::apply_action(&mut state, &cast);
+    for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
+    assert_eq!(state.pending_tutor.as_ref().unwrap().controller, 0);
+    assert_eq!(state.pending_triggers.len(), 2);
+    assert_eq!(state.priority_player, victim_controller);
+    assert_eq!(state.trigger_order_resume, Some(mtg_gto::game::TriggerOrderResume::AfterResolution));
+    (state, forest)
+}
+
+#[test]
+fn test_2b3a_eliminated_tutor_controller_cannot_resume_choice_after_concession() {
+    let mut failures = Vec::new();
+    for order_first in [false, true] {
+        let (state, forest) = boundary_2b3a_tutor_ordering_window(0);
+        let mut outcomes = Vec::new();
+        for (index, mut candidate) in boundary_2b3a_review_roundtrips(&state).into_iter().enumerate() {
+            if order_first {
+                let order = legal_actions(&candidate).into_iter().find(|a|
+                    matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap();
+                rules::apply_action(&mut candidate, &order);
+                assert_eq!(candidate.priority_player, 0);
+                assert!(candidate.pending_tutor.is_some());
+                assert!(candidate.trigger_order_resume.is_none());
+            }
+            assert!(legal_actions(&candidate).contains(&Action::Concede));
+            rules::apply_action(&mut candidate, &Action::Concede);
+            assert!(candidate.players[0].has_lost);
+            assert!(!candidate.game_over);
+            assert!(candidate.pending_triggers.is_empty());
+            assert!(candidate.trigger_order_resume.is_none());
+            let exposes_tutor = legal_actions(&candidate).iter().any(|a|
+                matches!(a, Action::ChooseTutorTarget { .. }));
+            if candidate.priority_player != 1 || candidate.pending_tutor.is_some() || exposes_tutor {
+                failures.push((order_first, index, candidate.priority_player, exposes_tutor));
+            }
+            assert!(candidate.players.iter().all(|player| !player.hand.contains(&forest)),
+                "retiring a lost player's choice must not select or transfer a card");
+            let settled = serde_json::to_value(&candidate).unwrap();
+            rules::check_state_based_actions(&mut candidate);
+            assert_eq!(settled, serde_json::to_value(&candidate).unwrap());
+            outcomes.push(settled);
+        }
+        assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
+    }
+    assert!(failures.is_empty(), "lost tutor continuation exposed after complete concession: {failures:?}");
+}
+
+#[test]
+fn test_2b3a_live_tutor_continuation_survives_ordering_or_other_chooser_concession() {
+    for victim_controller in [0, 1] {
+        let (state, forest) = boundary_2b3a_tutor_ordering_window(victim_controller);
+        let mut outcomes = Vec::new();
+        for mut candidate in boundary_2b3a_review_roundtrips(&state) {
+            if victim_controller == 0 {
+                let order = legal_actions(&candidate).into_iter().find(|a|
+                    matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap();
+                rules::apply_action(&mut candidate, &order);
+            } else {
+                rules::apply_action(&mut candidate, &Action::Concede);
+                assert!(candidate.players[1].has_lost);
+            }
+            assert_eq!(candidate.priority_player, 0);
+            assert!(!candidate.players[0].has_lost);
+            assert_eq!(candidate.pending_tutor.as_ref().unwrap().controller, 0);
+            assert!(candidate.pending_triggers.is_empty());
+            assert!(candidate.trigger_order_resume.is_none());
+            let choose = Action::ChooseTutorTarget { card_id: 997002 };
+            assert!(legal_actions(&candidate).contains(&choose));
+            rules::apply_action(&mut candidate, &choose);
+            assert!(candidate.pending_tutor.is_none());
+            assert!(candidate.players[0].hand.contains(&forest));
+            assert!(!candidate.players[0].library.contains(&forest));
+            assert_eq!(candidate.priority_player, 0);
+            outcomes.push(serde_json::to_value(&candidate).unwrap());
+        }
+        assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
+    }
 }
