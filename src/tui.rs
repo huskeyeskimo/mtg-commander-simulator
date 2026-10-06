@@ -153,7 +153,7 @@ impl App {
         for &z in ZONE_ORDER {
             zone_cursors.insert(z, 0);
         }
-        App {
+        let mut app = App {
             state,
             db,
             goldfish: GoldfishStrategy,
@@ -168,7 +168,9 @@ impl App {
             status_log: vec!["Game started. WASD to navigate, Space to act, Q to quit.".into()],
 
             should_quit: false,
-        }
+        };
+        if app.state.gameplay_stopped() { app.auto_advance(); }
+        app
     }
 
     /// Number of items in the given zone.
@@ -226,7 +228,7 @@ impl App {
     /// Auto-advance: handle goldfish turns and auto-pass situations.
     pub fn auto_advance(&mut self) {
         let mut passes = 0;
-        while !self.state.game_over
+        while !self.state.gameplay_stopped()
             && self.state.turn_number <= MAX_TURNS
             && self.actions_taken < MAX_ACTIONS
             && passes < 200
@@ -266,19 +268,27 @@ impl App {
 
         self.refresh_actions();
 
-        if self.state.game_over {
+        if self.state.gameplay_stopped() {
             self.mode = UiMode::GameOver;
-            let msg = match self.state.winner {
-                Some(0) => format!("YOU WIN on turn {}!", self.state.turn_number),
-                Some(_) => format!("You lost on turn {}.", self.state.turn_number),
-                None => "Draw (turn limit reached).".into(),
+            let msg = if self.state.unsupported_continuing_elimination() {
+                "INVALID reason=unsupported_continuing_elimination".into()
+            } else {
+                match self.state.winner {
+                    Some(0) => format!("YOU WIN on turn {}!", self.state.turn_number),
+                    Some(_) => format!("You lost on turn {}.", self.state.turn_number),
+                    None => "RULES DRAW.".into(),
+                }
             };
-            self.status_log.push(msg);
+            if self.status_log.last() != Some(&msg) { self.status_log.push(msg); }
         }
     }
 
     /// Execute the chosen action index.
     pub fn execute_action(&mut self, idx: usize) {
+        if self.state.gameplay_stopped() {
+            self.auto_advance();
+            return;
+        }
         if idx >= self.cached_actions.len() {
             return;
         }
@@ -298,11 +308,15 @@ impl App {
         rules::apply_action(&mut self.state, &action);
         self.actions_taken += 1;
 
-        rules::check_state_based_actions(&mut self.state);
+        if !self.state.gameplay_stopped() {
+            rules::check_state_based_actions(&mut self.state);
+        }
 
         self.auto_advance();
 
-        self.mode = UiMode::Browse;
+        if !self.state.gameplay_stopped() {
+            self.mode = UiMode::Browse;
+        }
     }
 
     pub fn undo(&mut self) {
@@ -1373,7 +1387,7 @@ pub fn generate_snapshots(preset: &str, cols: u16, rows: u16) -> Vec<(Scenario, 
     // Execute up to 5 actions using a greedy approach
     let greedy = crate::strategy::GreedyStrategy;
     for _ in 0..5 {
-        if app.state.game_over || app.cached_actions.is_empty() {
+        if app.state.gameplay_stopped() || app.cached_actions.is_empty() {
             break;
         }
         let action = greedy.choose_action(&app.state, 0);
@@ -1404,4 +1418,52 @@ pub fn generate_snapshots(preset: &str, cols: u16, rows: u16) -> Vec<(Scenario, 
     ));
 
     snapshots
+}
+
+#[cfg(test)]
+mod loss_boundary_ui_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_ui_stops_before_cached_action_undo_or_advance() {
+        let mut state = GameState::new(3);
+        state.players[0].has_lost = true;
+        state.turn_number = u32::MAX;
+        let before = bincode::serialize(&state).unwrap();
+        let mut app = App::new(state, CardDatabase::new());
+        app.cached_actions = vec![Action::PassPriority];
+        app.execute_action(0);
+        assert!(matches!(app.mode, UiMode::GameOver));
+        assert!(app.cached_actions.is_empty());
+        assert!(app.undo_stack.is_empty());
+        assert_eq!(app.actions_taken, 0);
+        assert!(app.status_log.last().unwrap().contains(
+            "INVALID reason=unsupported_continuing_elimination"));
+        assert_eq!(bincode::serialize(&app.state).unwrap(), before);
+    }
+
+    #[test]
+    fn terminal_execution_preserves_game_over_mode() {
+        let db = CardDatabase::new();
+        let mut state = GameState::new(2);
+        state.card_db = Some(std::sync::Arc::new(db.clone()));
+        let mut app = App::new(state, db);
+        app.cached_actions = vec![Action::Concede];
+        app.execute_action(0);
+        assert!(app.state.game_over);
+        assert!(matches!(app.mode, UiMode::GameOver));
+        assert!(app.cached_actions.is_empty());
+    }
+
+    #[test]
+    fn legacy_terminal_draw_is_labeled_rules_draw_without_advancing() {
+        let mut state = GameState::new(2);
+        state.game_over = true;
+        let before = bincode::serialize(&state).unwrap();
+        let mut app = App::new(state, CardDatabase::new());
+        app.auto_advance();
+        assert!(matches!(app.mode, UiMode::GameOver));
+        assert_eq!(app.status_log.last().unwrap(), "RULES DRAW.");
+        assert_eq!(bincode::serialize(&app.state).unwrap(), before);
+    }
 }

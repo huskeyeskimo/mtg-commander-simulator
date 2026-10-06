@@ -5,7 +5,7 @@ use crate::layers::StaticAbility;
 
 /// Handle when priority is passed (may resolve stack or advance phase).
 pub(super) fn handle_priority_pass(state: &mut GameState) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     let num_players = state.players.len() as u32;
 
     if state.consecutive_passes >= num_players {
@@ -33,7 +33,7 @@ pub(super) fn handle_priority_pass(state: &mut GameState) {
 /// Each Phase variant represents a step or phase boundary. Mana empties when
 /// crossing it (CR 106.4), never merely when passing priority or resolving.
 pub(super) fn transition_to_phase(state: &mut GameState, next: Phase) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     if state.phase != next {
         for player in &mut state.players {
             player.mana_pool.drain();
@@ -44,7 +44,7 @@ pub(super) fn transition_to_phase(state: &mut GameState, next: Phase) {
 
 /// Advance to the next phase.
 pub(super) fn advance_phase(state: &mut GameState) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     let current_idx = Phase::TURN_ORDER
         .iter()
         .position(|&p| p == state.phase)
@@ -80,7 +80,7 @@ pub(super) fn execute_phase_entry_public(state: &mut GameState) {
 
 /// Execute actions when entering a new phase.
 pub(super) fn execute_phase_entry(state: &mut GameState) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     let active = state.active_player;
 
     match state.phase {
@@ -122,6 +122,7 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
             if !caller_deferred {
                 state.invalidate_characteristics_cache();
                 super::sba::check_state_based_actions(state);
+                if state.gameplay_stopped() { return; }
             }
             // A draw trigger may require another controller's mandatory order
             // choice. That choice restores active-player priority afterward.
@@ -142,6 +143,7 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
             if !caller_deferred {
                 state.invalidate_characteristics_cache();
                 super::sba::check_state_based_actions(state);
+                if state.gameplay_stopped() { return; }
             }
             if state.pending_triggers.is_empty() {
                 state.priority_player = if state.players[active].has_lost {
@@ -181,6 +183,7 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
                 state.trigger_order_resume = Some(crate::game::TriggerOrderResume::AfterResolution);
                 state.invalidate_characteristics_cache();
                 super::sba::check_state_based_actions(state);
+                if state.gameplay_stopped() { return; }
                 if state.pending_triggers.is_empty() {
                     state.trigger_order_resume = None;
                     state.priority_player = active;
@@ -196,6 +199,7 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
             state.trigger_order_resume = Some(crate::game::TriggerOrderResume::AfterResolution);
             state.invalidate_characteristics_cache();
             super::sba::check_state_based_actions(state);
+            if state.gameplay_stopped() { return; }
             if state.pending_triggers.is_empty() {
                 state.trigger_order_resume = None;
                 state.priority_player = active;
@@ -231,9 +235,13 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
 }
 
 pub(super) fn finalize_cleanup(state: &mut GameState) {
-    if state.pending_copy_order.is_some() {
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() {
         return;
     }
+    // An already applicable loss ends/rejects this settlement before cleanup
+    // can mutate permanents. Losses caused by the completed cleanup itself
+    // are still checked below after its end-of-turn consequences.
+    if super::loss::adjudicate(state, None) { return; }
     state.cleanup_discard_in_progress = false;
     let caller_deferred = std::mem::replace(&mut state.trigger_placement_deferred, true);
     // Remove end-of-turn continuous effects (layer engine)
@@ -246,6 +254,7 @@ pub(super) fn finalize_cleanup(state: &mut GameState) {
     }
     let had_sba = super::sba::check_state_based_actions(state);
     state.trigger_placement_deferred = caller_deferred;
+    if state.gameplay_stopped() { return; }
     let had_triggers = !state.pending_triggers.is_empty();
     if !caller_deferred && had_triggers {
         let _ = super::triggers::flush_triggers(state);
@@ -263,6 +272,11 @@ pub(super) fn finalize_cleanup(state: &mut GameState) {
 
 /// Move to the next turn.
 fn next_turn(state: &mut GameState) {
+    if state.gameplay_stopped() { return; }
+    state.loss_boundary.turns_taken.resize(state.players.len(), 0);
+    if state.loss_boundary.turns_taken.iter().all(|turns| *turns == 0) {
+        state.loss_boundary.turns_taken[state.active_player] = 1;
+    }
     state.cleanup_discard_in_progress = false;
     // Clear skip_phases from the ending turn
     state.skip_phases.clear();
@@ -276,6 +290,7 @@ fn next_turn(state: &mut GameState) {
 
     state.priority_player = state.active_player;
     state.turn_number += 1;
+    state.loss_boundary.turns_taken[state.active_player] += 1;
     transition_to_phase(state, Phase::TURN_ORDER[0]); // Untap
     state.consecutive_passes = 0;
     state.spells_cast_this_turn = 0;

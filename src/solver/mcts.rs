@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use crate::action::{legal_actions, Action};
 use crate::game::{GameFormat, GameState, Phase, PlayerIndex};
 use crate::rules;
-use crate::simulation::{format_action_name, format_hand};
+use crate::simulation::{format_action_name, format_hand, TerminationReason};
 use crate::strategy::{GoldfishStrategy, GreedyStrategy, Strategy};
 
 /// Maximum turns for goldfish MCTS games (matches simulation module).
@@ -264,17 +264,31 @@ fn format_starting_life(format: GameFormat) -> i32 {
 /// When `config.num_threads > 1`, uses root parallelization: each thread
 /// builds an independent tree with a share of the iterations, then results
 /// are merged by summing per-action visit counts and rewards.
+/// Legacy action-only search interface: unsupported continuations fail explicitly.
 pub(crate) fn mcts_search(
     state: &GameState,
     config: &MctsConfig,
     root: &mut MctsNode,
 ) -> Option<Action> {
+    try_mcts_search(state, config, root)
+        .unwrap_or_else(|reason| panic!("INVALID reason={}", reason.code()))
+}
+
+fn try_mcts_search(
+    state: &GameState,
+    config: &MctsConfig,
+    root: &mut MctsNode,
+) -> Result<Option<Action>, TerminationReason> {
+    if state.unsupported_continuing_elimination() {
+        return Err(TerminationReason::UnsupportedContinuingElimination);
+    }
+    if state.gameplay_stopped() { return Ok(None); }
     let actions = legal_actions(state);
     if actions.is_empty() {
-        return Some(Action::PassPriority);
+        return Ok(Some(Action::PassPriority));
     }
     if actions.len() == 1 {
-        return Some(actions[0].clone());
+        return Ok(Some(actions[0].clone()));
     }
 
     let num_threads = config.num_threads.max(1);
@@ -294,7 +308,7 @@ fn mcts_search_single(
     config: &MctsConfig,
     root: &mut MctsNode,
     actions: &[Action],
-) -> Option<Action> {
+) -> Result<Option<Action>, TerminationReason> {
     // Expand root if needed
     if !root.is_expanded() {
         expand_node(root, actions);
@@ -306,13 +320,13 @@ fn mcts_search_single(
     for _ in 0..config.iterations_per_move {
         // Clone the state for this iteration (each iteration modifies state)
         let mut sim_state = state.clone();
-        let reward = tree_walk(&mut sim_state, root, config, &greedy, &goldfish, 0);
+        let reward = tree_walk(&mut sim_state, root, config, &greedy, &goldfish, 0)?;
         root.visits += 1;
         root.total_reward += reward;
     }
 
     // Select the action with the most visits (most robust child)
-    best_action_by_visits(root)
+    Ok(best_action_by_visits(root))
 }
 
 /// Parallel MCTS search using root parallelization.
@@ -344,18 +358,18 @@ fn mcts_search_parallel(
     root: &mut MctsNode,
     actions: &[Action],
     num_threads: u32,
-) -> Option<Action> {
+) -> Result<Option<Action>, TerminationReason> {
     let iters_per_thread = config.iterations_per_move / num_threads;
     let remainder = config.iterations_per_move % num_threads;
 
     // Each thread runs its own tree search and returns per-action (visits, total_reward).
-    let thread_results: Vec<Vec<(u32, f64)>> = (0..num_threads)
+    let thread_results: Result<Vec<Vec<(u32, f64)>>, TerminationReason> = (0..num_threads)
         .into_par_iter()
         .map(|thread_idx| {
             // First `remainder` threads get one extra iteration
             let my_iters = iters_per_thread + if thread_idx < remainder { 1 } else { 0 };
             if my_iters == 0 {
-                return vec![(0, 0.0); actions.len()];
+                return Ok(vec![(0, 0.0); actions.len()]);
             }
 
             let mut thread_root = MctsNode::new();
@@ -379,13 +393,13 @@ fn mcts_search_parallel(
                     &greedy,
                     &goldfish,
                     0,
-                );
+                )?;
                 thread_root.visits += 1;
                 thread_root.total_reward += reward;
             }
 
             // Extract per-action stats
-            thread_root
+            Ok(thread_root
                 .children
                 .as_ref()
                 .map(|children| {
@@ -394,9 +408,10 @@ fn mcts_search_parallel(
                         .map(|c| (c.node.visits, c.node.total_reward))
                         .collect()
                 })
-                .unwrap_or_else(|| vec![(0, 0.0); actions.len()])
+                .unwrap_or_else(|| vec![(0, 0.0); actions.len()]))
         })
         .collect();
+    let thread_results = thread_results?;
 
     // Merge results: sum visits and rewards per action across all threads
     let num_actions = actions.len();
@@ -431,7 +446,7 @@ fn mcts_search_parallel(
     }
 
     // Select the action with the most total visits across all trees
-    best_action_by_visits(root)
+    Ok(best_action_by_visits(root))
 }
 
 /// Perform one MCTS iteration: select → expand → simulate → backpropagate.
@@ -449,11 +464,14 @@ fn tree_walk(
     rollout_strategy: &dyn Strategy,
     goldfish_strategy: &GoldfishStrategy,
     depth: u32,
-) -> f64 {
+) -> Result<f64, TerminationReason> {
     // Advance past forced passes and goldfish turns iteratively.
     // This loop replaces what was previously tail-recursion through
     // non-decision states, preventing O(phases × turns) stack depth.
     loop {
+        if state.unsupported_continuing_elimination() {
+            return Err(TerminationReason::UnsupportedContinuingElimination);
+        }
         // Terminal check
         if state.game_over || state.turn_number > GOLDFISH_MAX_TURNS {
             let sl = format_starting_life(state.format);
@@ -462,7 +480,7 @@ fn tree_walk(
             } else {
                 0.0
             };
-            return goldfish_reward(state.winner, state.turn_number, state.players[1].life, sl, combo_bonus);
+            return Ok(goldfish_reward(state.winner, state.turn_number, state.players[1].life, sl, combo_bonus));
         }
 
         // Depth limit — switch to rollout
@@ -539,13 +557,13 @@ fn tree_walk(
         rollout_strategy,
         goldfish_strategy,
         depth + 1,
-    );
+    )?;
 
     // Backpropagate
     children[child_idx].node.visits += 1;
     children[child_idx].node.total_reward += reward;
 
-    reward
+    Ok(reward)
 }
 
 /// Expand a node by creating child entries for each legal action.
@@ -567,10 +585,13 @@ fn rollout(
     rollout_strategy: &dyn Strategy,
     goldfish_strategy: &GoldfishStrategy,
     config: &MctsConfig,
-) -> f64 {
+) -> Result<f64, TerminationReason> {
+    if state.unsupported_continuing_elimination() {
+        return Err(TerminationReason::UnsupportedContinuingElimination);
+    }
     let mut actions_taken: u32 = 0;
 
-    while !state.game_over
+    while !state.gameplay_stopped()
         && state.turn_number <= GOLDFISH_MAX_TURNS
         && actions_taken < config.max_rollout_actions
     {
@@ -594,18 +615,21 @@ fn rollout(
         rules::apply_action(state, &action);
         actions_taken += 1;
 
-        if actions_taken % 10 == 0 {
+        if !state.gameplay_stopped() && actions_taken % 10 == 0 {
             rules::check_state_based_actions(state);
         }
     }
 
+    if state.unsupported_continuing_elimination() {
+        return Err(TerminationReason::UnsupportedContinuingElimination);
+    }
     let sl = format_starting_life(state.format);
     let combo_bonus = if let Some(ref registry) = state.combo_registry {
         crate::combo::combo_proximity_bonus(state, 0, registry)
     } else {
         0.0
     };
-    goldfish_reward(state.winner, state.turn_number, state.players[1].life, sl, combo_bonus)
+    Ok(goldfish_reward(state.winner, state.turn_number, state.players[1].life, sl, combo_bonus))
 }
 
 /// Select the action with the highest visit count (most robust child selection).
@@ -644,6 +668,9 @@ impl MctsStrategy {
 
 impl Strategy for MctsStrategy {
     fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Action {
+        assert!(!state.unsupported_continuing_elimination(),
+            "INVALID reason=unsupported_continuing_elimination");
+        assert!(!state.gameplay_stopped(), "MCTS action requested for stopped gameplay");
         // MCTS only makes sense for the pilot (player 0)
         if player != 0 {
             return GoldfishStrategy.choose_action(state, player);
@@ -712,6 +739,7 @@ fn apply_mcts_game_action(
     rejected_in_row: &mut u32,
 ) -> Result<bool, crate::simulation::GameOutcome> {
     use crate::simulation::{GameOutcome, TerminationReason};
+    let accepted_before = state.loss_boundary.accepted_actions;
     match crate::simulation::apply_counted_action(state, action, legal) {
         Ok(true) => {
             *actions_taken += 1;
@@ -726,7 +754,11 @@ fn apply_mcts_game_action(
                 Ok(false)
             }
         }
-        Err(reason) => Err(GameOutcome::Invalid(reason)),
+        Err(reason) => {
+            crate::simulation::count_completed_unsupported_actions(
+                state, accepted_before, reason, actions_taken);
+            Err(GameOutcome::Invalid(reason))
+        }
     }
 }
 
@@ -746,6 +778,9 @@ pub struct MctsGameResult {
     /// Buffered verbose trace lines (only populated when verbose=true).
     #[serde(skip)]
     pub trace_lines: Vec<String>,
+    /// Appended provenance; absent JSON fields default, old binary layouts are uncertified.
+    #[serde(default)]
+    pub loss_boundary: crate::game::LossBoundary,
 }
 
 /// Statistics for a single MCTS decision point.
@@ -780,7 +815,7 @@ pub fn run_mcts_goldfish_game(
     let mut interrupted = None;
     let mut rejected_in_row = 0u32;
 
-    while !state.game_over
+    while !state.gameplay_stopped()
         && state.winner.is_none()
         && state.turn_number <= GOLDFISH_MAX_TURNS
         && actions_taken < GOLDFISH_MAX_ACTIONS
@@ -852,8 +887,13 @@ pub fn run_mcts_goldfish_game(
             actions[0].clone()
         } else {
             let mut root = MctsNode::new();
-            let best = mcts_search(state, config, &mut root)
-                .unwrap_or(Action::PassPriority);
+            let best = match try_mcts_search(state, config, &mut root) {
+                Ok(action) => action.unwrap_or(Action::PassPriority),
+                Err(reason) => {
+                    interrupted = Some(crate::simulation::GameOutcome::Invalid(reason));
+                    break;
+                }
+            };
 
             // Collect decision statistics
             if let Some(children) = &root.children {
@@ -903,7 +943,7 @@ pub fn run_mcts_goldfish_game(
             Err(outcome) => { interrupted = Some(outcome); break; }
         }
 
-        if actions_taken % 10 == 0 {
+        if !state.gameplay_stopped() && actions_taken % 10 == 0 {
             rules::check_state_based_actions(state);
         }
     }
@@ -918,6 +958,7 @@ pub fn run_mcts_goldfish_game(
         final_life: [state.players[0].life, state.players[1].life],
         decision_stats,
         trace_lines,
+        loss_boundary: state.loss_boundary.clone(),
     }
 }
 
@@ -1333,6 +1374,7 @@ impl From<LegacyMctsGameResult> for MctsGameResult {
             final_life: old.final_life,
             decision_stats: old.decision_stats,
             trace_lines: old.trace_lines,
+            loss_boundary: Default::default(),
         }
     }
 }
@@ -1602,6 +1644,7 @@ mod tests {
                 num_legal_actions: 1, best_action_visits: 1, best_action_avg_reward: 0.7,
                 action_description: "measured".into(), pilot_hand: vec![] }],
             trace_lines: vec![],
+            loss_boundary: Default::default(),
         });
         let mixed = MctsGoldfishResults::from(legacy).merge(&current.results);
         assert_eq!(mixed.total_games, 3);
@@ -1622,6 +1665,7 @@ mod tests {
                 won: true, outcome: MctsOutcome::Win, kill_turn: 5,
                 actions_taken: actions, final_life: [20, 0],
                 decision_stats: vec![], trace_lines: vec![],
+                loss_boundary: Default::default(),
             });
             if actions == 200 {
                 assert_eq!(campaign.results.avg_actions, Some(150.0));
@@ -1685,6 +1729,7 @@ mod tests {
             decision_stats: vec![DecisionStat { turn: 4, phase: Phase::PreCombatMain,
                 num_legal_actions: 1, best_action_visits: 1, best_action_avg_reward: 0.5,
                 action_description: "new".into(), pilot_hand: vec![] }], trace_lines: vec![],
+            loss_boundary: Default::default(),
         });
         let mixed = migrated.merge(&current.results);
         assert_eq!((mixed.avg_actions, mixed.actions_samples), (Some(90.0), 2));
@@ -1765,6 +1810,7 @@ mod tests {
             decision_stats: vec![DecisionStat { turn: 4, phase: Phase::PreCombatMain,
                 num_legal_actions: 1, best_action_visits: 1, best_action_avg_reward: 0.5,
                 action_description: "measured".into(), pilot_hand: vec![] }], trace_lines: vec![],
+            loss_boundary: Default::default(),
         });
         let mixed = migrated.merge(&current.results);
         assert_eq!((mixed.wins, mixed.avg_actions, mixed.actions_samples), (2, Some(100.0), 1));
@@ -1809,6 +1855,7 @@ mod tests {
                     num_legal_actions: 1, best_action_visits: 1, best_action_avg_reward: 0.0,
                     action_description: "measured zero reward".into(), pilot_hand: vec![] }],
                 trace_lines: vec![],
+                loss_boundary: Default::default(),
             }],
         };
         let dir = std::env::temp_dir().join(format!("mcts-v2-partial-{}", std::process::id()));
@@ -1824,7 +1871,8 @@ mod tests {
         assert_eq!((loaded.results.avg_decisions_per_game, loaded.results.decision_samples), (Some(1.0), 1));
         assert_eq!((loaded.results.avg_best_reward, loaded.results.reward_samples), (Some(0.0), 1));
         loaded.add_game(MctsGameResult { won: true, outcome: MctsOutcome::Win, kill_turn: 3,
-            actions_taken: 100, final_life: [20, 0], decision_stats: vec![], trace_lines: vec![] });
+            actions_taken: 100, final_life: [20, 0], decision_stats: vec![], trace_lines: vec![],
+            loss_boundary: Default::default(), });
         assert_eq!((loaded.results.wins, loaded.results.actions_samples, loaded.results.avg_actions),
             (3, 2, Some(90.0)));
         assert_eq!((loaded.results.avg_best_reward, loaded.results.reward_samples), (Some(0.0), 1));
@@ -1901,6 +1949,7 @@ mod tests {
             game_results: vec![MctsGameResult {
                 won: true, outcome: MctsOutcome::Win, kill_turn: 4, actions_taken: 80,
                 final_life: [20, 0], decision_stats: decisions, trace_lines: vec![],
+                loss_boundary: Default::default(),
             }],
         };
         let mut bytes = b"MCTSCAMP2".to_vec();
@@ -1937,6 +1986,7 @@ mod tests {
             won: true, outcome: MctsOutcome::Win, kill_turn: 4,
             actions_taken: 0, final_life: [20, 0],
             decision_stats: vec![], trace_lines: vec![],
+            loss_boundary: Default::default(),
         });
         let mixed = historical.merge(&current.results);
         assert_eq!((mixed.avg_actions, mixed.actions_samples), (Some(0.0), 1));
@@ -1986,6 +2036,7 @@ mod tests {
                     best_action_visits: 1, best_action_avg_reward: 0.5,
                     action_description: "current".into(), pilot_hand: vec![],
                 }], trace_lines: vec![],
+                loss_boundary: Default::default(),
             });
             let merged = restored.merge(&current.results);
             assert_eq!((merged.wins, merged.avg_actions, merged.actions_samples),
@@ -2008,9 +2059,11 @@ mod tests {
             },
             game_results: vec![
                 MctsGameResult { won: true, outcome: MctsOutcome::Win, kill_turn: 5,
-                    actions_taken: 30, final_life: [20, 0], decision_stats: vec![], trace_lines: vec![] },
+                    actions_taken: 30, final_life: [20, 0], decision_stats: vec![], trace_lines: vec![],
+                    loss_boundary: Default::default(), },
                 MctsGameResult { won: false, outcome: MctsOutcome::LegacyUnknown, kill_turn: 8,
-                    actions_taken: 10, final_life: [20, 20], decision_stats: vec![], trace_lines: vec![] },
+                    actions_taken: 10, final_life: [20, 20], decision_stats: vec![], trace_lines: vec![],
+                    loss_boundary: Default::default(), },
             ],
         };
         let dir = std::env::temp_dir().join(format!("mcts-v2-migration-{}", std::process::id()));
@@ -2082,6 +2135,7 @@ mod tests {
                 final_life: [20, 20],
                 decision_stats: Vec::new(),
                 trace_lines: Vec::new(),
+                loss_boundary: Default::default(),
             });
         }
         assert_eq!(campaign.results.total_games, 7);
@@ -2100,7 +2154,8 @@ mod tests {
             MctsOutcome::LegacyUnknown] {
             campaign.add_game(MctsGameResult { won: outcome == MctsOutcome::Win, outcome,
                 kill_turn: 5, actions_taken: 10, final_life: [20, 20],
-                decision_stats: Vec::new(), trace_lines: Vec::new() });
+                decision_stats: Vec::new(), trace_lines: Vec::new(),
+                loss_boundary: Default::default(), });
         }
         let dir = std::env::temp_dir().join(format!("mcts-v2-{}", std::process::id()));
         campaign.save(dir.to_str().unwrap()).unwrap();
@@ -2586,5 +2641,202 @@ mod tests {
         let path = std::path::Path::new("/tmp/nonexistent_mcts_ckpt_12345.json");
         let result = MctsGoldfishResults::load_checkpoint(path);
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod loss_boundary_search_tests {
+    use super::*;
+
+    fn unsupported_resume() -> GameState {
+        let mut state = GameState::new(3);
+        state.players[0].has_lost = true;
+        state.turn_number = u32::MAX;
+        state.loss_boundary.accepted_actions = 77;
+        state
+    }
+
+    #[test]
+    fn unsupported_search_and_rollout_reject_before_cache_reward_or_horizon() {
+        let mut state = unsupported_resume();
+        let before = bincode::serialize(&state).unwrap();
+        let config = MctsConfig { max_rollout_actions: 0, ..Default::default() };
+        let mut root = MctsNode::new();
+        assert_eq!(try_mcts_search(&state, &config, &mut root),
+            Err(TerminationReason::UnsupportedContinuingElimination));
+        assert_eq!(tree_walk(&mut state, &mut root, &config,
+            &GreedyStrategy, &GoldfishStrategy, u32::MAX),
+            Err(TerminationReason::UnsupportedContinuingElimination));
+        assert_eq!(rollout(&mut state, &GreedyStrategy, &GoldfishStrategy, &config),
+            Err(TerminationReason::UnsupportedContinuingElimination));
+        assert_eq!(root.visits, 0);
+        assert_eq!(root.total_reward, 0.0);
+        assert!(root.children.is_none());
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
+    }
+
+    #[test]
+    fn unsupported_mcts_runner_is_invalid_before_horizon_without_decisions() {
+        let mut state = unsupported_resume();
+        let before = bincode::serialize(&state).unwrap();
+        let result = run_mcts_goldfish_game(&mut state, &MctsConfig::default(), false, None);
+        assert_eq!(result.outcome, MctsOutcome::Invalid);
+        assert!(!result.won);
+        assert_eq!(result.actions_taken, 0);
+        assert!(result.decision_stats.is_empty());
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
+    }
+
+    #[test]
+    fn unsupported_child_does_not_backpropagate_a_reward() {
+        let mut db = crate::game::CardDatabase::new();
+        db.insert(crate::card::CardDef { id: 987_001, name: "Land".into(),
+            card_types: vec![crate::card::CardType::Land], ..Default::default() });
+        let mut state = GameState::new(3);
+        state.card_db = Some(std::sync::Arc::new(db));
+        state.phase = Phase::PreCombatMain;
+        state.create_card_in_zone(987_001, 0, crate::card::ZoneType::Hand);
+        assert!(legal_actions(&state).len() > 1);
+        let mut root = MctsNode::new();
+        expand_node(&mut root, &[Action::Concede]);
+        assert_eq!(tree_walk(&mut state, &mut root, &MctsConfig::default(),
+            &GreedyStrategy, &GoldfishStrategy, 0),
+            Err(TerminationReason::UnsupportedContinuingElimination));
+        let child = &root.children.as_ref().unwrap()[0].node;
+        assert_eq!(child.visits, 0);
+        assert_eq!(child.total_reward, 0.0);
+    }
+
+    #[test]
+    fn legacy_terminal_search_exposes_no_action_or_cache_work() {
+        let mut state = GameState::new(2);
+        state.game_over = true;
+        let mut root = MctsNode::new();
+        assert_eq!(try_mcts_search(&state, &MctsConfig::default(), &mut root), Ok(None));
+        assert!(root.children.is_none());
+    }
+}
+
+#[cfg(test)]
+mod returned_loss_provenance_tests {
+    use super::*;
+    use crate::game::{LossCause, LossCoordinates, LossFact};
+
+    #[test]
+    fn mcts_result_retains_exact_terminal_and_unsupported_provenance_in_roundtrips() {
+        for players in [2, 3] {
+            let mut state = GameState::new(players);
+            state.turn_number = 11;
+            state.active_player = 1;
+            state.priority_player = 1;
+            state.phase = Phase::PreCombatMain;
+            state.loss_boundary.accepted_actions = 23;
+            state.loss_boundary.turns_taken = vec![5; players];
+            state.players[0].poison_counters = 10;
+            rules::check_state_based_actions(&mut state);
+            let expected = state.loss_boundary.clone();
+            let facts = vec![LossFact { player: 0, causes: vec![LossCause::Poison] }];
+            let coordinates = LossCoordinates { global_turn: 11, active_seat: 1,
+                player_turns: vec![5; players], phase: Phase::PreCombatMain, action_index: 23 };
+            if players == 2 {
+                let record = expected.terminal.as_ref().expect("supported terminal loss");
+                assert_eq!(record.losses, facts);
+                assert_eq!(record.coordinates, coordinates);
+            } else {
+                let record = expected.unsupported.as_ref().expect("unsupported continuing loss");
+                assert_eq!(record.losses, facts);
+                assert_eq!(record.coordinates, coordinates);
+            }
+            let result = run_mcts_goldfish_game(&mut state, &MctsConfig::default(), false, None);
+            assert_eq!(result.outcome, if players == 2 { MctsOutcome::Loss } else { MctsOutcome::Invalid });
+            assert_eq!(result.loss_boundary, expected);
+            let json_result: MctsGameResult = serde_json::from_str(
+                &serde_json::to_string(&result).unwrap()).unwrap();
+            let binary_result: MctsGameResult = bincode::deserialize(
+                &bincode::serialize(&result).unwrap()).unwrap();
+            for restored in [json_result, binary_result] {
+                assert_eq!(restored.outcome, result.outcome);
+                assert_eq!(restored.loss_boundary, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn missing_result_provenance_in_old_json_defaults_without_inventing_facts() {
+        let mut state = GameState::new(2);
+        state.game_over = true;
+        let result = run_mcts_goldfish_game(&mut state, &MctsConfig::default(), false, None);
+        let mut json = serde_json::to_value(&result).unwrap();
+        json.as_object_mut().unwrap().remove("loss_boundary");
+        let restored: MctsGameResult = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.outcome, MctsOutcome::Draw);
+        assert_eq!(restored.loss_boundary, crate::game::LossBoundary::default());
+    }
+}
+
+#[cfg(test)]
+mod completed_invalid_action_tests {
+    use super::*;
+    use crate::card::{ActivatedAbility, CardDef, CardType, Effect, ZoneType};
+    use crate::game::{CardDatabase, LossCause};
+    use crate::mana::ManaCost;
+    use std::sync::Arc;
+
+    fn life_cost_state() -> (GameState, Action) {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 987_102, name: "Life-cost artifact".into(),
+            card_types: vec![CardType::Artifact], activated_abilities: vec![ActivatedAbility {
+                cost: ManaCost::zero(), requires_tap: false, sacrifice_cost: None,
+                life_cost: 1, effect: Effect::GainLife { amount: 1 }, description: "Pay 1 life".into(),
+            }], ..Default::default() });
+        let mut state = GameState::new(3);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::PreCombatMain;
+        state.players[0].life = 1;
+        state.loss_boundary.accepted_actions = 41;
+        let source = state.create_card_in_zone(987_102, 0, ZoneType::Battlefield);
+        (state, Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] })
+    }
+
+    #[test]
+    fn mcts_adapter_counts_completed_invalid_action_without_importing_global_history() {
+        let (mut state, action) = life_cost_state();
+        let legal = legal_actions(&state);
+        assert!(legal.contains(&action));
+        let mut actions_taken = 0;
+        let mut rejected = 0;
+        assert_eq!(apply_mcts_game_action(&mut state, &action, &legal,
+            &mut actions_taken, &mut rejected),
+            Err(crate::simulation::GameOutcome::Invalid(
+                TerminationReason::UnsupportedContinuingElimination)));
+        assert_eq!(actions_taken, 1);
+        assert_eq!(rejected, 0);
+        assert_eq!(state.loss_boundary.accepted_actions, 42);
+        let record = state.loss_boundary.unsupported.as_ref().unwrap();
+        assert_eq!(record.coordinates.action_index, 42);
+        assert_eq!(record.losses[0].causes, vec![LossCause::LifeTotal]);
+        let before = bincode::serialize(&state).unwrap();
+        assert!(apply_mcts_game_action(&mut state, &Action::PassPriority, &[],
+            &mut actions_taken, &mut rejected).is_err());
+        assert_eq!(actions_taken, 1);
+        assert_eq!(rejected, 0);
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
+    }
+
+    #[test]
+    fn mcts_runner_counts_its_live_life_cost_stop_as_one_action() {
+        let (mut state, action) = life_cost_state();
+        // With no sampling, the existing visit tie-break chooses the final
+        // legal action. This isolates live action application from hypothetical
+        // search branches, which must fail without counting a real action.
+        assert_eq!(legal_actions(&state).last(), Some(&action));
+        let config = MctsConfig { iterations_per_move: 0, ..Default::default() };
+        let result = run_mcts_goldfish_game(&mut state, &config, false, None);
+        assert_eq!(result.outcome, MctsOutcome::Invalid);
+        assert_eq!(result.actions_taken, 1);
+        assert_eq!(result.loss_boundary.accepted_actions, 42);
+        let record = result.loss_boundary.unsupported.unwrap();
+        assert_eq!(record.coordinates.action_index, 42);
+        assert_eq!(record.losses[0].causes, vec![LossCause::LifeTotal]);
     }
 }

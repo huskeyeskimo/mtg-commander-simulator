@@ -24,6 +24,7 @@ pub enum TerminationReason {
     RejectedAction,
     StateEncoding,
     InvalidTerminalState,
+    UnsupportedContinuingElimination,
 }
 
 impl TerminationReason {
@@ -36,6 +37,7 @@ impl TerminationReason {
             Self::RejectedAction => "rejected_action",
             Self::StateEncoding => "state_encoding",
             Self::InvalidTerminalState => "invalid_terminal_state",
+            Self::UnsupportedContinuingElimination => "unsupported_continuing_elimination",
         }
     }
 }
@@ -65,6 +67,9 @@ impl std::fmt::Display for GameOutcome {
 
 pub(crate) fn classify_outcome(state: &GameState, max_turns: u32, max_actions: u32, actions: u32,
     interrupted: Option<GameOutcome>) -> GameOutcome {
+    if state.unsupported_continuing_elimination() {
+        return GameOutcome::Invalid(TerminationReason::UnsupportedContinuingElimination);
+    }
     if state.winner.is_some_and(|winner| !state.game_over || winner >= state.players.len()) {
         return GameOutcome::Invalid(TerminationReason::InvalidTerminalState);
     }
@@ -96,7 +101,9 @@ pub fn invalid_cleanup_state(state: &GameState) -> bool {
 }
 
 pub(crate) fn no_progress_outcome(state: &GameState) -> GameOutcome {
-    if invalid_cleanup_state(state) {
+    if state.gameplay_stopped() {
+        classify_outcome(state, u32::MAX, u32::MAX, 0, None)
+    } else if invalid_cleanup_state(state) {
         GameOutcome::Invalid(TerminationReason::IncompleteCleanup)
     } else {
         GameOutcome::Stalled(TerminationReason::NoProgress)
@@ -109,11 +116,43 @@ pub(crate) const MAX_REJECTED_IN_ROW: u32 = 3;
 /// reject a proposal without mutating the canonical state.
 pub fn apply_counted_action(state: &mut GameState, action: &crate::action::Action,
     legal: &[crate::action::Action]) -> Result<bool, TerminationReason> {
-    if !legal.contains(action) { return Ok(false); }
-    let before = bincode::serialize(state).map_err(|_| TerminationReason::StateEncoding)?;
+    if state.unsupported_continuing_elimination() {
+        return Err(TerminationReason::UnsupportedContinuingElimination);
+    }
+    if state.gameplay_stopped() || !legal.contains(action) { return Ok(false); }
+    let accepted_before = state.loss_boundary.accepted_actions;
+    // Top-level engine accounting already compares canonical mutation exactly.
+    // Nested contexts intentionally do not increment that counter, so retain
+    // the original comparison there (including its encoding-error behavior).
+    let before = if state.loss_action_in_progress {
+        Some(bincode::serialize(state).map_err(|_| TerminationReason::StateEncoding)?)
+    } else { None };
     rules::apply_action(state, action);
-    let after = bincode::serialize(state).map_err(|_| TerminationReason::StateEncoding)?;
-    Ok(before != after)
+    if state.unsupported_continuing_elimination() {
+        return Err(TerminationReason::UnsupportedContinuingElimination);
+    }
+    if let Some(before) = before {
+        let after = bincode::serialize(state).map_err(|_| TerminationReason::StateEncoding)?;
+        Ok(before != after)
+    } else {
+        // Inequality also preserves the existing release overflow behavior.
+        Ok(accepted_before != state.loss_boundary.accepted_actions)
+    }
+}
+
+/// Preserve runner-local budgets when the completed action itself stops an
+/// unsupported game. Restored global counts only contribute their new delta.
+pub(crate) fn count_completed_unsupported_actions(
+    state: &GameState,
+    accepted_before: u64,
+    reason: TerminationReason,
+    actions_taken: &mut u32,
+) {
+    if reason == TerminationReason::UnsupportedContinuingElimination {
+        let accepted = state.loss_boundary.accepted_actions.saturating_sub(accepted_before);
+        *actions_taken = actions_taken.saturating_add(
+            u32::try_from(accepted).unwrap_or(u32::MAX));
+    }
 }
 
 /// Result of a single simulated game.
@@ -126,6 +165,8 @@ pub struct GameResult {
     /// Proposals that left canonical game state unchanged; excluded from the action budget.
     pub rejected_actions: u32,
     pub final_life: [i32; 2],
+    /// Loss facts and coordinates retained after the runner drops its state.
+    pub loss_boundary: crate::game::LossBoundary,
 }
 
 /// Aggregate results from many simulated games.
@@ -295,7 +336,7 @@ fn run_game_loop(
     let mut rejected_in_row: u32 = 0;
     let mut interrupted = None;
 
-    while !state.game_over && state.turn_number <= MAX_TURNS && actions_taken < MAX_ACTIONS {
+    while !state.gameplay_stopped() && state.turn_number <= MAX_TURNS && actions_taken < MAX_ACTIONS {
         if invalid_cleanup_state(state) {
             interrupted = Some(GameOutcome::Invalid(TerminationReason::IncompleteCleanup));
             break;
@@ -311,10 +352,15 @@ fn run_game_loop(
                 break;
             }
             let action = crate::action::Action::PassPriority;
+            let accepted_before = state.loss_boundary.accepted_actions;
             match apply_counted_action(state, &action, &actions) {
                 Ok(true) => { actions_taken += 1; rejected_in_row = 0; }
                 Ok(false) => { rejected_actions += 1; rejected_in_row += 1; }
-                Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
+                Err(reason) => {
+                    count_completed_unsupported_actions(state, accepted_before, reason, &mut actions_taken);
+                    interrupted = Some(GameOutcome::Invalid(reason));
+                    break;
+                }
             }
             if rejected_in_row >= MAX_REJECTED_IN_ROW {
                 interrupted = Some(GameOutcome::Stalled(TerminationReason::RejectedAction));
@@ -330,17 +376,22 @@ fn run_game_loop(
             log_action(state, &action, player);
         }
 
+        let accepted_before = state.loss_boundary.accepted_actions;
         let advanced = match apply_counted_action(state, &action, &actions) {
             Ok(true) => { actions_taken += 1; rejected_in_row = 0; true }
             Ok(false) => { rejected_actions += 1; rejected_in_row += 1; false }
-            Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
+            Err(reason) => {
+                count_completed_unsupported_actions(state, accepted_before, reason, &mut actions_taken);
+                interrupted = Some(GameOutcome::Invalid(reason));
+                break;
+            }
         };
         if rejected_in_row >= MAX_REJECTED_IN_ROW {
             interrupted = Some(GameOutcome::Stalled(TerminationReason::RejectedAction));
             break;
         }
 
-        if advanced && actions_taken.is_multiple_of(10) {
+        if advanced && !state.gameplay_stopped() && actions_taken.is_multiple_of(10) {
             rules::check_state_based_actions(state);
         }
     }
@@ -352,6 +403,7 @@ fn run_game_loop(
         actions_taken,
         rejected_actions,
         final_life: [state.players[0].life, state.players[1].life],
+        loss_boundary: state.loss_boundary.clone(),
     }
 }
 
@@ -646,7 +698,7 @@ pub(crate) fn run_goldfish_loop(
     let mut rejected_in_row: u32 = 0;
     let mut interrupted = None;
 
-    while !state.game_over
+    while !state.gameplay_stopped()
         && state.turn_number <= GOLDFISH_MAX_TURNS
         && actions_taken < GOLDFISH_MAX_ACTIONS
     {
@@ -660,7 +712,14 @@ pub(crate) fn run_goldfish_loop(
                 Ok(bytes) => bytes,
                 Err(_) => { interrupted = Some(GameOutcome::Invalid(TerminationReason::StateEncoding)); break; }
             };
+            let accepted_before = state.loss_boundary.accepted_actions;
             let advanced = rules::fast_forward_goldfish_turn(state);
+            if state.unsupported_continuing_elimination() {
+                count_completed_unsupported_actions(state, accepted_before,
+                    TerminationReason::UnsupportedContinuingElimination, &mut actions_taken);
+                interrupted = Some(GameOutcome::Invalid(TerminationReason::UnsupportedContinuingElimination));
+                break;
+            }
             if advanced == 0 {
                 interrupted = Some(no_progress_outcome(state));
                 break;
@@ -685,10 +744,15 @@ pub(crate) fn run_goldfish_loop(
                 break;
             }
             let action = crate::action::Action::PassPriority;
+            let accepted_before = state.loss_boundary.accepted_actions;
             match apply_counted_action(state, &action, &actions) {
                 Ok(true) => { actions_taken += 1; rejected_in_row = 0; }
                 Ok(false) => { rejected_actions += 1; rejected_in_row += 1; }
-                Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
+                Err(reason) => {
+                    count_completed_unsupported_actions(state, accepted_before, reason, &mut actions_taken);
+                    interrupted = Some(GameOutcome::Invalid(reason));
+                    break;
+                }
             }
             if rejected_in_row >= MAX_REJECTED_IN_ROW {
                 interrupted = Some(GameOutcome::Stalled(TerminationReason::RejectedAction));
@@ -703,17 +767,22 @@ pub(crate) fn run_goldfish_loop(
             log_action(state, &action, player);
         }
 
+        let accepted_before = state.loss_boundary.accepted_actions;
         let advanced = match apply_counted_action(state, &action, &actions) {
             Ok(true) => { actions_taken += 1; rejected_in_row = 0; true }
             Ok(false) => { rejected_actions += 1; rejected_in_row += 1; false }
-            Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
+            Err(reason) => {
+                count_completed_unsupported_actions(state, accepted_before, reason, &mut actions_taken);
+                interrupted = Some(GameOutcome::Invalid(reason));
+                break;
+            }
         };
         if rejected_in_row >= MAX_REJECTED_IN_ROW {
             interrupted = Some(GameOutcome::Stalled(TerminationReason::RejectedAction));
             break;
         }
 
-        if advanced && actions_taken.is_multiple_of(10) {
+        if advanced && !state.gameplay_stopped() && actions_taken.is_multiple_of(10) {
             rules::check_state_based_actions(state);
         }
     }
@@ -725,6 +794,7 @@ pub(crate) fn run_goldfish_loop(
         actions_taken,
         rejected_actions,
         final_life: [state.players[0].life, state.players[1].life],
+        loss_boundary: state.loss_boundary.clone(),
     }
 }
 
@@ -1321,7 +1391,8 @@ mod cleanup_continuation_tests {
     #[test]
     fn mixed_attempts_use_completed_game_denominator() {
         let make = |outcome| GameResult { winner: None, outcome, turns: 2,
-            actions_taken: 4, rejected_actions: 0, final_life: [20, 20] };
+            actions_taken: 4, rejected_actions: 0, final_life: [20, 20],
+            loss_boundary: Default::default(), };
         let sample = [make(GameOutcome::Win(0)),
             make(GameOutcome::Stalled(TerminationReason::NoProgress)),
             make(GameOutcome::Invalid(TerminationReason::IncompleteCleanup))];
@@ -1398,5 +1469,185 @@ mod cleanup_continuation_tests {
         assert!(outcome.0 > 0);
         assert_eq!((outcome.1, outcome.2, outcome.3, outcome.4),
             (0, GOLDFISH_MAX_TURNS + 1, 7, 22));
+    }
+}
+
+#[cfg(test)]
+mod loss_boundary_consumer_tests {
+    use super::*;
+    use crate::action::Action;
+
+    fn unsupported_resume() -> GameState {
+        let mut state = GameState::new(3);
+        state.players[0].has_lost = true;
+        state.turn_number = u32::MAX;
+        state.loss_boundary.accepted_actions = 77;
+        state
+    }
+
+    #[test]
+    fn unsupported_classification_precedes_horizons_and_interruptions() {
+        let state = unsupported_resume();
+        let invalid = GameOutcome::Invalid(TerminationReason::UnsupportedContinuingElimination);
+        assert_eq!(classify_outcome(&state, 0, 0, 0,
+            Some(GameOutcome::Stalled(TerminationReason::NoProgress))), invalid);
+        assert_eq!(no_progress_outcome(&state), invalid);
+        assert_eq!(invalid.to_string(), "INVALID reason=unsupported_continuing_elimination");
+    }
+
+    #[test]
+    fn persisted_unsupported_failure_precedes_legacy_terminal_flags_after_restore() {
+        let mut state = GameState::new(3);
+        state.loss_boundary.unsupported = Some(crate::game::UnsupportedElimination {
+            losses: vec![crate::game::LossFact { player: 0,
+                causes: vec![crate::game::LossCause::Concession] }],
+            coordinates: crate::game::LossCoordinates { global_turn: 1, active_seat: 0,
+                player_turns: vec![1, 0, 0], phase: state.phase, action_index: 0 },
+        });
+        state.game_over = true;
+        state.winner = Some(0);
+        let restored: GameState = serde_json::from_str(
+            &serde_json::to_string(&state).unwrap()).unwrap();
+        let invalid = GameOutcome::Invalid(TerminationReason::UnsupportedContinuingElimination);
+        assert_eq!(classify_outcome(&restored, 0, 0, 0, None), invalid);
+        assert_eq!(no_progress_outcome(&restored), invalid);
+        let mut runner_state = restored.clone();
+        assert_eq!(crate::solver::mcts::run_mcts_goldfish_game(&mut runner_state,
+            &crate::solver::mcts::MctsConfig::default(), false, None).outcome,
+            crate::solver::mcts::MctsOutcome::Invalid);
+    }
+
+    #[test]
+    fn unsupported_counted_action_rejects_before_legality_or_mutation() {
+        let mut state = unsupported_resume();
+        let before = bincode::serialize(&state).unwrap();
+        assert_eq!(apply_counted_action(&mut state, &Action::PassPriority, &[]),
+            Err(TerminationReason::UnsupportedContinuingElimination));
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
+    }
+
+    #[test]
+    fn resumed_unsupported_simulation_never_calls_a_strategy() {
+        struct UnreachableStrategy;
+        impl Strategy for UnreachableStrategy {
+            fn choose_action(&self, _: &GameState, _: PlayerIndex) -> Action {
+                panic!("stopped simulation requested an action")
+            }
+            fn name(&self) -> &str { "unreachable" }
+        }
+        for goldfish in [false, true] {
+            let mut state = unsupported_resume();
+            let before = bincode::serialize(&state).unwrap();
+            let result = if goldfish {
+                run_goldfish_loop(&mut state, &UnreachableStrategy, false)
+            } else {
+                run_game_loop(&mut state, &UnreachableStrategy, &UnreachableStrategy, false)
+            };
+            assert_eq!(result.outcome,
+                GameOutcome::Invalid(TerminationReason::UnsupportedContinuingElimination));
+            assert_eq!(result.actions_taken, 0);
+            assert_eq!(bincode::serialize(&state).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn legacy_terminal_counted_action_is_an_unchanged_rules_draw() {
+        let mut state = GameState::new(2);
+        state.game_over = true;
+        let before = bincode::serialize(&state).unwrap();
+        assert_eq!(apply_counted_action(&mut state, &Action::PassPriority,
+            &[Action::PassPriority]), Ok(false));
+        assert_eq!(no_progress_outcome(&state), GameOutcome::Draw);
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod returned_loss_provenance_tests {
+    use super::*;
+    use crate::game::{LossCause, LossCoordinates, LossFact, Phase};
+    use crate::strategy::GoldfishStrategy;
+
+    #[test]
+    fn simulation_results_retain_exact_terminal_and_unsupported_loss_records() {
+        for players in [2, 3] {
+            let mut state = GameState::new(players);
+            state.turn_number = 9;
+            state.active_player = 1;
+            state.priority_player = 1;
+            state.phase = Phase::PreCombatMain;
+            state.loss_boundary.accepted_actions = 17;
+            state.loss_boundary.turns_taken = vec![4; players];
+            state.players[0].life = 0;
+            rules::check_state_based_actions(&mut state);
+            let expected = state.loss_boundary.clone();
+            let facts = vec![LossFact { player: 0, causes: vec![LossCause::LifeTotal] }];
+            let coordinates = LossCoordinates { global_turn: 9, active_seat: 1,
+                player_turns: vec![4; players], phase: Phase::PreCombatMain, action_index: 17 };
+            if players == 2 {
+                let record = expected.terminal.as_ref().expect("supported terminal loss");
+                assert_eq!(record.losses, facts);
+                assert_eq!(record.coordinates, coordinates);
+            } else {
+                let record = expected.unsupported.as_ref().expect("unsupported continuing loss");
+                assert_eq!(record.losses, facts);
+                assert_eq!(record.coordinates, coordinates);
+            }
+            let result = run_game_loop(&mut state.clone(), &GoldfishStrategy, &GoldfishStrategy, false);
+            let goldfish_result = run_goldfish_loop(&mut state, &GoldfishStrategy, false);
+            assert_eq!(result.loss_boundary, expected);
+            assert_eq!(goldfish_result.loss_boundary, expected);
+            assert_eq!(result.actions_taken, 0);
+            assert_eq!(goldfish_result.actions_taken, 0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod completed_invalid_action_tests {
+    use super::*;
+    use crate::action::Action;
+    use crate::card::{ActivatedAbility, CardDef, CardType, Effect, ObjectId, ZoneType};
+    use crate::game::{LossCause, Phase};
+    use crate::mana::ManaCost;
+    use crate::strategy::GoldfishStrategy;
+
+    struct PayLastLife(ObjectId);
+    impl Strategy for PayLastLife {
+        fn choose_action(&self, _: &GameState, _: PlayerIndex) -> Action {
+            Action::ActivateAbility { object_id: self.0, ability_index: 0, targets: vec![] }
+        }
+        fn name(&self) -> &str { "pay last life" }
+    }
+
+    #[test]
+    fn completed_life_cost_action_is_counted_in_invalid_simulation_results() {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 987_101, name: "Life-cost artifact".into(),
+            card_types: vec![CardType::Artifact], activated_abilities: vec![ActivatedAbility {
+                cost: ManaCost::zero(), requires_tap: false, sacrifice_cost: None,
+                life_cost: 1, effect: Effect::GainLife { amount: 1 }, description: "Pay 1 life".into(),
+            }], ..Default::default() });
+        let mut state = GameState::new(3);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::PreCombatMain;
+        state.players[0].life = 1;
+        state.loss_boundary.accepted_actions = 41;
+        let source = state.create_card_in_zone(987_101, 0, ZoneType::Battlefield);
+        let strategy = PayLastLife(source);
+        assert!(legal_actions(&state).contains(&strategy.choose_action(&state, 0)));
+        let result = run_game_loop(&mut state.clone(), &strategy, &GoldfishStrategy, false);
+        let goldfish_result = run_goldfish_loop(&mut state, &strategy, false);
+        for result in [result, goldfish_result] {
+            assert_eq!(result.outcome,
+                GameOutcome::Invalid(TerminationReason::UnsupportedContinuingElimination));
+            assert_eq!(result.actions_taken, 1);
+            assert_eq!(result.rejected_actions, 0);
+            assert_eq!(result.loss_boundary.accepted_actions, 42);
+            let record = result.loss_boundary.unsupported.unwrap();
+            assert_eq!(record.coordinates.action_index, 42);
+            assert_eq!(record.losses[0].player, 0);
+            assert_eq!(record.losses[0].causes, vec![LossCause::LifeTotal]);
+        }
     }
 }

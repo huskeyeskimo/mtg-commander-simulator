@@ -493,6 +493,65 @@ pub struct GameState {
     /// Reset on clone, not serialized, invalidated on canonical-state mutation.
     #[serde(skip)]
     pub characteristics_cache: CharacteristicsCache,
+
+    /// Persisted loss facts and termination provenance. Appended to the saved
+    /// layout; defaulting supports absent JSON fields, not old binary saves.
+    #[serde(default)]
+    pub loss_boundary: LossBoundary,
+
+    /// The current synchronous action owns its accepted-action coordinate.
+    #[serde(skip)]
+    pub(crate) loss_action_in_progress: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LossCause {
+    LifeTotal,
+    Poison,
+    CommanderDamage { source_player: PlayerIndex },
+    FailedDraw,
+    Concession,
+    /// A resumed represented loss without an original persisted cause.
+    AlreadyLost,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LossFact {
+    pub player: PlayerIndex,
+    pub causes: Vec<LossCause>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LossCoordinates {
+    pub global_turn: u32,
+    pub active_seat: PlayerIndex,
+    /// Actual turns taken by each seat, including extra turns. Index this by
+    /// the benchmark pilot; do not infer pilot turns from the global serial.
+    pub player_turns: Vec<u32>,
+    pub phase: Phase,
+    pub action_index: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalLoss {
+    pub losses: Vec<LossFact>,
+    pub coordinates: LossCoordinates,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnsupportedElimination {
+    pub losses: Vec<LossFact>,
+    pub coordinates: LossCoordinates,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LossBoundary {
+    /// Deduplicated players who actually failed a draw since last settlement.
+    pub pending_failed_draws: Vec<PlayerIndex>,
+    pub terminal: Option<TerminalLoss>,
+    pub unsupported: Option<UnsupportedElimination>,
+    pub accepted_actions: u64,
+    pub turns_taken: Vec<u32>,
 }
 
 /// A trigger that has been queued but not yet placed on the stack.
@@ -703,6 +762,7 @@ pub struct GameStateSnapshot {
     skip_phases: HashSet<Phase>,
     game_over: bool,
     winner: Option<PlayerIndex>,
+    loss_boundary: LossBoundary,
 }
 
 // ---------------------------------------------------------------------------
@@ -740,6 +800,7 @@ pub struct PlayerView<'a> {
     pub cleanup_needs_repeat: bool,
     pub cleanup_discard_in_progress: bool,
     pub pending_copy_order: Option<&'a PendingCopyOrder>,
+    pub pending_failed_draws: &'a [PlayerIndex],
     /// Which player currently has priority.
     pub priority_player: PlayerIndex,
 
@@ -934,6 +995,7 @@ impl GameState {
             cleanup_needs_repeat: self.cleanup_needs_repeat,
             cleanup_discard_in_progress: self.cleanup_discard_in_progress,
             pending_copy_order: self.pending_copy_order.as_ref(),
+            pending_failed_draws: &self.loss_boundary.pending_failed_draws,
             priority_player: self.priority_player,
 
             my_life: self.players[player].life,
@@ -1004,6 +1066,8 @@ impl GameState {
             winner: None,
             pending_events: Vec::new(),
             characteristics_cache: CharacteristicsCache::default(),
+            loss_boundary: LossBoundary { turns_taken: vec![0; num_players], ..Default::default() },
+            loss_action_in_progress: false,
         }
     }
 
@@ -1046,12 +1110,37 @@ impl GameState {
             winner: None,
             pending_events: Vec::new(),
             characteristics_cache: CharacteristicsCache::default(),
+            loss_boundary: LossBoundary { turns_taken: vec![0; num_players], ..Default::default() },
+            loss_action_in_progress: false,
         };
         // Initialize commander damage tracking (each player tracks damage from each opponent)
         for i in 0..num_players {
             state.players[i].commander_damage_received = vec![0; num_players];
         }
         state
+    }
+
+    /// Continuing elimination is deliberately unsupported until leaving-game
+    /// ownership, control, stack and trigger semantics are implemented.
+    pub fn unsupported_continuing_elimination(&self) -> bool {
+        self.loss_boundary.unsupported.is_some()
+            || (!self.game_over && self.active_player_count() >= 2
+                && self.players.iter().any(|player| player.has_lost))
+    }
+
+    pub fn gameplay_stopped(&self) -> bool {
+        self.game_over || self.unsupported_continuing_elimination()
+    }
+
+    pub fn loss_coordinates(&self) -> LossCoordinates {
+        let mut player_turns = self.loss_boundary.turns_taken.clone();
+        player_turns.resize(self.players.len(), 0);
+        if player_turns.iter().all(|turns| *turns == 0) && self.active_player < player_turns.len() {
+            player_turns[self.active_player] = 1;
+        }
+        LossCoordinates { global_turn: self.turn_number, active_seat: self.active_player,
+            player_turns, phase: self.phase,
+            action_index: self.loss_boundary.accepted_actions + u64::from(self.loss_action_in_progress) }
     }
 
     /// Whether this game uses Commander format rules.
@@ -1096,6 +1185,7 @@ impl GameState {
             skip_phases: self.skip_phases.clone(),
             game_over: self.game_over,
             winner: self.winner,
+            loss_boundary: self.loss_boundary.clone(),
         }
     }
 
@@ -1132,6 +1222,8 @@ impl GameState {
         self.skip_phases = snap.skip_phases;
         self.game_over = snap.game_over;
         self.winner = snap.winner;
+        self.loss_boundary = snap.loss_boundary;
+        self.loss_action_in_progress = false;
         self.pending_events.clear();
         self.invalidate_characteristics_cache();
     }

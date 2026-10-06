@@ -86,6 +86,7 @@ pub fn copy_spell_snapshot(
     copy_controller: PlayerIndex,
     target_policy: CopyTargetPolicy,
 ) -> Result<StackId, CopyError> {
+    if state.gameplay_stopped() { return Err(CopyError::InvalidPendingState); }
     if state.pending_copy_order.is_some() { return Err(CopyError::PendingOrder); }
     let prepared = prepare_spell_copy(state, source, copy_controller, target_policy)?;
     let ids = materialize_batch(state, &[prepared], &[0])?;
@@ -100,6 +101,7 @@ pub fn prepare_spell_copy(
     copy_controller: PlayerIndex,
     target_policy: CopyTargetPolicy,
 ) -> Result<PreparedSpellCopy, CopyError> {
+    if state.gameplay_stopped() { return Err(CopyError::InvalidPendingState); }
     if state.pending_copy_order.is_some() { return Err(CopyError::PendingOrder); }
     if copy_controller >= state.players.len() || state.players[copy_controller].has_lost {
         return Err(CopyError::InvalidController);
@@ -242,6 +244,7 @@ pub fn begin_terminal_copy_batch(
     if !terminal || state.effect_terminal_position == Some(false) {
         return Err(CopyError::NonTerminalBatch);
     }
+    if state.gameplay_stopped() { return Err(CopyError::InvalidPendingState); }
     if state.pending_copy_order.is_some() { return Err(CopyError::PendingOrder); }
     if state.pending_tutor.is_some() { return Err(CopyError::ConflictingPendingChoice); }
     if items.is_empty() { return Ok(CopyBatchOutcome::Empty); }
@@ -311,6 +314,7 @@ fn check_completion_capacity(state: &GameState, copies: usize) -> Result<(), Cop
 /// Append one copy to the bottom-to-top prefix. The final remaining item is
 /// automatic; commitment inserts the whole ordered batch in one operation.
 pub(crate) fn choose_next_copy(state: &mut GameState, item_index: usize) -> Result<(), CopyError> {
+    if state.gameplay_stopped() { return Err(CopyError::InvalidPendingState); }
     let pending = state.pending_copy_order.as_ref().ok_or(CopyError::PendingOrder)?;
     if pending.controller >= state.players.len() || state.players[pending.controller].has_lost
         || pending.items.iter().any(|item| item.controller != pending.controller)

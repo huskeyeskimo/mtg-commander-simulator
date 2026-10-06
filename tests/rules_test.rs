@@ -638,3 +638,39 @@ fn test_glorious_anthem_pumps_creatures() {
         chars.toughness
     );
 }
+
+// Loss-boundary controls use represented thresholds without changing ordinary
+// creature SBA, Commander identity, or leaving-game semantics.
+#[test]
+fn test_terminal_loss_boundary_threshold_controls_do_not_stop_ordinary_play() {
+    let mut state = base_state();
+    state.format = mtg_gto::game::GameFormat::Commander;
+    state.players[0].life = 1;
+    state.players[0].poison_counters = 9;
+    state.players[0].commander_damage_received = vec![20, 20];
+    let victim = add_creature(&mut state, ids::GRIZZLY_BEARS, 0);
+    state.objects.get_mut(&victim).unwrap().damage_marked = 2;
+    rules::check_state_based_actions(&mut state);
+    assert!(!state.gameplay_stopped());
+    assert!(state.players[0].graveyard.contains(&victim));
+    assert!(state.loss_boundary.terminal.is_none());
+    assert!(state.loss_boundary.unsupported.is_none());
+    assert!(!legal_actions(&state).is_empty());
+}
+
+#[test]
+fn test_terminal_loss_boundary_supported_all_lost_draw_is_stable() {
+    let mut state = base_state();
+    state.players[0].life = 0;
+    state.players[1].life = 0;
+    rules::check_state_based_actions(&mut state);
+    assert!(state.game_over);
+    assert_eq!(state.winner, None);
+    assert_eq!(state.loss_boundary.terminal.as_ref().unwrap().losses.len(), 2);
+    let settled = bincode::serialize(&state).unwrap();
+    rules::apply_action(&mut state, &Action::PassPriority);
+    rules::apply_action(&mut state, &Action::EndTurn);
+    rules::check_state_based_actions(&mut state);
+    assert_eq!(bincode::serialize(&state).unwrap(), settled);
+    assert!(legal_actions(&state).is_empty());
+}

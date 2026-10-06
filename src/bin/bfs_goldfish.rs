@@ -102,6 +102,9 @@ enum SearchOutcome {
 }
 
 fn classify_search(win_turn: Option<u32>, stats: &SearchStats) -> SearchOutcome {
+    if stats.invalid && stats.invalid_reason == "unsupported_continuing_elimination" {
+        return SearchOutcome::Invalid(stats.invalid_reason);
+    }
     if let Some(turn) = win_turn {
         if stats.invalid { return SearchOutcome::FoundWinIncomplete(turn, "invalid_branch"); }
         if stats.stalled { return SearchOutcome::FoundWinIncomplete(turn, "stalled_branch"); }
@@ -591,6 +594,22 @@ fn dfs_search(
     let mut linear_depth: usize = 0; // track linear actions pushed
 
     loop {
+        if stats.invalid && stats.invalid_reason == "unsupported_continuing_elimination" { break; }
+        if work.unsupported_continuing_elimination() {
+            stats.invalid = true;
+            stats.invalid_branches += 1;
+            stats.invalid_reason = "unsupported_continuing_elimination";
+            break;
+        }
+        // Win check
+        if work.game_over {
+            if work.winner == Some(0) && work.turn_number < *best_win_turn {
+                *best_win_turn = work.turn_number;
+                *best_sequence = current_sequence.clone();
+            }
+            break;
+        }
+
         // --- Resource checks (every 1024 states) ---
         if stats.states_explored & 0x3FF == 0 && stats.states_explored > 0 {
             if Instant::now() >= limits.deadline {
@@ -608,15 +627,6 @@ fn dfs_search(
 
         if current_sequence.len() > stats.max_depth_reached {
             stats.max_depth_reached = current_sequence.len();
-        }
-
-        // Win check
-        if work.game_over {
-            if work.winner == Some(0) && work.turn_number < *best_win_turn {
-                *best_win_turn = work.turn_number;
-                *best_sequence = current_sequence.clone();
-            }
-            break;
         }
 
         if invalid_cleanup_state(&work) {
@@ -650,6 +660,7 @@ fn dfs_search(
                 }
             };
             let advanced = rules::fast_forward_goldfish_turn(&mut work);
+            if work.gameplay_stopped() { continue; }
             if advanced == 0 {
                 if invalid_cleanup_state(&work) {
                     stats.invalid = true;
@@ -761,7 +772,8 @@ fn dfs_search(
 
         // Multiple actions — branch via recursion on clones.
         for action in &pruned {
-            if stats.timed_out || stats.hit_state_cap {
+            if stats.timed_out || stats.hit_state_cap
+                || (stats.invalid && stats.invalid_reason == "unsupported_continuing_elimination") {
                 break;
             }
             let desc = format_action_name(&work, action);
@@ -1148,5 +1160,45 @@ mod outcome_tests {
             &kinnan_config(), &mut stats, &mut visited, &limits);
         assert_eq!(stats.stalled_branches, 1);
         assert_eq!(classify_search(None, &stats), SearchOutcome::Stalled("no_progress"));
+    }
+}
+
+#[cfg(test)]
+mod loss_boundary_search_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_bfs_rejects_before_resource_caps_or_deduplication() {
+        let mut state = GameState::new(3);
+        state.players[0].has_lost = true;
+        state.turn_number = u32::MAX;
+        let before = bincode::serialize(&state).unwrap();
+        let mut best_turn = 0;
+        let mut best = Vec::new();
+        let mut current = Vec::new();
+        let mut stats = SearchStats::new();
+        let mut visited = HashMap::new();
+        let limits = SearchLimits {
+            deadline: Instant::now(), max_states: 0, max_visited: 0,
+            max_depth: 0, trace: false,
+        };
+        dfs_search(&mut state, &mut best_turn, &mut best, &mut current,
+            &kinnan_config(), &mut stats, &mut visited, &limits);
+        assert_eq!(classify_search(None, &stats),
+            SearchOutcome::Invalid("unsupported_continuing_elimination"));
+        assert_eq!(stats.states_explored, 0);
+        assert!(!stats.hit_state_cap);
+        assert!(!stats.hit_turn_cap);
+        assert!(visited.is_empty());
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
+    }
+
+    #[test]
+    fn unsupported_bfs_branch_is_invalid_even_with_a_prior_win() {
+        let mut stats = SearchStats::new();
+        stats.invalid = true;
+        stats.invalid_reason = "unsupported_continuing_elimination";
+        assert_eq!(classify_search(Some(2), &stats),
+            SearchOutcome::Invalid("unsupported_continuing_elimination"));
     }
 }

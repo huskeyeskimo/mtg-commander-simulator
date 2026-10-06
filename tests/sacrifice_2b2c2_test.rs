@@ -192,13 +192,13 @@ fn each_opponent_seat_rotations_counts_and_lost_players() {
                                 .collect()
                         })
                         .collect();
-                    let lost = (controller + 2) % players;
-                    state.players[lost].has_lost = true;
+                    // Supported live-player control: retain the complete
+                    // rotation/count/APNAP matrix without resumable elimination.
                     each(&mut state, controller, count);
                     let mut expected = Vec::new();
                     for offset in 0..players {
                         let p = (active + offset) % players;
-                        let n = if p == controller || p == lost {
+                        let n = if p == controller {
                             0
                         } else {
                             (count as usize).min(ids[p].len())
@@ -235,6 +235,61 @@ fn each_opponent_seat_rotations_counts_and_lost_players() {
                             }
                         );
                         assert_eq!(c.group_id, 0);
+                    }
+                }
+            }
+        }
+    }
+}
+#[test]
+fn each_opponent_already_lost_resume_rejects_before_sacrifice() {
+    for players in [3, 4] {
+        for active in 0..players {
+            for controller in 0..players {
+                for count in [0, 1, 2, 5] {
+                    let mut state = game(players);
+                    state.active_player = active;
+                    state.priority_player = controller;
+                    state.phase = mtg_gto::game::Phase::PreCombatMain;
+                    for player in 0..players {
+                        for _ in 0..player {
+                            state.create_card_in_zone(CREATURE, player, ZoneType::Battlefield);
+                        }
+                    }
+                    let source_id = 994_103;
+                    let mut db = state.card_db().clone();
+                    db.insert(CardDef {
+                        id: source_id,
+                        name: "Unsupported sacrifice resume".into(),
+                        card_types: vec![CardType::Artifact],
+                        activated_abilities: vec![ActivatedAbility {
+                            cost: ManaCost::zero(), requires_tap: false,
+                            sacrifice_cost: None, life_cost: 0,
+                            effect: Effect::EachOpponentSacrifices { count },
+                            description: "blocked before sacrifice".into(),
+                        }], ..Default::default()
+                    });
+                    state.card_db = Some(Arc::new(db));
+                    let source = state.create_card_in_zone(source_id, controller, ZoneType::Battlefield);
+                    state.players[(controller + 2) % players].has_lost = true;
+                    let proposed = Action::ActivateAbility {
+                        object_id: source, ability_index: 0, targets: vec![]
+                    };
+                    for mut candidate in restores(&state) {
+                        let before = bincode::serialize(&candidate).unwrap();
+                        let events = candidate.pending_events.clone();
+                        assert!(candidate.unsupported_continuing_elimination());
+                        assert!(legal_actions(&candidate).is_empty());
+                        assert_eq!(mtg_gto::simulation::apply_counted_action(
+                            &mut candidate, &proposed, std::slice::from_ref(&proposed)),
+                            Err(mtg_gto::simulation::TerminationReason::UnsupportedContinuingElimination));
+                        apply_action(&mut candidate, &proposed);
+                        apply_action(&mut candidate, &Action::PassPriority);
+                        apply_action(&mut candidate, &Action::EndTurn);
+                        assert_eq!(bincode::serialize(&candidate).unwrap(), before,
+                            "no zone/object/stack/trigger/phase/priority/action mutation");
+                        assert_eq!(candidate.pending_events, events);
+                        assert!(legal_actions(&candidate).is_empty());
                     }
                 }
             }

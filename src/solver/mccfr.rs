@@ -67,6 +67,15 @@ use crate::rules;
 use crate::solver::{sample_from_distribution, RegretTable};
 use crate::strategy::Strategy;
 
+/// Numeric-only legacy training APIs cannot represent invalid games. Abort the
+/// attempt explicitly before evaluating or publishing unsupported continuations.
+fn require_supported_gameplay(state: &GameState) {
+    assert!(
+        !state.unsupported_continuing_elimination(),
+        "INVALID reason=unsupported_continuing_elimination"
+    );
+}
+
 /// Configuration for MCCFR training.
 #[derive(Debug, Clone)]
 pub struct McfrConfig {
@@ -157,6 +166,7 @@ pub fn run_iteration(
     regret_tables: &mut [RegretTable; 2],
     config: &McfrConfig,
 ) {
+    require_supported_gameplay(initial_state);
     run_iteration_with_abstraction(initial_state, regret_tables, config, &IdentityAbstraction, &RolloutMode::Heuristic, None)
 }
 
@@ -169,6 +179,7 @@ pub fn run_iteration_with_abstraction(
     rollout_mode: &RolloutMode,
     rollout_strategies: Option<(&dyn Strategy, &dyn Strategy)>,
 ) {
+    require_supported_gameplay(initial_state);
     for traverser in 0..2 {
         let state = initial_state.clone();
         let mut rng = rand::thread_rng();
@@ -203,6 +214,7 @@ fn traverse(
     rng: &mut impl Rng,
 ) -> f64 {
     loop {
+        require_supported_gameplay(&state);
         // Terminal check: game over
         if state.game_over {
             return terminal_utility(&state, traverser);
@@ -334,6 +346,7 @@ fn rollout_utility(
     rollout_strategies: Option<(&dyn Strategy, &dyn Strategy)>,
     max_actions: u32,
 ) -> f64 {
+    require_supported_gameplay(state);
     let (strat0, strat1) = match rollout_strategies {
         Some((s0, s1)) => (s0, s1),
         None => return heuristic_utility(state, traverser),
@@ -342,7 +355,8 @@ fn rollout_utility(
     let mut rollout_state = state.clone();
     let mut actions_taken: u32 = 0;
 
-    while !rollout_state.game_over && actions_taken < max_actions {
+    while !rollout_state.gameplay_stopped() && actions_taken < max_actions {
+        require_supported_gameplay(&rollout_state);
         let player = rollout_state.priority_player;
         let actions = legal_actions(&rollout_state);
 
@@ -360,6 +374,7 @@ fn rollout_utility(
         actions_taken += 1;
     }
 
+    require_supported_gameplay(&rollout_state);
     if rollout_state.game_over {
         terminal_utility(&rollout_state, traverser)
     } else {
@@ -370,6 +385,7 @@ fn rollout_utility(
 
 /// Terminal utility: +1 for win, -1 for loss, 0 for draw.
 fn terminal_utility(state: &GameState, player: PlayerIndex) -> f64 {
+    require_supported_gameplay(state);
     match state.winner {
         Some(w) if w == player => 1.0,
         Some(_) => -1.0,
@@ -388,6 +404,7 @@ fn terminal_utility(state: &GameState, player: PlayerIndex) -> f64 {
 /// incentivizing the solver to collect pieces even before the full combo is
 /// available. This is the "reward shaping" component described in the design.
 fn heuristic_utility(state: &GameState, player: PlayerIndex) -> f64 {
+    require_supported_gameplay(state);
     use crate::game::GameFormat;
 
     let opp = state.opponent(player);
@@ -447,6 +464,7 @@ pub fn train(
     num_iterations: u32,
     config: &McfrConfig,
 ) -> [RegretTable; 2] {
+    require_supported_gameplay(initial_state);
     let mut regret_tables = [RegretTable::new(), RegretTable::new()];
 
     for _ in 0..num_iterations {
@@ -464,6 +482,7 @@ pub fn train_extended(
     num_iterations: u32,
     train_config: &TrainConfig,
 ) -> [RegretTable; 2] {
+    require_supported_gameplay(initial_state);
     let mut regret_tables = [RegretTable::new(), RegretTable::new()];
 
     for i in 0..num_iterations {
@@ -512,6 +531,7 @@ pub fn train_parallel(
     num_shards: u32,
     train_config: &TrainConfig,
 ) -> [RegretTable; 2] {
+    require_supported_gameplay(initial_state);
     use rayon::prelude::*;
 
     let iterations_per_shard = num_iterations / num_shards;
@@ -653,6 +673,7 @@ pub fn train_goldfish_parallel(
     num_shards: u32,
     config: &McfrConfig,
 ) -> [RegretTable; 2] {
+    require_supported_gameplay(initial_state);
     train_goldfish_parallel_with_progress(
         initial_state,
         num_iterations,
@@ -684,6 +705,7 @@ pub fn train_goldfish_parallel_with_abstraction(
     abstraction: &dyn InfoSetAbstraction,
     pilot: PlayerIndex,
 ) -> [RegretTable; 2] {
+    require_supported_gameplay(initial_state);
     train_goldfish_parallel_with_progress(
         initial_state,
         num_iterations,
@@ -733,6 +755,7 @@ pub fn train_goldfish_parallel_with_progress<F>(
 where
     F: Fn(u32, u32, &AtomicU32) + Send + Sync,
 {
+    require_supported_gameplay(initial_state);
     use rayon::prelude::*;
 
     let iterations_per_shard = num_iterations / num_shards;
@@ -759,7 +782,10 @@ where
                 let mut state = initial_state.clone();
                 // Reshuffle opening hand each iteration so the solver trains on diverse
                 // starting hands rather than memorizing one fixed deal.
-                rules::reshuffle_opening_hand(&mut state);
+                if !state.gameplay_stopped() {
+                    rules::reshuffle_opening_hand(&mut state);
+                }
+                require_supported_gameplay(&state);
                 let mut nodes_visited = 0u32;
                 traverse_goldfish(
                     state,
@@ -816,6 +842,7 @@ pub fn train_parallel_basic(
     num_shards: u32,
     config: &McfrConfig,
 ) -> [RegretTable; 2] {
+    require_supported_gameplay(initial_state);
     let train_config = TrainConfig {
         mccfr: config.clone(),
         ..TrainConfig::default()
@@ -842,6 +869,7 @@ pub fn warm_start_from_greedy(
     abstraction: &dyn InfoSetAbstraction,
     _warmup_weight: f64, // kept for API compatibility, no longer used for seeding
 ) -> [RegretTable; 2] {
+    require_supported_gameplay(initial_state);
     use crate::strategy::GreedyStrategy;
 
     let mut tables = [RegretTable::new(), RegretTable::new()];
@@ -850,10 +878,14 @@ pub fn warm_start_from_greedy(
     for _ in 0..num_warmup_games {
         let mut state = initial_state.clone();
         // Reshuffle opening hand so warm-start covers diverse starting hands.
-        rules::reshuffle_opening_hand(&mut state);
+        if !state.gameplay_stopped() {
+            rules::reshuffle_opening_hand(&mut state);
+        }
+        require_supported_gameplay(&state);
         let mut actions_taken = 0u32;
 
-        while !state.game_over && actions_taken < 500 {
+        while !state.gameplay_stopped() && actions_taken < 500 {
+            require_supported_gameplay(&state);
             let player = state.priority_player;
             let actions = legal_actions_abstracted(&state);
 
@@ -887,6 +919,7 @@ pub fn warm_start_from_greedy(
             rules::apply_action(&mut state, &greedy_action);
             actions_taken += 1;
         }
+        require_supported_gameplay(&state);
     }
 
     tables
@@ -900,6 +933,7 @@ pub fn train_warm_started(
     num_iterations: u32,
     train_config: &TrainConfig,
 ) -> [RegretTable; 2] {
+    require_supported_gameplay(initial_state);
     // Phase 1: Warm-start
     let mut regret_tables = warm_start_from_greedy(
         initial_state,
@@ -1065,11 +1099,13 @@ pub fn collect_policy_snapshots(
     abstraction: &dyn InfoSetAbstraction,
     max_snapshots: usize,
 ) -> Vec<PolicySnapshot> {
+    require_supported_gameplay(initial_state);
     let mut snapshots = Vec::new();
     let mut state = initial_state.clone();
     let mut actions_taken = 0u32;
 
-    while !state.game_over && actions_taken < 500 && snapshots.len() < max_snapshots {
+    while !state.gameplay_stopped() && actions_taken < 500 && snapshots.len() < max_snapshots {
+        require_supported_gameplay(&state);
         let player = state.priority_player;
         let actions = legal_actions_abstracted(&state);
 
@@ -1128,6 +1164,7 @@ pub fn collect_policy_snapshots(
         actions_taken += 1;
     }
 
+    require_supported_gameplay(&state);
     snapshots
 }
 
@@ -1156,6 +1193,7 @@ pub fn train_goldfish(
     num_iterations: u32,
     config: &McfrConfig,
 ) -> [RegretTable; 2] {
+    require_supported_gameplay(initial_state);
     train_goldfish_with_abstraction(
         initial_state,
         num_iterations,
@@ -1175,6 +1213,7 @@ pub fn train_goldfish_with_abstraction(
     abstraction: &dyn InfoSetAbstraction,
     pilot: PlayerIndex,
 ) -> [RegretTable; 2] {
+    require_supported_gameplay(initial_state);
     train_goldfish_with_progress(initial_state, num_iterations, config, abstraction, pilot, |_, _, _| {})
 }
 
@@ -1193,6 +1232,7 @@ pub fn train_goldfish_with_progress<F>(
 where
     F: FnMut(u32, u32, &[RegretTable; 2]),
 {
+    require_supported_gameplay(initial_state);
     let mut regret_tables = [RegretTable::new(), RegretTable::new()];
     let goldfish = crate::strategy::GoldfishStrategy;
 
@@ -1200,7 +1240,10 @@ where
         let mut state = initial_state.clone();
         // Reshuffle opening hand each iteration so the solver trains on diverse
         // starting hands rather than memorizing one fixed deal.
-        rules::reshuffle_opening_hand(&mut state);
+        if !state.gameplay_stopped() {
+            rules::reshuffle_opening_hand(&mut state);
+        }
+        require_supported_gameplay(&state);
         let mut nodes_visited = 0u32;
         traverse_goldfish(
             state,
@@ -1245,6 +1288,7 @@ fn traverse_goldfish(
     nodes_visited: &mut u32,
 ) -> f64 {
     loop {
+        require_supported_gameplay(&state);
         // Terminal check
         if state.game_over {
             return terminal_utility(&state, pilot);
@@ -1673,5 +1717,90 @@ mod tests {
         // 2 iterations spread across 8 shards: should not panic
         let tables = train_goldfish_parallel(&state, 2, 8, &config);
         assert!(tables[0].num_info_sets() > 0);
+    }
+}
+
+#[cfg(test)]
+mod loss_boundary_training_tests {
+    use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    fn unsupported_resume() -> GameState {
+        let mut state = GameState::new(3);
+        state.players[0].has_lost = true;
+        state
+    }
+
+    fn assert_invalid_failure(result: std::thread::Result<()>) {
+        let panic = result.expect_err("unsupported training returned normally");
+        let text = panic.downcast_ref::<String>().map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied()).unwrap_or("");
+        assert!(text.contains("INVALID reason=unsupported_continuing_elimination"));
+    }
+
+    #[test]
+    fn unsupported_iteration_rejects_before_regret_or_state_mutation() {
+        let state = unsupported_resume();
+        let before = bincode::serialize(&state).unwrap();
+        let mut tables = [RegretTable::new(), RegretTable::new()];
+        let config = McfrConfig { max_actions: 0, max_depth: 1,
+            max_nodes_per_iteration: 1 };
+        assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
+            run_iteration(&state, &mut tables, &config);
+        })));
+        assert!(tables.iter().all(|table| table.data.is_empty()));
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
+    }
+
+    #[test]
+    fn unsupported_goldfish_traversal_rejects_before_node_budget_or_regret() {
+        let state = unsupported_resume();
+        let mut table = RegretTable::new();
+        let mut nodes = 0;
+        let config = McfrConfig { max_actions: 0, max_depth: 1,
+            max_nodes_per_iteration: 1 };
+        assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
+            traverse_goldfish(state, &mut table, &config, &IdentityAbstraction,
+                &crate::strategy::GoldfishStrategy, 0, u32::MAX, 0, &mut nodes);
+        })));
+        assert!(table.data.is_empty());
+        assert_eq!(nodes, 0);
+    }
+
+    #[test]
+    fn unsupported_training_warmstart_and_policy_reject_even_zero_work() {
+        let state = unsupported_resume();
+        let before = bincode::serialize(&state).unwrap();
+        assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
+            train(&state, 0, &McfrConfig::default());
+        })));
+        assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
+            train_goldfish(&state, 0, &McfrConfig::default());
+        })));
+        assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
+            train_parallel(&state, 0, 1, &TrainConfig::default());
+        })));
+        assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
+            warm_start_from_greedy(&state, 0, &IdentityAbstraction, 1.0);
+        })));
+        assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
+            collect_policy_snapshots(&state, &[RegretTable::new(), RegretTable::new()],
+                &IdentityAbstraction, 0);
+        })));
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
+    }
+
+    #[test]
+    fn unsupported_numeric_evaluators_fail_before_heuristic_or_draw_utility() {
+        let state = unsupported_resume();
+        assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
+            terminal_utility(&state, 0);
+        })));
+        assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
+            heuristic_utility(&state, 0);
+        })));
+        assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
+            rollout_utility(&state, 0, None, 0);
+        })));
     }
 }

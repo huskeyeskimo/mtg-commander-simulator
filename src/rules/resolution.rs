@@ -3,7 +3,7 @@ use crate::game::{GameState, PlayerIndex, StackSource, Target};
 
 /// Resolve the top entry on the stack.
 pub(super) fn resolve_top_of_stack(state: &mut GameState) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     let entry = match state.stack.pop() {
         Some(e) => e,
         None => return,

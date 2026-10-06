@@ -232,6 +232,7 @@ pub const MAX_MULLIGANS: u32 = 4;
 
 /// Core action enumeration with configurable combat abstraction level.
 fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<Action> {
+    if state.gameplay_stopped() { return Vec::new(); }
     use crate::game::Phase;
 
     let player = state.priority_player;

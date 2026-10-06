@@ -1,4 +1,5 @@
 mod combat;
+mod loss;
 mod effects;
 mod mana;
 mod phases;
@@ -52,6 +53,72 @@ fn mandatory_trigger_order_chooser(state: &GameState) -> Option<PlayerIndex> {
 
 /// Apply an action to the game state, advancing it.
 pub fn apply_action(state: &mut GameState, action: &Action) {
+    if state.gameplay_stopped() { return; }
+    if state.loss_action_in_progress {
+        apply_action_at_boundary(state, action);
+        return;
+    }
+    // Existing monotone mutation markers are exact for these handlers. All
+    // other proposals retain the full canonical comparison, including absent
+    // ability indices and malformed actor indices. No handler validity changes.
+    enum Checkpoint {
+        Pass(u32, bool),
+        Stack(crate::game::StackId),
+        Land(PlayerIndex, u32),
+        Tap(ObjectId, Option<(bool, u32)>),
+    }
+    let checkpoint = match action {
+        Action::PassPriority if u32::try_from(state.players.len())
+            .is_ok_and(|players| players >= 2) =>
+            Some(Checkpoint::Pass(state.consecutive_passes, state.pending_tutor.is_some())),
+        Action::CastSpell { .. } | Action::CastCommander { .. }
+            | Action::CastFromGraveyard { .. } => Some(Checkpoint::Stack(state.next_stack_id)),
+        Action::ActivateAbility { object_id, ability_index, .. }
+            if state.objects.get(object_id).and_then(|instance|
+                state.card_db.as_ref().and_then(|db| db.get(instance.card_def_id)))
+                .and_then(|def| def.activated_abilities.get(*ability_index)).is_some() =>
+            Some(Checkpoint::Stack(state.next_stack_id)),
+        Action::PlayLand { .. } | Action::PlayLandFromGraveyard { .. } =>
+            state.players.get(state.priority_player)
+                .map(|player| Checkpoint::Land(state.priority_player, player.land_plays_remaining)),
+        Action::ActivateManaAbility { object_id, .. } =>
+            Some(Checkpoint::Tap(*object_id, state.objects.get(object_id)
+                .map(|instance| (instance.tapped, instance.zone_change_count)))),
+        _ => None,
+    };
+    let mut before = Vec::new();
+    if checkpoint.is_none() {
+        bincode::serialize_into(&mut before, &*state).expect("canonical action state");
+    }
+    let active_before = state.active_player;
+    state.loss_action_in_progress = true;
+    apply_action_at_boundary(state, action);
+    state.loss_action_in_progress = false;
+    let changed = match checkpoint {
+        Some(Checkpoint::Pass(passes, tutor)) =>
+            (passes, tutor) != (state.consecutive_passes, state.pending_tutor.is_some()),
+        Some(Checkpoint::Stack(stack_id)) => stack_id != state.next_stack_id,
+        Some(Checkpoint::Land(player, remaining)) =>
+            state.players[player].land_plays_remaining != remaining,
+        Some(Checkpoint::Tap(object_id, source)) => source != state.objects.get(&object_id)
+            .map(|instance| (instance.tapped, instance.zone_change_count)),
+        None => {
+            // Identical fixed-integer bytes, without serialize's sizing pass.
+            let mut after = Vec::with_capacity(before.len());
+            bincode::serialize_into(&mut after, &*state).expect("canonical action state");
+            before != after
+        }
+    };
+    if changed {
+        state.loss_boundary.accepted_actions += 1;
+        state.loss_boundary.turns_taken.resize(state.players.len(), 0);
+        if state.loss_boundary.turns_taken.iter().all(|turns| *turns == 0) {
+            state.loss_boundary.turns_taken[active_before] = 1;
+        }
+    }
+}
+
+fn apply_action_at_boundary(state: &mut GameState, action: &Action) {
     // These handlers complete synchronously. Defer their existing internal
     // flush attempts until costs, action consequences and SBA stabilization
     // have all finished. Continuation actions own their separate 2A boundaries.
@@ -81,6 +148,7 @@ fn finish_complete_action(state: &mut GameState, caller_deferred: bool, complete
         // tapped state directly. Evaluate SBAs from the completed action.
         state.invalidate_characteristics_cache();
         sba::check_state_based_actions(state);
+        if state.gameplay_stopped() { return; }
         clear_lost_tutor_choice(state);
         // Loss processing can remove the actor during this settlement. Keep
         // both immediate priority and a later ordering resume on a live player.
@@ -105,6 +173,7 @@ fn finish_complete_action(state: &mut GameState, caller_deferred: bool, complete
 
 /// Consume a completed placement window's existing continuation once.
 fn resume_after_trigger_placement(state: &mut GameState) {
+    if state.gameplay_stopped() { return; }
     match state.trigger_order_resume.take().unwrap_or(TriggerOrderResume::AfterResolution) {
         TriggerOrderResume::AfterResolution => restore_priority_after_resolution(state),
         TriggerOrderResume::Player(player) => {
@@ -127,6 +196,197 @@ mod settlement_2b3a_boundary_tests {
     use crate::layers::{AffectedObjects, StaticAbility};
     use crate::mana::ManaCost;
     use std::sync::Arc;
+
+    #[test]
+    fn loss_action_accounting_pass_matches_full_canonical_comparison() {
+        for players in [1, 2, 3, 4] {
+            for phase in Phase::TURN_ORDER {
+                for passes in 0..=players as u32 + 2 {
+                    for tutor in [false, true] {
+                        for boundary in 0..4 {
+                            let mut initial = GameState::new(players);
+                            initial.card_db = Some(Arc::new(CardDatabase::new()));
+                            initial.phase = phase;
+                            initial.consecutive_passes = passes;
+                            initial.loss_boundary.accepted_actions = 41;
+                            if tutor {
+                                initial.pending_tutor = Some(crate::game::PendingTutor {
+                                    controller: 0, destination: ZoneType::Hand,
+                                    subtype_filter: vec![],
+                                });
+                            }
+                            match boundary {
+                                1 => initial.players[0].life = 0,
+                                2 => initial.players[0].has_lost = true,
+                                3 => { initial.game_over = true; initial.winner = None; }
+                                _ => {}
+                            }
+                            // Reference the original full-byte contract, not
+                            // the optimized marker or handler completion bool.
+                            let mut reference = initial.clone();
+                            if !reference.gameplay_stopped() {
+                                let before = bincode::serialize(&reference).unwrap();
+                                reference.loss_action_in_progress = true;
+                                apply_action_at_boundary(&mut reference, &Action::PassPriority);
+                                reference.loss_action_in_progress = false;
+                                if before != bincode::serialize(&reference).unwrap() {
+                                    reference.loss_boundary.accepted_actions += 1;
+                                    if reference.loss_boundary.turns_taken.iter().all(|turns| *turns == 0) {
+                                        reference.loss_boundary.turns_taken[initial.active_player] = 1;
+                                    }
+                                }
+                            }
+                            let mut actual = initial.clone();
+                            apply_action(&mut actual, &Action::PassPriority);
+                            assert_eq!(bincode::serialize(&actual).unwrap(),
+                                bincode::serialize(&reference).unwrap(),
+                                "players={players} phase={phase:?} passes={passes} tutor={tutor} boundary={boundary}");
+                            assert_eq!(actual.pending_events, reference.pending_events);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn canonical_action_reference(state: &mut GameState, action: &Action) {
+        if state.gameplay_stopped() { return; }
+        if state.loss_action_in_progress {
+            apply_action_at_boundary(state, action);
+            return;
+        }
+        let before = bincode::serialize(&*state).unwrap();
+        let active = state.active_player;
+        state.loss_action_in_progress = true;
+        apply_action_at_boundary(state, action);
+        state.loss_action_in_progress = false;
+        if before != bincode::serialize(&*state).unwrap() {
+            state.loss_boundary.accepted_actions += 1;
+            state.loss_boundary.turns_taken.resize(state.players.len(), 0);
+            if state.loss_boundary.turns_taken.iter().all(|turns| *turns == 0) {
+                state.loss_boundary.turns_taken[active] = 1;
+            }
+        }
+    }
+
+    #[test]
+    fn loss_action_accounting_markers_and_counted_helper_match_canonical_reference() {
+        use crate::card::{ActivatedAbility, Effect};
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 995111, name: "Accounting spell".into(),
+            card_types: vec![CardType::Sorcery], mana_cost: Some(ManaCost::zero()),
+            spell_effect: Some(Effect::GainLife { amount: 1 }), ..Default::default() });
+        db.insert(CardDef { id: 995112, name: "Unpaid accounting spell".into(),
+            card_types: vec![CardType::Sorcery], mana_cost: Some(ManaCost::new(100, 0, 0, 0, 0, 0)),
+            ..Default::default() });
+        db.insert(CardDef { id: 995113, name: "Accounting land".into(),
+            card_types: vec![CardType::Land], mana_abilities: vec![ManaAbility::TapForColorless],
+            ..Default::default() });
+        db.insert(CardDef { id: 995114, name: "Departing accounting source".into(),
+            card_types: vec![CardType::Creature], power: Some(1), toughness: Some(0),
+            mana_abilities: vec![ManaAbility::TapForColorlessAmount(0)], ..Default::default() });
+        db.insert(CardDef { id: 995115, name: "Accounting activated source".into(),
+            card_types: vec![CardType::Artifact], activated_abilities: vec![ActivatedAbility {
+                cost: ManaCost::zero(), requires_tap: true,
+                sacrifice_cost: Some(SacrificeCost::SelfSacrifice), life_cost: 1,
+                effect: Effect::GainLife { amount: 1 }, description: "accounting control".into(),
+            }], ..Default::default() });
+        for players in [2, 3, 4] {
+            let mut base = GameState::new(players);
+            base.card_db = Some(Arc::new(db.clone()));
+            base.phase = Phase::PreCombatMain;
+            base.loss_boundary.accepted_actions = 41;
+            for player in 0..players {
+                for _ in 0..3 { base.create_card_in_zone(995113, player, ZoneType::Library); }
+            }
+            let hand = base.create_card_in_zone(995111, 0, ZoneType::Hand);
+            let grave = base.create_card_in_zone(995111, 0, ZoneType::Graveyard);
+            let command = base.create_card_in_zone(995111, 0, ZoneType::Command);
+            let unpaid = base.create_card_in_zone(995112, 0, ZoneType::Hand);
+            let land = base.create_card_in_zone(995113, 0, ZoneType::Hand);
+            let grave_land = base.create_card_in_zone(995113, 0, ZoneType::Graveyard);
+            let mana_source = base.create_card_in_zone(995113, 0, ZoneType::Battlefield);
+            let departing = base.create_card_in_zone(995114, 0, ZoneType::Battlefield);
+            base.objects.get_mut(&departing).unwrap().summoning_sick = false;
+            let ability = base.create_card_in_zone(995115, 0, ZoneType::Battlefield);
+            let actions = [
+                Action::CastSpell { object_id: hand, targets: vec![] },
+                Action::CastSpell { object_id: unpaid, targets: vec![] },
+                Action::CastSpell { object_id: grave, targets: vec![] },
+                Action::CastCommander { object_id: command, targets: vec![] },
+                Action::CastFromGraveyard { object_id: grave, targets: vec![] },
+                Action::PlayLand { object_id: land },
+                Action::PlayLandFromGraveyard { object_id: grave_land },
+                Action::ActivateManaAbility { object_id: mana_source, ability_index: 0 },
+                Action::ActivateManaAbility { object_id: mana_source, ability_index: 99 },
+                Action::ActivateManaAbility { object_id: departing, ability_index: 0 },
+                Action::ActivateManaAbility { object_id: u64::MAX, ability_index: 0 },
+                Action::ActivateAbility { object_id: ability, ability_index: 0, targets: vec![] },
+                Action::ActivateAbility { object_id: ability, ability_index: 99, targets: vec![] },
+            ];
+            for scenario in 0..12 {
+                for passes in [0, 1] {
+                    let mut initial = base.clone();
+                    initial.consecutive_passes = passes;
+                    match scenario {
+                        1 => initial.players[0].life = 0,
+                        2 => initial.players[0].poison_counters = 10,
+                        3 => initial.loss_boundary.pending_failed_draws.push(0),
+                        4 => initial.players[0].has_lost = true,
+                        5 => initial.game_over = true,
+                        6 => {
+                            initial.trigger_order_resume = Some(TriggerOrderResume::AfterResolution);
+                            initial.pending_triggers = (0..2).map(|index| crate::game::PendingTrigger {
+                                source_id: mana_source, ability_index: index, controller: 0, targets: vec![],
+                                context: crate::game::TriggerContext { source_card_id: 995113,
+                                    source_generation: 0, effect: Effect::GainLife { amount: 1 },
+                                    cast_spell: None, zone_transition: None },
+                            }).collect();
+                        }
+                        7 => { initial.phase = Phase::Cleanup; initial.cleanup_discard_in_progress = true; }
+                        8 => { for id in [mana_source, departing, ability] {
+                            initial.objects.get_mut(&id).unwrap().tapped = true;
+                        } }
+                        9 => initial.trigger_placement_deferred = true,
+                        10 => initial.loss_action_in_progress = true,
+                        11 => initial.priority_player = 1,
+                        _ => {}
+                    }
+                    let mut snapshot = initial.clone(); snapshot.restore(initial.snapshot());
+                    let mut restored = [initial.clone(), snapshot,
+                        serde_json::from_slice::<GameState>(&serde_json::to_vec(&initial).unwrap()).unwrap(),
+                        bincode::deserialize::<GameState>(&bincode::serialize(&initial).unwrap()).unwrap()];
+                    for (roundtrip, candidate) in restored.iter_mut().enumerate() {
+                        candidate.card_db = initial.card_db.clone();
+                        for action in &actions {
+                            let mut reference = candidate.clone();
+                            canonical_action_reference(&mut reference, action);
+                            let mut actual = candidate.clone();
+                            apply_action(&mut actual, action);
+                            assert_eq!(bincode::serialize(&actual).unwrap(), bincode::serialize(&reference).unwrap(),
+                                "players={players} scenario={scenario} passes={passes} restore={roundtrip} action={action:?}");
+                            assert_eq!(actual.pending_events, reference.pending_events);
+                            let mut counted_reference = candidate.clone();
+                            let expected = if counted_reference.unsupported_continuing_elimination() {
+                                Err(crate::simulation::TerminationReason::UnsupportedContinuingElimination)
+                            } else if counted_reference.gameplay_stopped() { Ok(false) } else {
+                                let before = bincode::serialize(&counted_reference).unwrap();
+                                canonical_action_reference(&mut counted_reference, action);
+                                if counted_reference.unsupported_continuing_elimination() {
+                                    Err(crate::simulation::TerminationReason::UnsupportedContinuingElimination)
+                                } else { Ok(before != bincode::serialize(&counted_reference).unwrap()) }
+                            };
+                            let mut counted = candidate.clone();
+                            let result = crate::simulation::apply_counted_action(&mut counted, action, std::slice::from_ref(action));
+                            assert_eq!(result, expected);
+                            assert_eq!(bincode::serialize(&counted).unwrap(), bincode::serialize(&counted_reference).unwrap());
+                            assert_eq!(counted.pending_events, counted_reference.pending_events);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     fn fixture() -> (GameState, Action, ObjectId) {
         let mut db = CardDatabase::new();
@@ -567,7 +827,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                     state.invalidate_characteristics_cache();
                     sba::check_state_based_actions(state);
                 }
-                if state.game_over { return true; }
+                if state.gameplay_stopped() { return true; }
                 let flushed = triggers::flush_triggers(state);
 
                 if flushed {
@@ -946,14 +1206,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         }
 
         Action::Concede => {
-            let player = state.priority_player;
-            state.players[player].has_lost = true;
-            // Check if game ends: only 1 active player left = game over
-            let active_count = state.active_player_count();
-            if active_count <= 1 {
-                state.game_over = true;
-                state.winner = (0..state.players.len()).find(|&i| !state.players[i].has_lost);
-            }
+            loss::adjudicate(state, Some(state.priority_player));
         }
 
         Action::ActivateMacro { combo_id } => {
@@ -1006,7 +1259,7 @@ fn has_static_ability_on_battlefield(
 /// 3. Phial of Galadriel: draw 2 instead of 1 when hand is empty
 /// If none apply, normal draw.
 pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     // Check for draw replacement effects on the battlefield
     let has_renfield = has_static_ability_on_battlefield(
         state, player, &crate::layers::StaticAbility::RenfieldDrawReplacement,
@@ -1019,9 +1272,13 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
     );
 
     for _ in 0..count {
-        if state.players[player].library.is_empty() {
-            // Player loses for drawing from empty library
-            state.players[player].has_lost = true;
+        if state.players[player].library.is_empty() && !has_renfield && !has_abundance {
+            // CR 704: complete the enclosing effect before this condition
+            // becomes a loss at settlement. Repeated attempts share one fact.
+            if !state.loss_boundary.pending_failed_draws.contains(&player) {
+                state.loss_boundary.pending_failed_draws.push(player);
+                state.loss_boundary.pending_failed_draws.sort_unstable();
+            }
             return;
         }
 
@@ -1081,6 +1338,10 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
             let draws = if has_phial && hand_was_empty { 2 } else { 1 };
             for _ in 0..draws {
                 if state.players[player].library.is_empty() {
+                    if !state.loss_boundary.pending_failed_draws.contains(&player) {
+                        state.loss_boundary.pending_failed_draws.push(player);
+                        state.loss_boundary.pending_failed_draws.sort_unstable();
+                    }
                     break;
                 }
                 let card_id = state.players[player].library.remove(0);
@@ -1105,12 +1366,14 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
 /// Finish resolution only after state-based actions and all queued triggers
 /// have had a chance to establish their mandatory chooser.
 pub(super) fn complete_stack_resolution(state: &mut GameState) {
+    if state.gameplay_stopped() { return; }
     state.trigger_order_resume = Some(TriggerOrderResume::AfterResolution);
     // Copies and abilities need not move a physical spell to invalidate the
     // cache; their completed effects can still change dynamic characteristics.
     state.invalidate_characteristics_cache();
     sba::check_state_based_actions(state);
     state.trigger_placement_deferred = false;
+    if state.gameplay_stopped() { return; }
     if !state.pending_triggers.is_empty() && !triggers::flush_triggers(state) {
         return;
     }
@@ -1119,6 +1382,7 @@ pub(super) fn complete_stack_resolution(state: &mut GameState) {
 }
 
 fn restore_priority_after_resolution(state: &mut GameState) {
+    if state.gameplay_stopped() { return; }
     clear_lost_tutor_choice(state);
     if let Some(tutor) = &state.pending_tutor {
         state.priority_player = tutor.controller;
@@ -1186,7 +1450,7 @@ fn fast_forward_end_of_turn(state: &mut GameState) {
 
     while state.active_player == turn_player
         && state.turn_number == initial_turn
-        && !state.game_over
+        && !state.gameplay_stopped()
         && safety < MAX_SAFETY
     {
         safety += 1;
@@ -1271,12 +1535,42 @@ fn fast_forward_end_of_turn(state: &mut GameState) {
 ///
 /// Returns the number of internal actions taken (for action-count tracking).
 pub fn fast_forward_goldfish_turn(state: &mut GameState) -> u32 {
-    fast_forward_goldfish_turn_inner(state, None)
+    fast_forward_goldfish_turn_counted(state, None)
 }
 
 /// TUI path: pause when the human must order copies during an opponent turn.
 pub fn fast_forward_goldfish_turn_until_copy_choice(state: &mut GameState, human: PlayerIndex) -> u32 {
-    fast_forward_goldfish_turn_inner(state, Some(human))
+    fast_forward_goldfish_turn_counted(state, Some(human))
+}
+
+fn fast_forward_goldfish_turn_counted(state: &mut GameState, pause_for: Option<PlayerIndex>) -> u32 {
+    if state.gameplay_stopped() { return 0; }
+    if state.loss_action_in_progress { return fast_forward_goldfish_turn_inner(state, pause_for); }
+    let active_before = state.active_player;
+    let had_terminal = state.loss_boundary.terminal.is_some();
+    let had_unsupported = state.loss_boundary.unsupported.is_some();
+    state.loss_action_in_progress = true;
+    let actions = fast_forward_goldfish_turn_inner(state, pause_for);
+    state.loss_action_in_progress = false;
+    state.loss_boundary.accepted_actions += u64::from(actions);
+    if actions > 0 && state.loss_boundary.turns_taken.iter().all(|turns| *turns == 0) {
+        state.loss_boundary.turns_taken.resize(state.players.len(), 0);
+        state.loss_boundary.turns_taken[active_before] = 1;
+    }
+    // A terminal/failure seam ends the shortcut on its final counted action.
+    // Retain that action's phase/seat/turn provenance, correcting only the
+    // accepted index accumulated by this existing shortcut's action budget.
+    if !had_terminal {
+        if let Some(result) = &mut state.loss_boundary.terminal {
+            result.coordinates.action_index = state.loss_boundary.accepted_actions;
+        }
+    }
+    if !had_unsupported {
+        if let Some(result) = &mut state.loss_boundary.unsupported {
+            result.coordinates.action_index = state.loss_boundary.accepted_actions;
+        }
+    }
+    actions
 }
 
 fn fast_forward_goldfish_turn_inner(state: &mut GameState, pause_for: Option<PlayerIndex>) -> u32 {
@@ -1285,7 +1579,7 @@ fn fast_forward_goldfish_turn_inner(state: &mut GameState, pause_for: Option<Pla
     let mut safety = 0u32;
     const MAX_SAFETY: u32 = 200;
 
-    while state.active_player == goldfish_player && !state.game_over && safety < MAX_SAFETY {
+    while state.active_player == goldfish_player && !state.gameplay_stopped() && safety < MAX_SAFETY {
         safety += 1;
 
         if let Some(pending) = &state.pending_copy_order {

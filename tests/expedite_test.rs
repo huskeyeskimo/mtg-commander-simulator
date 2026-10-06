@@ -126,6 +126,9 @@ fn expedite_targets_and_resolves_through_normal_priority_flow() {
 #[test]
 fn expedite_enables_krenko_then_haste_expires_at_real_cleanup() {
     let mut state = game();
+    // Keep this real-cleanup/haste control within ordinary continuing play.
+    // The passive player's draw must not cause an unrelated terminal loss.
+    state.create_card_in_zone(ids::MOUNTAIN, 1, ZoneType::Library);
     let krenko = state.create_card_in_zone(ids::KRENKO_MOB_BOSS, 0, ZoneType::Battlefield);
     let activate = Action::ActivateAbility {
         object_id: krenko,

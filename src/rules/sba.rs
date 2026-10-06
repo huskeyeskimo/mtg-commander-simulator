@@ -51,6 +51,10 @@ fn find_duplicates_to_remove(
 /// // only now grant priority
 /// ```
 pub fn check_state_based_actions(state: &mut GameState) -> bool {
+    if state.game_over || state.loss_boundary.unsupported.is_some() { return false; }
+    if state.unsupported_continuing_elimination() {
+        return super::loss::adjudicate(state, None);
+    }
     if state.pending_copy_order.is_some() {
         return false;
     }
@@ -67,78 +71,12 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
         let mut any_sba = false;
 
         loop {
+            if super::loss::adjudicate(state, None) {
+                state.trigger_placement_deferred = caller_deferred;
+                return true;
+            }
             let keyword_observations = super::transitions::capture_legacy_death_keywords(state);
             let mut any_action = false;
-
-            // CR 704.5a: Player with 0 or less life loses
-            for i in 0..state.players.len() {
-                if state.players[i].life <= 0 && !state.players[i].has_lost {
-                    state.players[i].has_lost = true;
-                    any_action = true;
-                }
-            }
-
-            // CR 704.5c: Player with 10+ poison counters loses
-            for i in 0..state.players.len() {
-                if state.players[i].poison_counters >= 10 && !state.players[i].has_lost {
-                    state.players[i].has_lost = true;
-                    any_action = true;
-                }
-            }
-
-            // CR 903.10a (Commander): Player with 21+ commander damage from
-            // a single commander loses the game.
-            if state.is_commander_format() {
-                for i in 0..state.players.len() {
-                    if state.players[i].has_lost {
-                        continue;
-                    }
-                    for dmg in &state.players[i].commander_damage_received {
-                        if *dmg >= 21 {
-                            state.players[i].has_lost = true;
-                            any_action = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Player elimination: remove eliminated players' permanents and stack entries
-            {
-                let eliminated: Vec<usize> = (0..state.players.len())
-                    .filter(|&i| state.players[i].has_lost)
-                    .collect();
-                let mut removed_any = false;
-                for &elim in &eliminated {
-                    // Remove their permanents from the battlefield
-                    let their_perms: Vec<ObjectId> = state
-                        .battlefield
-                        .iter()
-                        .copied()
-                        .filter(|&id| {
-                            state
-                                .objects
-                                .get(&id)
-                                .map_or(false, |inst| inst.controller == elim)
-                        })
-                        .collect();
-                    for &id in &their_perms {
-                        if state.battlefield.contains(&id) {
-                            state.move_object(id, ZoneType::Battlefield, ZoneType::Exile);
-                            any_action = true;
-                            removed_any = true;
-                        }
-                    }
-                    // Remove their spells/abilities from the stack
-                    state.stack.retain(|entry| entry.controller != elim);
-                    // Remove their pending triggers
-                    state.pending_triggers.retain(|t| t.controller != elim);
-                }
-                if removed_any {
-                    state.refresh_continuous_effects();
-                    state.refresh_replacement_effects();
-                }
-            }
 
             // CR 704.5d: +1/+1 and -1/-1 counter cancellation
             for &obj_id in &state.battlefield.clone() {
@@ -328,17 +266,6 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
                 state.refresh_replacement_effects();
             }
             died_this_round.extend(to_die);
-
-            // Check for game end
-            let losers: Vec<usize> = (0..state.players.len())
-                .filter(|&i| state.players[i].has_lost)
-                .collect();
-
-            if losers.len() >= state.players.len() - 1 {
-                state.game_over = true;
-                state.winner = (0..state.players.len())
-                    .find(|&i| !state.players[i].has_lost);
-            }
 
             if !any_action {
                 break;

@@ -114,11 +114,13 @@ fn main() -> io::Result<()> {
             }
         }
 
-        if app.state.game_over {
+        if app.state.unsupported_continuing_elimination() {
+            println!("\nINVALID reason=unsupported_continuing_elimination");
+        } else if app.state.game_over {
             match app.state.winner {
                 Some(0) => println!("\nYOU WIN on turn {}!", app.state.turn_number),
                 Some(_) => println!("\nYou lost on turn {}.", app.state.turn_number),
-                None => println!("\nDraw."),
+                None => println!("\nRULES DRAW."),
             }
             println!(
                 "Final life: You={} Goldfish={}",

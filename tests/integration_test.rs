@@ -4969,6 +4969,7 @@ fn test_multi_phase_abstraction() {
 
     // Create a minimal info set for testing
     let info_set_main = InformationSet {
+        pending_failed_draws: vec![],
         phase: 3, // PreCombatMain
         active_player: 0,
         turn_number: 1,
@@ -9005,19 +9006,32 @@ fn test_2b3a_self_sacrifice_cost_settles_dependents_after_payment() {
 
 #[test]
 fn test_2b3a_life_cost_settles_loss_before_return() {
-    let mut state = boundary_2b3a_game();
-    let source = state.create_card_in_zone(995004, 0, ZoneType::Battlefield);
-    state.players[0].life = 1;
-    rules::apply_action(&mut state, &Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] });
-    assert!(state.players[0].has_lost);
-    assert!(!state.stack.iter().any(|entry| entry.controller == 0), "existing elimination removes stacked ability");
-    assert_eq!(state.priority_player, 1);
+    for life in [1, 2] {
+        let mut state = boundary_2b3a_game();
+        let source = state.create_card_in_zone(995004, 0, ZoneType::Battlefield);
+        state.players[0].life = life;
+        rules::apply_action(&mut state, &Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] });
+        assert_eq!(state.players[0].life, life - 1);
+        assert!(state.players[0].graveyard.contains(&source), "legitimate cost payment completes");
+        assert_eq!(state.stack.len(), 1, "paid ability is stacked before settlement");
+        assert!(!state.players[0].has_lost, "unsupported loss must not mark or clean up players");
+        assert_eq!(state.priority_player, 0);
+        if life == 1 {
+            assert!(state.unsupported_continuing_elimination());
+            assert!(!state.game_over);
+            assert!(legal_actions(&state).is_empty());
+        } else {
+            assert!(!state.gameplay_stopped());
+            assert!(!legal_actions(&state).is_empty());
+        }
+    }
 }
 
 #[test]
 fn test_2b3a_all_cast_zones_settle_cast_side_life_changes() {
     use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
     for zone in [ZoneType::Hand, ZoneType::Command, ZoneType::Graveyard] {
+        for losing in [true, false] {
         let mut state = boundary_2b3a_game();
         let db = Arc::make_mut(state.card_db.as_mut().unwrap());
         db.insert(CardDef { id: 995005, name: "Cast boundary".into(),
@@ -9033,7 +9047,7 @@ fn test_2b3a_all_cast_zones_settle_cast_side_life_changes() {
             }], ..Default::default() });
         state.create_card_in_zone(995006, 0, ZoneType::Battlefield);
         let lost_permanent = state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
-        state.players[1].life = 1;
+        state.players[1].life = if losing { 1 } else { 2 };
         let spell = state.create_card_in_zone(995005, 0, zone);
         if zone == ZoneType::Command {
             state.format = mtg_gto::game::GameFormat::Commander;
@@ -9047,14 +9061,31 @@ fn test_2b3a_all_cast_zones_settle_cast_side_life_changes() {
         assert!(legal_actions(&state).contains(&action));
         state.drain_events();
         rules::apply_action(&mut state, &action);
-        assert!(state.players[1].has_lost);
-        assert!(state.players[1].exile.contains(&lost_permanent));
+        assert_eq!(state.players[1].life, if losing { 0 } else { 1 });
+        assert!(state.battlefield.contains(&lost_permanent));
+        assert!(!state.players[1].has_lost);
+        assert!(state.stack.iter().any(|entry| matches!(entry.source,
+            mtg_gto::game::StackSource::Spell(id) if id == spell)), "cast itself completes");
         let events = state.drain_events();
-        let removal = events.iter().position(|e| matches!(e, GameEvent::ZoneChange { object, from: Zone::Battlefield, .. } if *object == lost_permanent)).unwrap();
-        let placement = events.iter().position(|e| matches!(e, GameEvent::AbilityTriggered { .. })).unwrap();
-        assert!(removal < placement, "cast consequences settle before placement");
-        assert_eq!(state.stack.len(), 2);
+        if losing {
+            assert!(state.unsupported_continuing_elimination());
+            assert!(!state.game_over);
+            assert_eq!(state.stack.len(), 1, "no post-loss trigger placement");
+            assert_eq!(state.pending_triggers.len(), 1);
+            assert!(!events.iter().any(|e| matches!(e, GameEvent::AbilityTriggered { .. })));
+            assert!(legal_actions(&state).is_empty());
+        } else {
+            assert!(!state.gameplay_stopped());
+            let cast_event = events.iter().position(|e| matches!(e,
+                GameEvent::SpellCast { object, .. } if *object == spell)).unwrap();
+            let placement = events.iter().position(|e| matches!(e,
+                GameEvent::AbilityTriggered { .. })).unwrap();
+            assert!(cast_event < placement, "cast completes before observer placement");
+            assert_eq!(state.stack.len(), 2, "no-loss cast observer still placed after consequences");
+            assert!(state.pending_triggers.is_empty());
+        }
         assert_eq!(state.priority_player, 0);
+        }
     }
 }
 
@@ -9110,32 +9141,53 @@ fn test_2b3a_multiple_children_do_not_settle_between_toughness_changes() {
 
 #[test]
 fn test_2b3a_draw_step_settles_loss_before_priority() {
-    let mut state = boundary_2b3a_game();
-    state.phase = Phase::Upkeep;
-    state.turn_number = 2;
-    let permanent = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
-    for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
-    assert_eq!(state.phase, Phase::Draw);
-    assert!(state.players[0].has_lost);
-    assert!(state.players[0].exile.contains(&permanent));
-    assert_eq!(state.priority_player, 1);
+    for failed in [true, false] {
+        let mut state = boundary_2b3a_game();
+        state.phase = Phase::Upkeep;
+        state.turn_number = 2;
+        let permanent = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+        let drawn = if failed { None } else { Some(state.create_card_in_zone(995001, 0, ZoneType::Library)) };
+        for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
+        assert_eq!(state.phase, Phase::Draw);
+        assert!(state.battlefield.contains(&permanent));
+        assert!(!state.players[0].has_lost);
+        if failed {
+            assert!(state.unsupported_continuing_elimination());
+            assert!(legal_actions(&state).is_empty());
+        } else {
+            assert!(!state.gameplay_stopped());
+            assert!(state.players[0].hand.contains(&drawn.unwrap()));
+            assert_eq!(state.priority_player, 0);
+        }
+    }
 }
 
 #[test]
 fn test_2b3a_resolution_completion_restores_live_priority() {
     use mtg_gto::card::{CardDef, CardType, Effect, TargetSpec};
+    for life in [1, 2] {
     let mut state = boundary_2b3a_game();
     Arc::make_mut(state.card_db.as_mut().unwrap()).insert(CardDef { id: 995005,
         name: "Resolution priority".into(), card_types: vec![CardType::Instant],
         mana_cost: Some(mtg_gto::mana::ManaCost::zero()),
         spell_effect: Some(Effect::LoseLife { amount: 1, target: TargetSpec::Controller }),
         ..Default::default() });
-    state.players[0].life = 1;
+    state.players[0].life = life;
     let spell = state.create_card_in_zone(995005, 0, ZoneType::Hand);
     rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![] });
     for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
-    assert!(state.players[0].has_lost);
-    assert_eq!(state.priority_player, 1);
+    assert_eq!(state.players[0].life, life - 1);
+    assert!(state.players[0].graveyard.contains(&spell), "physical resolution finishes before loss settlement");
+    assert!(state.stack.is_empty());
+    assert!(!state.players[0].has_lost);
+    if life == 1 {
+        assert!(state.unsupported_continuing_elimination());
+        assert!(legal_actions(&state).is_empty());
+    } else {
+        assert!(!state.gameplay_stopped());
+        assert_eq!(state.priority_player, 0, "live active player regains resolution priority");
+    }
+    }
 }
 
 #[test]
@@ -9252,15 +9304,18 @@ fn test_2b3a_concession_during_ordering_resumes_on_live_player() {
         for index in 0..2 { queue_test_trigger(&mut state, source, index, player); }
     }
     state.trigger_order_resume = Some(mtg_gto::game::TriggerOrderResume::Player(0));
-    rules::apply_action(&mut state, &Action::Concede);
-    assert!(state.players[0].has_lost);
-    assert_eq!(state.priority_player, 1);
-    assert_eq!(state.pending_triggers.len(), 2);
-    assert_eq!(state.trigger_order_resume, Some(mtg_gto::game::TriggerOrderResume::Player(1)));
-    let order = legal_actions(&state).into_iter().find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
-    rules::apply_action(&mut state, &order);
-    assert_eq!(state.priority_player, 1);
-    assert_eq!(state.stack.len(), 2);
+    boundary_2b3a_concession_controls(&state, 0);
+    for chooser in [0, 1] {
+        assert_eq!(state.priority_player, chooser);
+        let order = legal_actions(&state).into_iter().find(|a|
+            matches!(a, Action::OrderTriggerOccurrences { .. } | Action::OrderTriggers { .. })).unwrap();
+        rules::apply_action(&mut state, &order);
+    }
+    assert!(!state.gameplay_stopped());
+    assert!(state.pending_triggers.is_empty());
+    assert!(state.trigger_order_resume.is_none());
+    assert_eq!(state.priority_player, 0, "supported no-loss APNAP ordering restores live priority");
+    assert_eq!(state.stack.len(), 4);
 }
 
 #[cfg(feature = "tui")]
@@ -9369,6 +9424,44 @@ fn test_2b3a_untap_settles_at_upkeep_before_priority_and_trigger_order() {
     assert_eq!(state.stack.len(), 2);
 }
 
+fn boundary_2b3a_concession_controls(state: &GameState, loser: usize) {
+    for terminal in [false, true] {
+        let mut setup = state.clone();
+        if terminal { setup.players.truncate(2); }
+        for mut candidate in boundary_2b3a_review_roundtrips(&setup) {
+            let pending = serde_json::to_value(&candidate.pending_triggers).unwrap();
+            let tutor = serde_json::to_value(&candidate.pending_tutor).unwrap();
+            let stack = serde_json::to_value(&candidate.stack).unwrap();
+            let resume = candidate.trigger_order_resume;
+            let phase = candidate.phase;
+            let priority = candidate.priority_player;
+            rules::apply_action(&mut candidate, &Action::Concede);
+            assert!(candidate.gameplay_stopped());
+            assert!(legal_actions(&candidate).is_empty(), "no abandoned chooser can act");
+            assert!(legal_actions_abstracted(&candidate).is_empty());
+            assert_eq!(serde_json::to_value(&candidate.pending_triggers).unwrap(), pending);
+            assert_eq!(serde_json::to_value(&candidate.pending_tutor).unwrap(), tutor);
+            assert_eq!(serde_json::to_value(&candidate.stack).unwrap(), stack);
+            assert_eq!(candidate.trigger_order_resume, resume);
+            assert_eq!(candidate.phase, phase, "concession gate does not consume continuation");
+            assert_eq!(candidate.priority_player, priority);
+            if terminal {
+                assert!(candidate.game_over);
+                assert_eq!(candidate.winner, Some(1 - loser));
+                assert!(candidate.players[loser].has_lost);
+            } else {
+                assert!(candidate.unsupported_continuing_elimination());
+                assert!(!candidate.game_over);
+                assert!(!candidate.players[loser].has_lost);
+            }
+            let settled = serde_json::to_value(&candidate).unwrap();
+            rules::apply_action(&mut candidate, &Action::PassPriority);
+            rules::check_state_based_actions(&mut candidate);
+            assert_eq!(settled, serde_json::to_value(&candidate).unwrap());
+        }
+    }
+}
+
 fn boundary_2b3a_review_roundtrips(state: &GameState) -> [GameState; 4] {
     let mut snapshot = state.clone();
     snapshot.restore(state.snapshot());
@@ -9425,6 +9518,7 @@ fn test_2b3a_review_first_strike_wither_damage_refreshes_completion_cache() {
 #[test]
 fn test_2b3a_review_draw_loss_ordering_restores_live_priority_in_all_roundtrips() {
     use mtg_gto::card::{Effect, TriggerCondition, TriggeredAbility};
+    for failed in [true, false] {
     let mut state = boundary_2b3a_game();
     state.phase = Phase::Upkeep;
     state.turn_number = 2;
@@ -9439,25 +9533,42 @@ fn test_2b3a_review_draw_loss_ordering_restores_live_priority_in_all_roundtrips(
     let dependent = state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
     state.refresh_continuous_effects();
     assert_eq!(state.effective_toughness(dependent), 1);
+    if !failed {
+        state.create_card_in_zone(995001, 0, ZoneType::Library);
+        state.objects.get_mut(&dependent).unwrap().temp_toughness_mod = -1;
+        state.invalidate_characteristics_cache();
+    }
     for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
     assert_eq!(state.phase, Phase::Draw);
-    assert!(state.players[0].has_lost);
-    assert!(state.players[1].graveyard.contains(&dependent));
-    assert_eq!(state.pending_triggers.len(), 2);
-    assert_eq!(state.priority_player, 1);
-    let mut outcomes = Vec::new();
-    for mut candidate in boundary_2b3a_review_roundtrips(&state) {
-        let order = legal_actions(&candidate).into_iter().find(|a|
-            matches!(a, Action::OrderTriggers { .. })).unwrap();
-        rules::apply_action(&mut candidate, &order);
-        assert_eq!(candidate.priority_player, 1);
-        assert!(!candidate.players[candidate.priority_player].has_lost);
-        assert!(candidate.pending_triggers.is_empty());
-        assert!(candidate.trigger_order_resume.is_none());
-        assert_eq!(candidate.stack.len(), 2);
-        outcomes.push(serde_json::to_value(&candidate).unwrap());
+    if failed {
+        assert!(state.unsupported_continuing_elimination());
+        assert!(!state.players[0].has_lost);
+        assert!(state.battlefield.contains(&dependent), "loss gate precedes cleanup-dependent deaths");
+        assert!(state.pending_triggers.is_empty());
+        for candidate in boundary_2b3a_review_roundtrips(&state) {
+            assert!(candidate.unsupported_continuing_elimination());
+            assert!(legal_actions(&candidate).is_empty());
+        }
+    } else {
+        assert!(!state.gameplay_stopped());
+        assert!(state.players[1].graveyard.contains(&dependent));
+        assert_eq!(state.pending_triggers.len(), 2);
+        assert_eq!(state.priority_player, 1);
+        let mut outcomes = Vec::new();
+        for mut candidate in boundary_2b3a_review_roundtrips(&state) {
+            let order = legal_actions(&candidate).into_iter().find(|a|
+                matches!(a, Action::OrderTriggerOccurrences { .. } | Action::OrderTriggers { .. })).unwrap();
+            rules::apply_action(&mut candidate, &order);
+            assert_eq!(candidate.priority_player, 0, "no-loss draw ordering restores live active priority");
+            assert!(!candidate.players[candidate.priority_player].has_lost);
+            assert!(candidate.pending_triggers.is_empty());
+            assert!(candidate.trigger_order_resume.is_none());
+            assert_eq!(candidate.stack.len(), 2);
+            outcomes.push(serde_json::to_value(&candidate).unwrap());
+        }
+        assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
     }
-    assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
+    }
 }
 
 #[test]
@@ -9486,14 +9597,17 @@ fn test_2b3a_review_last_chooser_concession_finishes_attack_continuation() {
     assert_eq!(state.pending_triggers.len(), 2);
     assert_eq!(state.priority_player, 1);
     assert_eq!(state.trigger_order_resume, Some(mtg_gto::game::TriggerOrderResume::AfterAttackers));
+    boundary_2b3a_concession_controls(&state, 1);
     let mut outcomes = Vec::new();
     for mut candidate in boundary_2b3a_review_roundtrips(&state) {
-        rules::apply_action(&mut candidate, &Action::Concede);
-        assert!(candidate.players[1].has_lost);
+        let order = legal_actions(&candidate).into_iter().find(|a|
+            matches!(a, Action::OrderTriggerOccurrences { .. } | Action::OrderTriggers { .. })).unwrap();
+        rules::apply_action(&mut candidate, &order);
+        assert!(!candidate.gameplay_stopped());
         assert!(candidate.pending_triggers.is_empty());
-        assert_eq!(candidate.phase, Phase::DeclareBlockers);
-        assert_eq!(candidate.priority_player, 2);
         assert!(candidate.trigger_order_resume.is_none());
+        assert_eq!(candidate.phase, Phase::DeclareBlockers);
+        assert_eq!(candidate.priority_player, 1);
         assert!(legal_actions(&candidate).contains(&Action::DeclareBlockers { blocks: vec![] }));
         let settled = serde_json::to_value(&candidate).unwrap();
         rules::check_state_based_actions(&mut candidate);
@@ -9525,14 +9639,17 @@ fn test_2b3a_review_last_chooser_concession_finishes_resolution_continuation() {
     assert_eq!(state.pending_triggers.len(), 2);
     assert_eq!(state.priority_player, 1);
     assert_eq!(state.trigger_order_resume, Some(mtg_gto::game::TriggerOrderResume::AfterResolution));
+    boundary_2b3a_concession_controls(&state, 1);
     let mut outcomes = Vec::new();
     for mut candidate in boundary_2b3a_review_roundtrips(&state) {
-        rules::apply_action(&mut candidate, &Action::Concede);
-        assert!(candidate.players[1].has_lost);
+        let order = legal_actions(&candidate).into_iter().find(|a|
+            matches!(a, Action::OrderTriggerOccurrences { .. } | Action::OrderTriggers { .. })).unwrap();
+        rules::apply_action(&mut candidate, &order);
+        assert!(!candidate.gameplay_stopped());
         assert!(candidate.pending_triggers.is_empty());
-        assert_eq!(candidate.priority_player, 0);
         assert!(candidate.trigger_order_resume.is_none());
-        assert!(candidate.stack.is_empty());
+        assert_eq!(candidate.priority_player, 0);
+        assert_eq!(candidate.stack.len(), 2, "ordered triggers remain available after resolution");
         let settled = serde_json::to_value(&candidate).unwrap();
         rules::check_state_based_actions(&mut candidate);
         assert_eq!(settled, serde_json::to_value(&candidate).unwrap());
@@ -9576,56 +9693,47 @@ fn boundary_2b3a_tutor_ordering_window(victim_controller: usize) -> (GameState, 
 
 #[test]
 fn test_2b3a_eliminated_tutor_controller_cannot_resume_choice_after_concession() {
-    let mut failures = Vec::new();
     for order_first in [false, true] {
-        let (state, forest) = boundary_2b3a_tutor_ordering_window(0);
-        let mut outcomes = Vec::new();
-        for (index, mut candidate) in boundary_2b3a_review_roundtrips(&state).into_iter().enumerate() {
-            if order_first {
+        let (mut state, forest) = boundary_2b3a_tutor_ordering_window(0);
+        if order_first {
+            let order = legal_actions(&state).into_iter().find(|a|
+                matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap();
+            rules::apply_action(&mut state, &order);
+            assert_eq!(state.priority_player, 0);
+            assert!(state.pending_tutor.is_some());
+            assert!(state.trigger_order_resume.is_none());
+        }
+        boundary_2b3a_concession_controls(&state, 0);
+        assert!(state.players.iter().all(|player| !player.hand.contains(&forest)),
+            "stopped concession controls cannot select or transfer a tutor card");
+        for mut candidate in boundary_2b3a_review_roundtrips(&state) {
+            if !order_first {
                 let order = legal_actions(&candidate).into_iter().find(|a|
                     matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap();
                 rules::apply_action(&mut candidate, &order);
-                assert_eq!(candidate.priority_player, 0);
-                assert!(candidate.pending_tutor.is_some());
-                assert!(candidate.trigger_order_resume.is_none());
             }
-            assert!(legal_actions(&candidate).contains(&Action::Concede));
-            rules::apply_action(&mut candidate, &Action::Concede);
-            assert!(candidate.players[0].has_lost);
-            assert!(!candidate.game_over);
+            assert_eq!(candidate.priority_player, 0);
             assert!(candidate.pending_triggers.is_empty());
             assert!(candidate.trigger_order_resume.is_none());
-            let exposes_tutor = legal_actions(&candidate).iter().any(|a|
-                matches!(a, Action::ChooseTutorTarget { .. }));
-            if candidate.priority_player != 1 || candidate.pending_tutor.is_some() || exposes_tutor {
-                failures.push((order_first, index, candidate.priority_player, exposes_tutor));
-            }
-            assert!(candidate.players.iter().all(|player| !player.hand.contains(&forest)),
-                "retiring a lost player's choice must not select or transfer a card");
-            let settled = serde_json::to_value(&candidate).unwrap();
-            rules::check_state_based_actions(&mut candidate);
-            assert_eq!(settled, serde_json::to_value(&candidate).unwrap());
-            outcomes.push(settled);
+            let choose = Action::ChooseTutorTarget { card_id: 997002 };
+            assert!(legal_actions(&candidate).contains(&choose));
+            rules::apply_action(&mut candidate, &choose);
+            assert!(candidate.pending_tutor.is_none());
+            assert!(candidate.players[0].hand.contains(&forest));
         }
-        assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
     }
-    assert!(failures.is_empty(), "lost tutor continuation exposed after complete concession: {failures:?}");
 }
 
 #[test]
 fn test_2b3a_live_tutor_continuation_survives_ordering_or_other_chooser_concession() {
     for victim_controller in [0, 1] {
         let (state, forest) = boundary_2b3a_tutor_ordering_window(victim_controller);
+        if victim_controller == 1 { boundary_2b3a_concession_controls(&state, 1); }
         let mut outcomes = Vec::new();
         for mut candidate in boundary_2b3a_review_roundtrips(&state) {
-            if victim_controller == 0 {
-                let order = legal_actions(&candidate).into_iter().find(|a|
-                    matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap();
-                rules::apply_action(&mut candidate, &order);
-            } else {
-                rules::apply_action(&mut candidate, &Action::Concede);
-                assert!(candidate.players[1].has_lost);
-            }
+            let order = legal_actions(&candidate).into_iter().find(|a|
+                matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap();
+            rules::apply_action(&mut candidate, &order);
             assert_eq!(candidate.priority_player, 0);
             assert!(!candidate.players[0].has_lost);
             assert_eq!(candidate.pending_tutor.as_ref().unwrap().controller, 0);
@@ -9642,4 +9750,596 @@ fn test_2b3a_live_tutor_continuation_survives_ordering_or_other_chooser_concessi
         }
         assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]));
     }
+}
+
+// Terminal-only loss prerequisite. These fixtures intentionally avoid relying
+// on the old continuing-elimination cleanup or any authored card behavior.
+mod terminal_loss_prerequisite {
+    use super::*;
+    use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::{CardDatabase, StackEntry, StackSource};
+
+    fn fixture(players: usize) -> GameState {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 998_101, name: "Terminal boundary permanent".into(),
+            card_types: vec![CardType::Creature], power: Some(2), toughness: Some(2),
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::ACreatureDies,
+                effect: Effect::GainLife { amount: 1 }, description: "boundary watcher".into(),
+            }], ..Default::default() });
+        db.insert(CardDef { id: 998_102, name: "Draw then legal child".into(),
+            card_types: vec![CardType::Sorcery], mana_cost: Some(mtg_gto::mana::ManaCost::zero()),
+            spell_effect: Some(Effect::Multiple(vec![
+                Effect::DrawCards { count: 1 }, Effect::GainLife { amount: 7 },
+            ])), ..Default::default() });
+        let mut state = GameState::new(players);
+        state.card_db = Some(Arc::new(db));
+        state.phase = Phase::PreCombatMain;
+        state
+    }
+
+    fn roundtrips(state: &GameState) -> Vec<GameState> {
+        let mut snapshot = state.clone();
+        snapshot.restore(state.snapshot());
+        let mut variants = vec![state.clone(), snapshot,
+            serde_json::from_slice::<GameState>(&serde_json::to_vec(state).unwrap()).unwrap(),
+            bincode::deserialize::<GameState>(&bincode::serialize(state).unwrap()).unwrap()];
+        for candidate in &mut variants { candidate.card_db = state.card_db.clone(); }
+        variants
+    }
+
+    #[test]
+    fn failed_draw_is_pending_until_complete_settlement() {
+        let mut state = fixture(2);
+        rules::draw_cards(&mut state, 0, 2);
+        assert!(!state.players[0].has_lost,
+            "failed draw records a pending condition, not immediate elimination");
+        assert!(!state.game_over);
+        for mut candidate in roundtrips(&state) {
+            rules::check_state_based_actions(&mut candidate);
+            assert!(candidate.game_over);
+            assert_eq!(candidate.winner, Some(1));
+        }
+    }
+
+    #[test]
+    fn multiple_failed_draw_finishes_later_legal_child() {
+        let mut state = fixture(2);
+        let before_life = state.players[0].life;
+        let spell = state.create_card_in_zone(998_102, 0, ZoneType::Hand);
+        let cast = Action::CastSpell { object_id: spell, targets: vec![] };
+        assert!(legal_actions(&state).contains(&cast));
+        rules::apply_action(&mut state, &cast);
+        for mut candidate in roundtrips(&state) {
+            rules::apply_action(&mut candidate, &Action::PassPriority);
+            assert!(!candidate.game_over, "passing priority does not resolve yet");
+            assert_eq!(candidate.players[0].life, before_life);
+            rules::apply_action(&mut candidate, &Action::PassPriority);
+            assert_eq!(candidate.players[0].life, before_life + 7,
+                "the legal child following the failed draw must finish");
+            assert!(candidate.players[0].graveyard.contains(&spell));
+            assert!(candidate.game_over);
+            assert_eq!(candidate.winner, Some(1));
+        }
+    }
+
+    #[test]
+    fn continuing_loss_preserves_cross_owned_objects_stack_and_pending() {
+        let mut state = fixture(3);
+        let owned_by_loser = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield);
+        state.objects.get_mut(&owned_by_loser).unwrap().controller = 1;
+        let controlled_by_loser = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield);
+        state.objects.get_mut(&controlled_by_loser).unwrap().controller = 0;
+        let token = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield);
+        state.objects.get_mut(&token).unwrap().is_token = true;
+        let stacked = state.create_card_in_zone(998_102, 0, ZoneType::Stack);
+        state.stack.push(StackEntry { id: 1, source: StackSource::Spell(stacked),
+            controller: 0, targets: vec![], target_generations: vec![] });
+        queue_test_trigger(&mut state, controlled_by_loser, 0, 0);
+        state.players[0].life = 0;
+        let before = serde_json::to_value(&state).unwrap();
+        rules::check_state_based_actions(&mut state);
+        let after = serde_json::to_value(&state).unwrap();
+        for field in ["objects", "battlefield", "stack", "pending_triggers"] {
+            assert_eq!(before[field], after[field],
+                "unsupported continuing loss must reject before cleanup changes {field}");
+        }
+        assert!(!state.game_over, "unsupported continuing loss is not a rules outcome");
+        assert!(legal_actions(&state).is_empty());
+    }
+
+    #[test]
+    fn already_lost_nonterminal_resume_exposes_no_actions() {
+        let mut state = fixture(3);
+        state.players[0].has_lost = true;
+        for candidate in roundtrips(&state) {
+            assert!(legal_actions(&candidate).is_empty(),
+                "a resumable continuing-elimination state is outside the supported domain");
+        }
+    }
+
+    #[test]
+    fn supported_terminal_has_no_ordinary_actions() {
+        let mut state = fixture(2);
+        state.players[1].life = 0;
+        rules::check_state_based_actions(&mut state);
+        assert!(state.game_over);
+        assert_eq!(state.winner, Some(0));
+        for candidate in roundtrips(&state) {
+            assert!(legal_actions(&candidate).is_empty(), "terminal games expose no actions");
+            assert!(legal_actions_abstracted(&candidate).is_empty());
+        }
+    }
+
+    #[test]
+    fn supported_terminal_rejects_supplied_priority_pass_without_mutation() {
+        let mut state = fixture(2);
+        state.players[1].life = 0;
+        rules::check_state_based_actions(&mut state);
+        for mut candidate in roundtrips(&state) {
+            let before = serde_json::to_value(&candidate).unwrap();
+            rules::apply_action(&mut candidate, &Action::PassPriority);
+            assert_eq!(before, serde_json::to_value(&candidate).unwrap(),
+                "a supplied post-terminal action cannot change priority or phase");
+        }
+    }
+
+    #[test]
+    fn supported_terminal_stops_before_elimination_or_creature_cleanup() {
+        let mut state = fixture(2);
+        let controlled_by_loser = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield);
+        let zero_toughness = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield);
+        state.objects.get_mut(&zero_toughness).unwrap().temp_toughness_mod = -2;
+        state.players[1].life = 0;
+        let before_objects = serde_json::to_value(&state.objects).unwrap();
+        let before_battlefield = state.battlefield.clone();
+        rules::check_state_based_actions(&mut state);
+        assert!(state.game_over);
+        assert_eq!(state.winner, Some(0));
+        assert_eq!(state.battlefield, before_battlefield,
+            "terminal adjudication ends play before compatibility cleanup");
+        assert_eq!(serde_json::to_value(&state.objects).unwrap(), before_objects);
+        assert!(state.battlefield.contains(&controlled_by_loser));
+    }
+
+    #[test]
+    fn unsupported_resume_reports_invalid_before_ordinary_turn_limit() {
+        use mtg_gto::solver::mcts::{run_mcts_goldfish_game, MctsConfig, MctsOutcome};
+        let mut state = fixture(3);
+        state.players[0].has_lost = true;
+        // The horizon avoids baseline search work and tests classification
+        // precedence: an unsupported state is INVALID even at an ordinary cap.
+        state.turn_number = 21;
+        for mut candidate in roundtrips(&state) {
+            let before = serde_json::to_value(&candidate).unwrap();
+            let result = run_mcts_goldfish_game(&mut candidate, &MctsConfig::default(), false, None);
+            assert_eq!(result.outcome, MctsOutcome::Invalid);
+            assert_eq!(before, serde_json::to_value(&candidate).unwrap());
+        }
+    }
+
+    #[test]
+    fn complete_simultaneous_loss_set_is_seat_rotation_invariant() {
+        for players in [2, 3, 4] {
+            for survivor in 0..players {
+                let mut state = fixture(players);
+                state.active_player = (survivor + 1) % players;
+                for seat in 0..players {
+                    if seat != survivor { state.players[seat].life = 0; }
+                }
+                rules::check_state_based_actions(&mut state);
+                assert!(state.game_over);
+                assert_eq!(state.winner, Some(survivor));
+            }
+            let mut state = fixture(players);
+            for player in &mut state.players { player.life = 0; }
+            rules::check_state_based_actions(&mut state);
+            assert!(state.game_over);
+            assert_eq!(state.winner, None);
+        }
+    }
+
+    #[test]
+    fn represented_poison_commander_and_mixed_terminal_controls() {
+        let mut poison = fixture(2);
+        poison.players[1].poison_counters = 10;
+        rules::check_state_based_actions(&mut poison);
+        assert!(poison.game_over);
+        assert_eq!(poison.winner, Some(0));
+        let mut commander = fixture(2);
+        commander.format = mtg_gto::game::GameFormat::Commander;
+        commander.players[1].commander_damage_received = vec![21];
+        rules::check_state_based_actions(&mut commander);
+        assert!(commander.game_over);
+        assert_eq!(commander.winner, Some(0));
+        let mut mixed = fixture(2);
+        mixed.players[0].life = 0;
+        mixed.players[1].poison_counters = 10;
+        rules::check_state_based_actions(&mut mixed);
+        assert!(mixed.game_over);
+        assert_eq!(mixed.winner, None);
+    }
+    fn facts(state: &GameState) -> (&[mtg_gto::game::LossFact], &mtg_gto::game::LossCoordinates) {
+        if let Some(terminal) = &state.loss_boundary.terminal {
+            (&terminal.losses, &terminal.coordinates)
+        } else {
+            let unsupported = state.loss_boundary.unsupported.as_ref().expect("explicit unsupported boundary");
+            (&unsupported.losses, &unsupported.coordinates)
+        }
+    }
+
+    #[test]
+    fn complete_loss_matrix_records_all_seats_causes_and_coordinates() {
+        use mtg_gto::game::{GameFormat, LossCause, LossFact, LossCoordinates};
+        for players in [2, 3, 4] {
+            for pilot in 0..players {
+                for mask in 1usize..(1 << players) {
+                    for cause_kind in 0..4 {
+                        let mut state = fixture(players);
+                        state.format = GameFormat::Commander;
+                        state.turn_number = 37;
+                        state.active_player = pilot;
+                        state.priority_player = (pilot + 1) % players;
+                        state.loss_boundary.accepted_actions = 41;
+                        let ordinals: Vec<_> = (0..players).map(|seat| 3 + seat as u32 * 2).collect();
+                        state.loss_boundary.turns_taken = ordinals.clone();
+                        let mut expected = Vec::new();
+                        for seat in 0..players {
+                            if mask & (1 << seat) == 0 { continue; }
+                            let mut causes = Vec::new();
+                            if cause_kind == 0 || cause_kind == 3 {
+                                state.players[seat].life = 0;
+                                causes.push(LossCause::LifeTotal);
+                            }
+                            if cause_kind == 1 || cause_kind == 3 {
+                                state.players[seat].poison_counters = 10;
+                                causes.push(LossCause::Poison);
+                            }
+                            if cause_kind == 2 || cause_kind == 3 {
+                                let source = (seat + 1) % players;
+                                state.players[seat].commander_damage_received = vec![0; players];
+                                state.players[seat].commander_damage_received[source] = 21;
+                                causes.push(LossCause::CommanderDamage { source_player: source });
+                            }
+                            if cause_kind == 3 {
+                                rules::draw_cards(&mut state, seat, 1);
+                                causes.push(LossCause::FailedDraw);
+                            }
+                            expected.push(LossFact { player: seat, causes });
+                        }
+                        let survivors: Vec<_> = (0..players).filter(|seat| mask & (1 << seat) == 0).collect();
+                        let before_players = serde_json::to_value(&state.players).unwrap();
+                        rules::check_state_based_actions(&mut state);
+                        let (losses, coordinates) = facts(&state);
+                        assert_eq!(losses, expected, "players={players}, pilot={pilot}, mask={mask}, cause={cause_kind}");
+                        assert_eq!(*coordinates, LossCoordinates { global_turn: 37, active_seat: pilot,
+                            player_turns: ordinals, phase: Phase::PreCombatMain, action_index: 41 });
+                        assert!(state.gameplay_stopped());
+                        assert!(legal_actions(&state).is_empty());
+                        assert!(legal_actions_abstracted(&state).is_empty());
+                        if survivors.len() >= 2 {
+                            assert!(state.unsupported_continuing_elimination());
+                            assert!(!state.game_over);
+                            assert!(state.loss_boundary.terminal.is_none());
+                            assert_eq!(serde_json::to_value(&state.players).unwrap(), before_players,
+                                "unsupported gate does not mark a partial loss set");
+                        } else {
+                            assert!(state.game_over);
+                            assert_eq!(state.winner, survivors.first().copied());
+                            assert!(state.loss_boundary.unsupported.is_none());
+                            assert!(state.loss_boundary.pending_failed_draws.is_empty());
+                            for seat in 0..players { assert_eq!(state.players[seat].has_lost, mask & (1 << seat) != 0); }
+                        }
+                        for restored in roundtrips(&state) {
+                            assert_eq!(restored.loss_boundary, state.loss_boundary);
+                            assert_eq!(facts(&restored), facts(&state));
+                            assert!(legal_actions(&restored).is_empty());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_failed_draws_are_deduplicated_and_survive_later_actual_draw() {
+        use mtg_gto::game::LossCause;
+        let mut state = fixture(3);
+        rules::draw_cards(&mut state, 1, 5);
+        rules::draw_cards(&mut state, 1, 2);
+        rules::draw_cards(&mut state, 0, 1);
+        rules::draw_cards(&mut state, 0, 3);
+        assert_eq!(state.loss_boundary.pending_failed_draws, vec![0, 1]);
+        assert!(state.players.iter().all(|player| !player.has_lost));
+        assert!(!state.gameplay_stopped());
+        for mut candidate in roundtrips(&state) {
+            assert_eq!(candidate.loss_boundary.pending_failed_draws, vec![0, 1]);
+            assert_eq!(candidate.visible_state(0).pending_failed_draws, &[0, 1]);
+            assert_eq!(candidate.visible_state(2).pending_failed_draws, &[0, 1]);
+            let card = candidate.create_card_in_zone(998_101, 1, ZoneType::Library);
+            rules::draw_cards(&mut candidate, 1, 1);
+            assert!(candidate.players[1].hand.contains(&card));
+            assert_eq!(candidate.loss_boundary.pending_failed_draws, vec![0, 1],
+                "later successful draws do not erase an actual failed attempt");
+            rules::check_state_based_actions(&mut candidate);
+            assert_eq!(candidate.winner, Some(2));
+            assert!(candidate.game_over);
+            assert_eq!(facts(&candidate).0.iter().map(|fact| fact.player).collect::<Vec<_>>(), vec![0, 1]);
+            assert!(facts(&candidate).0.iter().all(|fact| fact.causes == vec![LossCause::FailedDraw]));
+        }
+        let mut empty_only = fixture(2);
+        rules::draw_cards(&mut empty_only, 0, 0);
+        rules::check_state_based_actions(&mut empty_only);
+        assert!(!empty_only.gameplay_stopped(), "empty library without actual draw failure is legal");
+        assert!(empty_only.loss_boundary.pending_failed_draws.is_empty());
+    }
+
+    #[test]
+    fn failed_draw_waits_for_suspended_copy_choice_in_all_roundtrips() {
+        use mtg_gto::rules::{begin_terminal_copy_batch, prepare_spell_copy,
+            snapshot_stack_spell, CopyBatchOutcome, CopyTargetPolicy};
+        let mut state = fixture(2);
+        let spell = state.create_card_in_zone(998_102, 0, ZoneType::Hand);
+        rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![] });
+        let source = snapshot_stack_spell(&state, state.stack[0].id).unwrap();
+        let item = prepare_spell_copy(&state, &source, 0, CopyTargetPolicy::Preserve).unwrap();
+        rules::draw_cards(&mut state, 0, 1);
+        // Direct seam control: an actual failed draw precedes a final copy operation.
+        // Existing pending-copy lock remains intact; no ordinary draw occurs during choice.
+        assert_eq!(begin_terminal_copy_batch(&mut state, vec![item.clone(), item], true).unwrap(), CopyBatchOutcome::Pending);
+        for mut candidate in roundtrips(&state) {
+            rules::check_state_based_actions(&mut candidate);
+            assert!(!candidate.gameplay_stopped(), "incomplete copy operation keeps pending failed draw");
+            assert_eq!(candidate.loss_boundary.pending_failed_draws, vec![0]);
+            let choose = Action::ChooseNextCopy { item_index: 0 };
+            assert!(legal_actions(&candidate).contains(&choose));
+            rules::apply_action(&mut candidate, &choose);
+            assert!(candidate.pending_copy_order.is_none());
+            assert_eq!(candidate.stack.len(), 3, "copy placement completes before terminal settlement");
+            assert!(candidate.game_over);
+            assert_eq!(candidate.winner, Some(1));
+            assert_eq!(facts(&candidate).0[0].causes, vec![mtg_gto::game::LossCause::FailedDraw]);
+        }
+    }
+
+    #[test]
+    fn concessions_and_already_lost_resumes_record_exact_complete_sets() {
+        use mtg_gto::game::LossCause;
+        for players in [2, 3, 4] {
+            for loser in 0..players {
+                let mut state = fixture(players);
+                state.priority_player = loser;
+                state.active_player = (loser + 1) % players;
+                state.loss_boundary.accepted_actions = 12;
+                rules::apply_action(&mut state, &Action::Concede);
+                assert!(state.gameplay_stopped());
+                assert_eq!(facts(&state).0.len(), 1);
+                assert_eq!(facts(&state).0[0].player, loser);
+                assert_eq!(facts(&state).0[0].causes, vec![LossCause::Concession]);
+                assert_eq!(facts(&state).1.action_index, 13);
+                assert_eq!(state.loss_boundary.accepted_actions, 13);
+                assert_eq!(state.game_over, players == 2);
+                assert_eq!(state.unsupported_continuing_elimination(), players >= 3);
+            }
+        }
+        let mut simultaneous = fixture(4);
+        simultaneous.priority_player = 2;
+        simultaneous.players[0].life = 0;
+        simultaneous.players[1].poison_counters = 10;
+        rules::apply_action(&mut simultaneous, &Action::Concede);
+        assert!(simultaneous.game_over);
+        assert_eq!(simultaneous.winner, Some(3));
+        assert_eq!(facts(&simultaneous).0.iter().map(|fact| fact.player).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(facts(&simultaneous).0[2].causes, vec![LossCause::Concession]);
+        let mut resumed = fixture(3);
+        resumed.players[1].has_lost = true;
+        let before = serde_json::to_value(&resumed).unwrap();
+        assert!(resumed.unsupported_continuing_elimination());
+        rules::apply_action(&mut resumed, &Action::PassPriority);
+        assert_eq!(serde_json::to_value(&resumed).unwrap(), before, "unsupported resume action gate is atomic");
+        rules::check_state_based_actions(&mut resumed);
+        assert_eq!(facts(&resumed).0[0].causes, vec![LossCause::AlreadyLost]);
+    }
+
+    #[test]
+    fn stopped_boundaries_freeze_supplied_actions_triggers_and_fast_forward() {
+        for terminal in [true, false] {
+            let mut state = fixture(if terminal { 2 } else { 3 });
+            let source = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield);
+            queue_test_trigger(&mut state, source, 0, 0);
+            queue_test_trigger(&mut state, source, 0, 0);
+            state.trigger_order_resume = Some(mtg_gto::game::TriggerOrderResume::AfterAttackers);
+            state.players[1].life = 0;
+            rules::check_state_based_actions(&mut state);
+            for mut candidate in roundtrips(&state) {
+                let before = serde_json::to_value(&candidate).unwrap();
+                for action in [Action::PassPriority, Action::Concede, Action::EndTurn,
+                    Action::DeclareAttackers { attackers: vec![] },
+                    Action::DeclareBlockers { blocks: vec![] },
+                    Action::OrderTriggerOccurrences { ordering: vec![] },
+                    Action::ChooseTutorTarget { card_id: 998_101 },
+                    Action::ChooseNextCopy { item_index: 0 }] {
+                    rules::apply_action(&mut candidate, &action);
+                    assert_eq!(serde_json::to_value(&candidate).unwrap(), before);
+                }
+                assert!(!rules::fire_triggers(&mut candidate, TriggerCondition::ACreatureDies, None));
+                rules::check_state_based_actions(&mut candidate);
+                assert_eq!(rules::fast_forward_goldfish_turn(&mut candidate), 0);
+                assert_eq!(rules::fast_forward_goldfish_turn_until_copy_choice(&mut candidate, 0), 0);
+                assert_eq!(serde_json::to_value(&candidate).unwrap(), before,
+                    "stopped boundaries cannot place triggers, resolve, advance phase or turn");
+            }
+        }
+    }
+
+    #[test]
+    fn draw_step_and_cleanup_stop_before_resuming_priority_or_next_turn() {
+        for players in [2, 3] {
+            let mut draw = fixture(players);
+            draw.phase = Phase::Upkeep;
+            draw.turn_number = 8;
+            draw.loss_boundary.accepted_actions = 10;
+            for _ in 0..players { rules::apply_action(&mut draw, &Action::PassPriority); }
+            assert!(draw.gameplay_stopped());
+            assert_eq!(draw.phase, Phase::Draw);
+            assert_eq!(draw.turn_number, 8);
+            assert_eq!(facts(&draw).1.phase, Phase::Draw);
+            assert_eq!(facts(&draw).1.action_index, 10 + players as u64);
+            assert_eq!(facts(&draw).0[0].causes, vec![mtg_gto::game::LossCause::FailedDraw]);
+            let mut cleanup = fixture(players);
+            cleanup.phase = Phase::Cleanup;
+            cleanup.cleanup_discard_in_progress = true;
+            rules::draw_cards(&mut cleanup, 0, 1);
+            for _ in 0..8 { cleanup.create_card_in_zone(998_101, 0, ZoneType::Hand); }
+            let discard = cleanup.players[0].hand[0];
+            let global_turn = cleanup.turn_number;
+            rules::apply_action(&mut cleanup, &Action::Discard { object_id: discard });
+            assert!(cleanup.players[0].graveyard.contains(&discard), "required discard completes before settlement");
+            assert!(cleanup.gameplay_stopped());
+            assert_eq!(cleanup.phase, Phase::Cleanup);
+            assert_eq!(cleanup.turn_number, global_turn);
+            assert_eq!(facts(&cleanup).1.phase, Phase::Cleanup);
+            assert!(!cleanup.cleanup_needs_repeat);
+        }
+    }
+
+    #[test]
+    fn benchmark_pilot_rotations_preserve_actual_extra_turn_ordinals() {
+        for pilot in 0..4 {
+            let mut state = fixture(4);
+            state.active_player = pilot;
+            state.priority_player = pilot;
+            state.phase = Phase::EndStep;
+            state.turn_number = 4;
+            state.loss_boundary.turns_taken = vec![1; 4];
+            state.extra_turns.push_back(pilot);
+            for _ in 0..4 { rules::apply_action(&mut state, &Action::PassPriority); }
+            assert_eq!(state.active_player, pilot);
+            assert_eq!(state.turn_number, 5);
+            assert_eq!(state.loss_boundary.turns_taken[pilot], 2, "extra turn belongs to actual pilot seat");
+            assert_eq!(state.loss_boundary.turns_taken.iter().sum::<u32>(), 5);
+            let accepted = state.loss_boundary.accepted_actions;
+            for seat in 0..4 { if seat != pilot { state.players[seat].life = 0; } }
+            rules::check_state_based_actions(&mut state);
+            assert_eq!(state.winner, Some(pilot));
+            let (losses, coordinates) = facts(&state);
+            assert_eq!(coordinates.global_turn, 5);
+            assert_eq!(coordinates.active_seat, pilot);
+            assert_eq!(coordinates.player_turns[pilot], 2);
+            assert_eq!(coordinates.action_index, accepted);
+            assert_eq!(losses.iter().map(|fact| fact.player).collect::<Vec<_>>(),
+                (0..4).filter(|seat| *seat != pilot).collect::<Vec<_>>());
+            assert!(losses.iter().all(|fact| fact.causes == vec![mtg_gto::game::LossCause::LifeTotal]));
+        }
+    }
+
+    #[test]
+    fn loss_gate_preserves_all_zones_cross_control_stack_choices_and_off_battlefield_tokens() {
+        for players in [2, 3] {
+            let mut state = fixture(players);
+            let db = Arc::make_mut(state.card_db.as_mut().unwrap());
+            let mut subject = db.get(998_101).unwrap().clone();
+            subject.activated_abilities.push(mtg_gto::card::ActivatedAbility {
+                cost: mtg_gto::mana::ManaCost::zero(), requires_tap: false,
+                sacrifice_cost: None, life_cost: 0,
+                effect: Effect::GainLife { amount: 3 }, description: "preserved ability".into() });
+            db.insert(subject);
+            let loser_owned = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield);
+            state.objects.get_mut(&loser_owned).unwrap().controller = 1;
+            let loser_controlled = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield);
+            state.objects.get_mut(&loser_controlled).unwrap().controller = 0;
+            let dead_survivor = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield);
+            state.objects.get_mut(&dead_survivor).unwrap().damage_marked = 2;
+            for zone in [ZoneType::Hand, ZoneType::Library, ZoneType::Graveyard, ZoneType::Exile, ZoneType::Command] {
+                state.create_card_in_zone(998_101, 0, zone);
+            }
+            let token = state.create_card_in_zone(998_101, 0, ZoneType::Graveyard);
+            state.objects.get_mut(&token).unwrap().is_token = true;
+            let stacked = state.create_card_in_zone(998_102, 0, ZoneType::Stack);
+            state.stack.push(StackEntry { id: 1, source: StackSource::Spell(stacked),
+                controller: 0, targets: vec![], target_generations: vec![] });
+            state.stack.push(StackEntry { id: 2, source: StackSource::ActivatedAbility {
+                source_id: loser_owned, ability_index: 0 }, controller: 1,
+                targets: vec![], target_generations: vec![] });
+            queue_test_trigger(&mut state, loser_owned, 0, 0);
+            queue_test_trigger(&mut state, loser_controlled, 0, 1);
+            state.pending_tutor = Some(mtg_gto::game::PendingTutor { controller: 0,
+                destination: ZoneType::Hand, subtype_filter: vec![] });
+            state.continuous_effects.push(mtg_gto::layers::ContinuousEffect {
+                source_id: loser_owned, controller: 1, timestamp: 1,
+                duration: mtg_gto::layers::Duration::WhileSourceOnBattlefield,
+                affected: mtg_gto::layers::AffectedObjects::Specific(loser_controlled),
+                modification: mtg_gto::layers::LayerModification::ModifyPT(1, 0) });
+            state.replacement_effects.push(ReplacementEffect { source_id: loser_owned,
+                controller: 1, applies_to: ReplacementEventKind::WouldDie,
+                action: ReplacementAction::RedirectToZone(ZoneType::Exile),
+                is_self_replacement: false, description: "preserved replacement".into() });
+            state.players[0].life = 0;
+            let before = serde_json::to_value(&state).unwrap();
+            rules::check_state_based_actions(&mut state);
+            let after = serde_json::to_value(&state).unwrap();
+            for field in ["objects", "battlefield", "stack", "pending_triggers", "pending_tutor",
+                "combat", "continuous_effects", "replacement_effects", "phase", "priority_player", "turn_number"] {
+                assert_eq!(before[field], after[field], "loss gate changed protected {field}");
+            }
+            for seat in 0..players {
+                for zone in ["library", "hand", "graveyard", "exile", "command_zone"] {
+                    assert_eq!(before["players"][seat][zone], after["players"][seat][zone]);
+                }
+            }
+            assert!(state.objects.contains_key(&token), "loss gate precedes token purge");
+            assert!(state.battlefield.contains(&dead_survivor), "loss gate precedes creature SBA");
+            assert_eq!(state.game_over, players == 2);
+            assert_eq!(state.unsupported_continuing_elimination(), players == 3);
+            for mut candidate in roundtrips(&state) {
+                let frozen = serde_json::to_value(&candidate).unwrap();
+                let outcome = simulation::apply_counted_action(&mut candidate, &Action::PassPriority,
+                    &[Action::PassPriority]);
+                if players == 3 {
+                    assert_eq!(outcome, Err(simulation::TerminationReason::UnsupportedContinuingElimination));
+                } else {
+                    assert_eq!(outcome, Ok(false));
+                }
+                assert_eq!(serde_json::to_value(&candidate).unwrap(), frozen);
+            }
+        }
+    }
+
+    #[test]
+    fn commander_damage_provenance_keeps_each_represented_threshold_slot() {
+        use mtg_gto::game::LossCause;
+        let mut state = fixture(3);
+        state.format = mtg_gto::game::GameFormat::Commander;
+        state.players[0].commander_damage_received = vec![21, 22, 20];
+        state.players[1].poison_counters = 10;
+        rules::check_state_based_actions(&mut state);
+        assert_eq!(state.winner, Some(2));
+        assert_eq!(facts(&state).0[0].causes, vec![LossCause::CommanderDamage { source_player: 0 },
+            LossCause::CommanderDamage { source_player: 1 }]);
+    }
+
+    #[test]
+    fn direct_fast_forward_terminal_coordinates_use_returned_action_count() {
+        for pilot in 0..2 {
+            let mut state = fixture(2);
+            state.active_player = pilot;
+            state.priority_player = pilot;
+            state.phase = Phase::Upkeep;
+            state.turn_number = 9;
+            state.loss_boundary.accepted_actions = 23;
+            state.loss_boundary.turns_taken = vec![4, 5];
+            let actions = rules::fast_forward_goldfish_turn(&mut state);
+            assert!(actions > 0);
+            assert!(state.game_over);
+            assert_eq!(state.winner, Some(1 - pilot));
+            assert_eq!(state.loss_boundary.accepted_actions, 23 + actions as u64);
+            assert_eq!(facts(&state).1.action_index, state.loss_boundary.accepted_actions);
+            assert_eq!(facts(&state).1.global_turn, 9);
+            assert_eq!(facts(&state).1.active_seat, pilot);
+            assert_eq!(facts(&state).1.player_turns, vec![4, 5]);
+            assert_eq!(facts(&state).1.phase, Phase::Draw);
+            assert_eq!(facts(&state).0[0].causes, vec![mtg_gto::game::LossCause::FailedDraw]);
+        }
+    }
+
 }

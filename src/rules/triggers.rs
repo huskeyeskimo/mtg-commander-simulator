@@ -15,7 +15,7 @@ fn captured_context(inst: &CardInstance, ability: &TriggeredAbility, cast_spell:
 /// Check all permanents on the battlefield for triggered abilities matching
 /// the given condition, and queue any that trigger.
 pub(super) fn check_triggers(state: &mut GameState, condition: TriggerCondition, source_hint: Option<ObjectId>) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     let triggers = collect_triggers(state, condition, source_hint);
     state.pending_triggers.extend(triggers);
 }
@@ -83,7 +83,7 @@ pub(super) fn check_your_creature_dies_triggers(
     state: &mut GameState,
     dying_controllers: &[PlayerIndex],
 ) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     let triggers: Vec<PendingTrigger> = {
         let db = state.card_db();
         let mut found = Vec::new();
@@ -128,7 +128,7 @@ pub(super) fn check_your_creature_dies_triggers(
 /// `false` if paused waiting for a player's ordering decision.
 #[must_use]
 pub(super) fn flush_triggers(state: &mut GameState) -> bool {
-    if state.pending_copy_order.is_some()
+    if state.gameplay_stopped() || state.pending_copy_order.is_some()
         || state.trigger_placement_deferred
         || state.cleanup_discard_in_progress
     {
@@ -184,7 +184,7 @@ pub(super) fn flush_triggers(state: &mut GameState) -> bool {
 
 /// Push a single trigger onto the stack as a TriggeredAbility entry.
 pub(super) fn push_trigger_to_stack(state: &mut GameState, trigger: &PendingTrigger) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     let stack_id = state.new_stack_id();
     state.stack.push(StackEntry {
         id: stack_id,
@@ -208,7 +208,7 @@ pub(super) fn push_trigger_to_stack(state: &mut GameState, trigger: &PendingTrig
 /// for a player's ordering decision (i.e. pending_triggers is non-empty).
 #[must_use]
 pub fn fire_triggers(state: &mut GameState, condition: TriggerCondition, source_hint: Option<ObjectId>) -> bool {
-    if state.pending_copy_order.is_some() { return false; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return false; }
     check_triggers(state, condition, source_hint);
     flush_triggers(state)
 }
@@ -259,7 +259,7 @@ pub(super) fn mana_from_swamp_bonus_count(state: &GameState, player: PlayerIndex
 /// `caster` is the player who cast the spell. `is_creature` indicates whether
 /// the spell is a creature spell (relevant for OpponentCastsNoncreatureSpell).
 pub(super) fn fire_spell_cast_triggers(state: &mut GameState, caster: PlayerIndex, is_creature: bool, spell_stack_id: StackId) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     let triggers: Vec<PendingTrigger> = {
         let db = state.card_db();
         let mut found = Vec::new();
@@ -378,7 +378,7 @@ fn apply_prowess(state: &mut GameState, caster: PlayerIndex) {
 /// `drawing_player` is the player who drew. This fires `OpponentDrawsCard`
 /// on permanents controlled by each opponent of the drawing player.
 pub(super) fn fire_card_draw_triggers(state: &mut GameState, drawing_player: PlayerIndex) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     let triggers: Vec<PendingTrigger> = {
         let db = state.card_db();
         let mut found = Vec::new();
@@ -415,7 +415,7 @@ pub(super) fn fire_card_draw_triggers(state: &mut GameState, drawing_player: Pla
 /// Apply Exalted: when exactly one creature attacks, each permanent you control
 /// with Exalted gives the attacker +1/+1 until end of turn.
 pub(super) fn apply_exalted(state: &mut GameState, attacker_id: ObjectId) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     use crate::card::KeywordAbility;
     use crate::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
 
@@ -453,7 +453,7 @@ pub(super) fn apply_exalted(state: &mut GameState, attacker_id: ObjectId) {
 /// Apply Annihilator: when a creature with Annihilator N attacks, the defending
 /// player sacrifices N permanents (simplified: random permanents).
 pub(super) fn apply_annihilator(state: &mut GameState, attackers: &[ObjectId]) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     use crate::card::ZoneType;
 
     let defending_player = state.next_player(state.active_player);
@@ -508,7 +508,7 @@ pub(super) fn apply_annihilator(state: &mut GameState, attackers: &[ObjectId]) {
 /// Apply Extort: when a spell is cast, each permanent with Extort drains 1 life
 /// from each opponent (simplified: auto-extort without optional payment).
 pub(super) fn apply_extort(state: &mut GameState, caster: PlayerIndex) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
     use crate::card::KeywordAbility;
 
     let extort_count = {

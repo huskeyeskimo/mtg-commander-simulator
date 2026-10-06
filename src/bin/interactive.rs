@@ -109,11 +109,12 @@ fn main() {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
 
-    while !state.game_over && state.turn_number <= MAX_TURNS && actions_taken < MAX_ACTIONS {
+    while !state.gameplay_stopped() && state.turn_number <= MAX_TURNS && actions_taken < MAX_ACTIONS {
         // Fast-forward the goldfish's entire turn without prompting
         if state.active_player != 0 && !human_mandatory_choice_pending(&state) {
             let ff_actions = rules::fast_forward_goldfish_turn_until_copy_choice(&mut state, 0);
             actions_taken += ff_actions;
+            if state.gameplay_stopped() { break; }
             if ff_actions == 0 && !human_mandatory_choice_pending(&state) {
                 eprintln!("Goldfish fast-forward made no progress at a non-human decision.");
                 break;
@@ -227,7 +228,9 @@ fn main() {
     println!("========================================");
     display_game_state(&state, &db);
 
-    if state.game_over {
+    if state.unsupported_continuing_elimination() {
+        println!("*** INVALID reason=unsupported_continuing_elimination. ***");
+    } else if state.game_over {
         match state.winner {
             Some(0) => println!("*** YOU WIN on turn {}! ***", state.turn_number),
             Some(_) => println!("*** YOU LOST on turn {}. ***", state.turn_number),

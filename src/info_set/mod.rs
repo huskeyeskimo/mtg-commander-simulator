@@ -80,6 +80,7 @@ pub struct InformationSet {
     pub cleanup_needs_repeat: bool,
     pub cleanup_discard_in_progress: bool,
     pub pending_copy_order: Option<PendingCopyInfo>,
+    pub pending_failed_draws: Vec<usize>,
 
     /// Our graveyard as sorted CardIds.
     pub my_graveyard: Vec<u64>,
@@ -291,6 +292,7 @@ impl InformationSet {
             cleanup_needs_repeat: view.cleanup_needs_repeat,
             cleanup_discard_in_progress: view.cleanup_discard_in_progress,
             pending_copy_order,
+            pending_failed_draws: view.pending_failed_draws.to_vec(),
             my_graveyard,
             opp_graveyard,
             my_exile,
@@ -328,6 +330,10 @@ impl InformationSet {
         self.cleanup_needs_repeat.hash(&mut hasher);
         self.cleanup_discard_in_progress.hash(&mut hasher);
         self.pending_copy_order.hash(&mut hasher);
+        if !self.pending_failed_draws.is_empty() {
+            "pending_failed_draws".hash(&mut hasher);
+            self.pending_failed_draws.hash(&mut hasher);
+        }
         self.my_graveyard.hash(&mut hasher);
         self.opp_graveyard.hash(&mut hasher);
         self.my_exile.hash(&mut hasher);
@@ -642,6 +648,10 @@ impl InfoSetAbstraction for BucketedAbstraction {
             }
         }
         info_set.pending_copy_order.hash(&mut hasher);
+        if !info_set.pending_failed_draws.is_empty() {
+            "pending_failed_draws".hash(&mut hasher);
+            info_set.pending_failed_draws.hash(&mut hasher);
+        }
         info_set.trigger_order_resume.hash(&mut hasher);
         info_set.cleanup_needs_repeat.hash(&mut hasher);
         info_set.cleanup_discard_in_progress.hash(&mut hasher);
@@ -796,6 +806,10 @@ impl<'a> InfoSetAbstraction for CardAwareBucketedAbstraction<'a> {
             }
         }
         info_set.pending_copy_order.hash(&mut hasher);
+        if !info_set.pending_failed_draws.is_empty() {
+            "pending_failed_draws".hash(&mut hasher);
+            info_set.pending_failed_draws.hash(&mut hasher);
+        }
         info_set.trigger_order_resume.hash(&mut hasher);
         info_set.cleanup_needs_repeat.hash(&mut hasher);
         info_set.cleanup_discard_in_progress.hash(&mut hasher);
@@ -843,6 +857,20 @@ mod tests {
             state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
         }
         state
+    }
+
+    #[test]
+    fn pending_failed_draw_changes_each_information_set_hash_without_normalizer_changes() {
+        let state = setup_test_state();
+        let mut pending = state.clone();
+        pending.loss_boundary.pending_failed_draws.push(0);
+        let plain = InformationSet::from_view(&state.visible_state(0), state.card_db());
+        let failed = InformationSet::from_view(&pending.visible_state(0), pending.card_db());
+        assert_eq!(plain.zone_normalization, failed.zone_normalization);
+        assert_ne!(IdentityAbstraction.abstract_info_set(&plain), IdentityAbstraction.abstract_info_set(&failed));
+        assert_ne!(BucketedAbstraction.abstract_info_set(&plain), BucketedAbstraction.abstract_info_set(&failed));
+        let aware = CardAwareBucketedAbstraction { card_db: state.card_db() };
+        assert_ne!(aware.abstract_info_set(&plain), aware.abstract_info_set(&failed));
     }
 
     #[test]
