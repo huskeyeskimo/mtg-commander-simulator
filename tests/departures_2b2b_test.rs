@@ -498,7 +498,7 @@ fn commander_hand_and_library_compatibility_records_actual_destination() {
 }
 
 #[test]
-fn migrated_departure_then_legacy_sba_death_has_separate_contexts_and_endpoints() {
+fn migrated_departure_then_common_sba_death_has_separate_contexts_and_endpoints() {
     use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
     let (mut state, source) = fixture(effects()[0].clone(), 2);
     let departure = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
@@ -519,13 +519,19 @@ fn migrated_departure_then_legacy_sba_death_has_separate_contexts_and_endpoints(
     assert!(state.players[0].graveyard.contains(&cascade));
     let migrated: Vec<_> = state.pending_triggers.iter().filter_map(|p|
         p.context.zone_transition.as_ref()).collect();
-    assert_eq!(migrated.len(), 2);
-    assert!(migrated.iter().all(|c| c.subject.before.object.id == subject && !c.subject.creature_died()));
-    assert_eq!(state.pending_triggers.iter().filter(|p| p.source_id == death
-        && p.context.zone_transition.is_none()).count(), 1);
-    assert_eq!(state.pending_triggers.iter().filter(|p| p.source_id == departure
-        && p.context.zone_transition.is_some()).count(), 1);
-    assert_eq!(state.next_zone_event_group_id, 1);
+    assert_eq!(migrated.len(), 6);
+    let first: Vec<_> = migrated.iter().filter(|c| c.subject.before.object.id == subject).collect();
+    let later: Vec<_> = migrated.iter().filter(|c| c.subject.before.object.id == cascade).collect();
+    assert_eq!(first.len(), 2);
+    assert_eq!(later.len(), 4); // own leave/dies, departure watcher, death watcher
+    assert!(first.iter().all(|c| !c.subject.creature_died() && c.subject.destination.zone == ZoneType::Hand));
+    assert!(later.iter().all(|c| c.subject.creature_died()));
+    assert_ne!(first[0].group_id, later[0].group_id);
+    assert!(later.iter().all(|c| c.group_id == later[0].group_id));
+    assert_eq!(state.pending_triggers.iter().filter(|p| p.source_id == death).count(), 1);
+    assert_eq!(state.pending_triggers.iter().filter(|p| p.source_id == departure).count(), 2);
+    assert!(state.pending_triggers.iter().all(|p| p.context.zone_transition.is_some()));
+    assert_eq!(state.next_zone_event_group_id, 2);
 }
 
 #[test]

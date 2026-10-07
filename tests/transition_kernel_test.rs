@@ -1934,11 +1934,23 @@ fn finalreview_raw_tie_is_not_symmetric_for_existing_linked_exile_relationship()
         },
     );
     rules::apply_action(&mut renamed, &action);
-    for state in [&mut original, &mut renamed] {
-        for _ in 0..2 {
-            rules::apply_action(state, &Action::PassPriority);
-            rules::apply_action(state, &Action::PassPriority);
-        }
+    // SBA departure now owns ordinary leave occurrences as well. Follow
+    // every ensuing mandatory window through the same canonical key in the
+    // renumbered state, rather than assuming only the two initial entries.
+    for _ in 0..100 {
+        assert_eq!(view_coordinates(&original, 0), view_coordinates(&renamed, 0));
+        if original.pending_triggers.is_empty() && original.stack.is_empty() { break; }
+        let action = legal_actions(&original).into_iter()
+            .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. } | Action::OrderTriggers { .. }))
+            .unwrap_or(Action::PassPriority);
+        let key = canonicalize(&action, &original);
+        let counterpart = resolve(&key, &renamed, renamed.priority_player).expect("every continuation key reconstructs");
+        assert_eq!(canonicalize(&counterpart, &renamed), key);
+        rules::apply_action(&mut original, &action);
+        rules::apply_action(&mut renamed, &counterpart);
+        assert!(!original.gameplay_stopped() && !renamed.gameplay_stopped());
+    }
+    for state in [&original, &renamed] {
         assert!(state.pending_triggers.is_empty());
         assert!(state.stack.is_empty());
     }

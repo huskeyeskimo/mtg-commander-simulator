@@ -228,8 +228,8 @@ fn main() {
     println!("========================================");
     display_game_state(&state, &db);
 
-    if state.unsupported_continuing_elimination() {
-        println!("*** INVALID reason=unsupported_continuing_elimination. ***");
+    if let Some(reason) = state.invalid_gameplay_reason() {
+        println!("*** INVALID reason={}. ***", reason.code());
     } else if state.game_over {
         match state.winner {
             Some(0) => println!("*** YOU WIN on turn {}! ***", state.turn_number),

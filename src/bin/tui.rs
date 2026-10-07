@@ -114,8 +114,8 @@ fn main() -> io::Result<()> {
             }
         }
 
-        if app.state.unsupported_continuing_elimination() {
-            println!("\nINVALID reason=unsupported_continuing_elimination");
+        if let Some(reason) = app.state.invalid_gameplay_reason() {
+            println!("\nINVALID reason={}", reason.code());
         } else if app.state.game_over {
             match app.state.winner {
                 Some(0) => println!("\nYOU WIN on turn {}!", app.state.turn_number),

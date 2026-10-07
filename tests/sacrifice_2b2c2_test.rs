@@ -914,7 +914,7 @@ fn realistic_each_opponent_normalizer_diagnostic() {
 }
 
 #[test]
-fn each_explicit_sacrifice_then_legacy_sba_has_separate_context() {
+fn each_explicit_sacrifice_then_common_sba_has_separate_context() {
     use mtg_gto::layers::StaticAbility;
     let mut state = game(3);
     let mut db = state.card_db().clone();
@@ -946,21 +946,18 @@ fn each_explicit_sacrifice_then_legacy_sba_has_separate_context() {
         .iter()
         .filter(|p| p.source_id == watcher)
         .collect();
-    assert_eq!(
-        observed
-            .iter()
-            .filter(|p| p.context.zone_transition.is_some())
-            .count(),
-        2
-    );
-    assert_eq!(
-        observed
-            .iter()
-            .filter(|p| p.context.zone_transition.is_none())
-            .count(),
-        1
-    );
-    assert_eq!(state.next_zone_event_group_id, 1); // SBA stays legacy, not certified simultaneous.
+    assert_eq!(observed.len(), 4); // two printed watcher abilities for each event
+    assert!(observed.iter().all(|p| p.context.zone_transition.is_some()));
+    let contexts: Vec<_> = observed.iter().map(|p| p.context.zone_transition.as_ref().unwrap()).collect();
+    let first: Vec<_> = contexts.iter().filter(|c| c.subject.before.object.id == anthem).collect();
+    let later: Vec<_> = contexts.iter().filter(|c| c.subject.before.object.id == subject).collect();
+    assert_eq!(first.len(), 2);
+    assert_eq!(later.len(), 2);
+    assert_ne!(first[0].group_id, later[0].group_id);
+    assert!(first.iter().all(|c| c.group_id == first[0].group_id));
+    assert!(later.iter().all(|c| c.group_id == later[0].group_id));
+    assert!(contexts.iter().all(|c| c.subject.creature_died()));
+    assert_eq!(state.next_zone_event_group_id, 2);
 }
 
 #[test]

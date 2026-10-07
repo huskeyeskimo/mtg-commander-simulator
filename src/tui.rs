@@ -270,8 +270,8 @@ impl App {
 
         if self.state.gameplay_stopped() {
             self.mode = UiMode::GameOver;
-            let msg = if self.state.unsupported_continuing_elimination() {
-                "INVALID reason=unsupported_continuing_elimination".into()
+            let msg = if let Some(reason) = self.state.invalid_gameplay_reason() {
+                format!("INVALID reason={}", reason.code())
             } else {
                 match self.state.winner {
                     Some(0) => format!("YOU WIN on turn {}!", self.state.turn_number),
@@ -1464,6 +1464,29 @@ mod loss_boundary_ui_tests {
         app.auto_advance();
         assert!(matches!(app.mode, UiMode::GameOver));
         assert_eq!(app.status_log.last().unwrap(), "RULES DRAW.");
+        assert_eq!(bincode::serialize(&app.state).unwrap(), before);
+    }
+}
+#[cfg(test)]
+mod common_pass_ui_tests {
+    use super::*;
+    #[test]
+    fn prepared_pass_failure_is_visible_invalid_and_cannot_execute_or_undo() {
+        let mut state = GameState::new(2);
+        state.sba_failure = Some(crate::rules::sba::PreparedPassFailure::UnprovedLegendTie);
+        let before = bincode::serialize(&state).unwrap();
+        let mut app = App::new(state, CardDatabase::new());
+        app.cached_actions = vec![Action::PassPriority];
+        app.execute_action(0);
+        assert!(matches!(app.mode, UiMode::GameOver));
+        assert!(app.cached_actions.is_empty());
+        assert!(app.undo_stack.is_empty());
+        assert_eq!(app.actions_taken, 0);
+        assert!(app
+            .status_log
+            .last()
+            .unwrap()
+            .contains("INVALID reason=prepared_sba_failure"));
         assert_eq!(bincode::serialize(&app.state).unwrap(), before);
     }
 }

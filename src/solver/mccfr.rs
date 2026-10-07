@@ -70,10 +70,7 @@ use crate::strategy::Strategy;
 /// Numeric-only legacy training APIs cannot represent invalid games. Abort the
 /// attempt explicitly before evaluating or publishing unsupported continuations.
 fn require_supported_gameplay(state: &GameState) {
-    assert!(
-        !state.unsupported_continuing_elimination(),
-        "INVALID reason=unsupported_continuing_elimination"
-    );
+    if let Some(reason) = state.invalid_gameplay_reason() { panic!("INVALID reason={}", reason.code()); }
 }
 
 /// Configuration for MCCFR training.
@@ -1802,5 +1799,32 @@ mod loss_boundary_training_tests {
         assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
             rollout_utility(&state, 0, None, 0);
         })));
+    }
+}
+
+#[cfg(test)]
+mod common_pass_training_tests {
+    use super::*;
+    #[test]
+    fn prepared_pass_failure_rejects_training_before_regret_mutation() {
+        let mut state = GameState::new(2);
+        state.sba_failure = Some(crate::rules::sba::PreparedPassFailure::UnprovedLegendTie);
+        let mut tables = [RegretTable::new(), RegretTable::new()];
+        let config = McfrConfig {
+            max_actions: 0,
+            max_depth: 1,
+            max_nodes_per_iteration: 1,
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_iteration(&state, &mut tables, &config)
+        }));
+        let error = result.expect_err("invalid preparation cannot return a training value");
+        let text = error
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| error.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(text.contains("INVALID reason=prepared_sba_failure"));
+        assert!(tables.iter().all(|table| table.data.is_empty()));
     }
 }

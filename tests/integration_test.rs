@@ -61,7 +61,7 @@ mod ordinary_keyword_prerequisite {
     }
 
     #[test]
-    fn test_keyword_prerequisite_counter_lki_precedes_legacy_cancellation() {
+    fn test_keyword_prerequisite_counter_lki_precedes_sba_cancellation() {
         for keyword in [KeywordAbility::Undying, KeywordAbility::Persist] {
             let (mut state, id) = fixture(vec![keyword]);
             let inst = state.objects.get_mut(&id).unwrap();
@@ -1650,13 +1650,13 @@ fn test_2a_partial_cleanup_external_sba_and_restored_continuation() {
         assert!(variant.stack.is_empty());
         assert_eq!(variant.priority_player, 0);
         let ap_order = legal_actions(variant).into_iter()
-            .find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+            .find(|a| matches!(a, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. })).unwrap();
         rules::apply_action(variant, &ap_order);
         assert_eq!(variant.priority_player, 1);
         assert_eq!(variant.stack.len(), 4);
         assert!(variant.stack.iter().all(|entry| entry.controller == 0));
         let nap_order = legal_actions(variant).into_iter()
-            .find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+            .find(|a| matches!(a, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. })).unwrap();
         rules::apply_action(variant, &nap_order);
         assert_eq!(variant.stack.len(), 6);
         assert!(variant.stack[..4].iter().all(|entry| entry.controller == 0));
@@ -1985,7 +1985,7 @@ fn test_2a_interrupted_cleanup_manual_tui_goldfish_apnap_agree() {
     for controller in [1, 0] {
         assert_eq!(manual.priority_player, controller);
         let order = legal_actions(&manual).into_iter()
-            .find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+            .find(|a| matches!(a, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. })).unwrap();
         rules::apply_action(&mut manual, &order);
     }
     assert_eq!(manual.stack.iter().map(|entry| entry.controller).collect::<Vec<_>>(),
@@ -2007,7 +2007,7 @@ fn test_2a_interrupted_cleanup_manual_tui_goldfish_apnap_agree() {
         vec![1, 1, 1, 1]);
     assert_eq!(tui.pending_triggers.len(), 2);
     let human_order = legal_actions(&tui).into_iter()
-        .find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+        .find(|a| matches!(a, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. })).unwrap();
     rules::apply_action(&mut tui, &human_order);
     assert!(rules::fast_forward_goldfish_turn_until_copy_choice(&mut tui, 0) > 0);
 
@@ -4970,6 +4970,7 @@ fn test_multi_phase_abstraction() {
     // Create a minimal info set for testing
     let info_set_main = InformationSet {
         pending_failed_draws: vec![],
+        sba_preparation_failed: false,
         phase: 3, // PreCombatMain
         active_player: 0,
         turn_number: 1,
@@ -5141,12 +5142,13 @@ fn test_legendary_rule_sba() {
     state.next_object_id += 1;
     let mut inst2 = CardInstance::new(id2, 9000, 0);
     inst2.summoning_sick = false;
+    inst2.tapped = true; // unique semantic key; untapped minimum survives
     state.objects.insert(id2, inst2);
     state.battlefield.push(id2);
 
     assert_eq!(state.battlefield.len(), 2);
 
-    // Run SBAs — should remove the older one (id1) and keep the newer one (id2)
+    // Run SBAs: the pinned semantic minimum is untapped, regardless of age.
     rules::check_state_based_actions(&mut state);
 
     assert_eq!(
@@ -5155,19 +5157,18 @@ fn test_legendary_rule_sba() {
         "Legendary rule should remove duplicate"
     );
     assert!(
-        state.battlefield.contains(&id2),
-        "Newest legendary should survive"
+        state.battlefield.contains(&id1),
+        "Untapped semantic minimum should survive"
     );
     assert!(
-        !state.battlefield.contains(&id1),
-        "Oldest legendary should be removed"
+        !state.battlefield.contains(&id2),
+        "Other legendary must depart"
     );
 }
 
-/// Test CR 704.5i: Planeswalker uniqueness rule — duplicate planeswalkers with
-/// the same name under the same controller should be reduced to one.
+/// Nonlegendary planeswalkers are not subject to obsolete uniqueness.
 #[test]
-fn test_planeswalker_uniqueness_sba() {
+fn test_obsolete_planeswalker_uniqueness_removed_sba() {
     use mtg_gto::card::{CardDef, CardInstance, CardType};
     use mtg_gto::game::CardDatabase;
 
@@ -5205,10 +5206,12 @@ fn test_planeswalker_uniqueness_sba() {
 
     assert_eq!(
         state.battlefield.len(),
-        1,
-        "PW uniqueness should remove duplicate"
+        2,
+        "Both nonlegendary planeswalkers must survive"
     );
-    assert!(state.battlefield.contains(&id2), "Newest PW should survive");
+    assert!(state.battlefield.contains(&id1));
+    assert!(state.battlefield.contains(&id2));
+    assert!(state.players[0].graveyard.is_empty());
 }
 
 /// Test CR 508.1d: MustAttack enforcement — a creature with MustAttack
@@ -8902,7 +8905,7 @@ fn test_2a_sba_multiple_passes_keep_all_occurrences_pending_for_choice() {
     assert!(!events.iter().any(|event| matches!(event, GameEvent::AbilityTriggered { .. })));
     assert_eq!(state.pending_triggers.len(), 2);
     assert!(state.stack.is_empty());
-    assert!(legal_actions(&state).iter().any(|action| matches!(action, Action::OrderTriggers { .. })));
+    assert!(legal_actions(&state).iter().any(|action| matches!(action, Action::OrderTriggerOccurrences { .. })));
 }
 
 #[test]
@@ -9280,11 +9283,11 @@ fn test_2b3a_equip_death_triggers_order_only_after_settlement() {
     assert!(state.stack.is_empty());
     assert_eq!(state.priority_player, 0);
     let legal = legal_actions(&state);
-    assert!(legal.iter().all(|a| matches!(a, Action::OrderTriggers { .. } | Action::Concede)));
+    assert!(legal.iter().all(|a| matches!(a, Action::OrderTriggerOccurrences { .. } | Action::Concede)));
     let before = bincode::serialize(&state).unwrap();
     rules::check_state_based_actions(&mut state);
     assert_eq!(before, bincode::serialize(&state).unwrap(), "periodic recheck must not duplicate death");
-    rules::apply_action(&mut state, legal.iter().find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap());
+    rules::apply_action(&mut state, legal.iter().find(|a| matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap());
     assert_eq!(state.stack.len(), 2);
     assert!(state.pending_triggers.is_empty());
     assert_eq!(state.priority_player, 0);
@@ -9418,8 +9421,8 @@ fn test_2b3a_untap_settles_at_upkeep_before_priority_and_trigger_order() {
     assert_eq!(state.pending_triggers.len(), 2, "upkeep and death share the placement window");
     assert!(state.stack.is_empty());
     let legal = legal_actions(&state);
-    assert!(legal.iter().all(|a| matches!(a, Action::OrderTriggers { .. } | Action::Concede)));
-    rules::apply_action(&mut state, legal.iter().find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap());
+    assert!(legal.iter().all(|a| matches!(a, Action::OrderTriggerOccurrences { .. } | Action::Concede)));
+    rules::apply_action(&mut state, legal.iter().find(|a| matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap());
     assert_eq!(state.priority_player, 0);
     assert_eq!(state.stack.len(), 2);
 }
@@ -10342,4 +10345,1421 @@ mod terminal_loss_prerequisite {
         }
     }
 
+}
+mod common_pass_2b3b {
+    use super::*;
+    use mtg_gto::card::{CardDef, CardType, Effect, Supertype, TriggerCondition, TriggeredAbility};
+    use mtg_gto::game::{CardDatabase, StackSource};
+    use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
+    use mtg_gto::rules::transitions::{MovementKind, ZoneTriggerContext};
+    const C: u64 = 995_301;
+    const W: u64 = 995_302;
+    const L: u64 = 995_303;
+    const P: u64 = 995_304;
+    const A: u64 = 995_305;
+    const E: u64 = 995_306;
+    fn fixture() -> GameState {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef {
+            id: C,
+            name: "Common subject".into(),
+            card_types: vec![CardType::Creature],
+            power: Some(2),
+            toughness: Some(2),
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::LeavesBattlefield,
+                effect: Effect::GainLife { amount: 1 },
+                description: "leave".into(),
+            }],
+            ..Default::default()
+        });
+        db.insert(CardDef {
+            id: W,
+            name: "Common observer".into(),
+            card_types: vec![CardType::Creature],
+            power: Some(2),
+            toughness: Some(2),
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::ACreatureDies,
+                effect: Effect::GainLife { amount: 1 },
+                description: "watch".into(),
+            }],
+            ..Default::default()
+        });
+        let mut legend = db.get(C).unwrap().clone();
+        legend.id = L;
+        legend.name = "Common legend".into();
+        legend.supertypes = vec![Supertype::Legendary];
+        db.insert(legend);
+        db.insert(CardDef {
+            id: P,
+            name: "Common planeswalker".into(),
+            card_types: vec![CardType::Planeswalker],
+            starting_loyalty: Some(3),
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::LeavesBattlefield,
+                effect: Effect::GainLife { amount: 1 },
+                description: "leave".into(),
+            }],
+            ..Default::default()
+        });
+        db.insert(CardDef {
+            id: A,
+            name: "Common Aura".into(),
+            card_types: vec![CardType::Enchantment],
+            subtypes: vec![mtg_gto::card::Subtype("Aura".into())],
+            triggered_abilities: vec![TriggeredAbility {
+                trigger: TriggerCondition::LeavesBattlefield,
+                effect: Effect::GainLife { amount: 1 },
+                description: "leave".into(),
+            }],
+            ..Default::default()
+        });
+        db.insert(CardDef {
+            id: E,
+            name: "Common Equipment".into(),
+            card_types: vec![CardType::Artifact],
+            subtypes: vec![mtg_gto::card::Subtype("Equipment".into())],
+            ..Default::default()
+        });
+        let mut s = GameState::new(2);
+        s.card_db = Some(Arc::new(db));
+        s.phase = Phase::PreCombatMain;
+        s
+    }
+    fn add(s: &mut GameState, card: u64, owner: usize) -> u64 {
+        s.create_card_in_zone(card, owner, ZoneType::Battlefield)
+    }
+    fn zero(s: &mut GameState, id: u64) {
+        s.objects.get_mut(&id).unwrap().temp_toughness_mod = -2;
+    }
+    fn lethal(s: &mut GameState, id: u64) {
+        s.objects.get_mut(&id).unwrap().damage_marked = 2;
+    }
+    fn contexts(s: &GameState) -> Vec<&ZoneTriggerContext> {
+        s.pending_triggers
+            .iter()
+            .filter_map(|t| t.context.zone_transition.as_ref())
+            .chain(s.stack.iter().filter_map(|e| match &e.source {
+                StackSource::TriggeredAbility { context, .. } => context.zone_transition.as_ref(),
+                _ => None,
+            }))
+            .collect()
+    }
+    fn group(s: &GameState, id: u64) -> u64 {
+        contexts(s)
+            .into_iter()
+            .find(|c| c.subject.before.object.id == id)
+            .expect("owned departure evidence")
+            .group_id
+    }
+    #[test]
+    fn baseline_red_indestructible_lethal() {
+        let mut s = fixture();
+        let id = add(&mut s, C, 0);
+        lethal(&mut s, id);
+        s.objects
+            .get_mut(&id)
+            .unwrap()
+            .temp_keywords
+            .push(KeywordAbility::Indestructible);
+        rules::check_state_based_actions(&mut s);
+        assert!(s.battlefield.contains(&id));
+    }
+    #[test]
+    fn baseline_red_departing_watcher() {
+        let mut s = fixture();
+        let w = add(&mut s, W, 0);
+        let a = add(&mut s, C, 0);
+        lethal(&mut s, w);
+        lethal(&mut s, a);
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(
+            contexts(&s)
+                .iter()
+                .filter(|c| c.source_before.object.id == w)
+                .count(),
+            2
+        );
+    }
+    #[test]
+    fn baseline_red_two_zero_one_group() {
+        let mut s = fixture();
+        let a = add(&mut s, C, 0);
+        let b = add(&mut s, C, 0);
+        zero(&mut s, a);
+        zero(&mut s, b);
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(s.players[0].graveyard.len(), 2);
+        assert_eq!(group(&s, a), group(&s, b));
+    }
+    #[test]
+    fn baseline_red_cascade_groups() {
+        let mut s = fixture();
+        let l = add(&mut s, C, 0);
+        let a = add(&mut s, C, 0);
+        let b = add(&mut s, C, 0);
+        zero(&mut s, a);
+        zero(&mut s, b);
+        lethal(&mut s, l);
+        s.continuous_effects.push(ContinuousEffect {
+            source_id: l,
+            controller: 0,
+            timestamp: 1,
+            duration: Duration::WhileSourceOnBattlefield,
+            affected: AffectedObjects::OtherCreatures,
+            modification: LayerModification::ModifyPT(0, 1),
+        });
+        s.invalidate_characteristics_cache();
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(group(&s, a), group(&s, b));
+        assert_ne!(group(&s, l), group(&s, a));
+    }
+    #[test]
+    fn baseline_red_mixed_causes() {
+        let mut s = fixture();
+        let a = add(&mut s, C, 0);
+        let b = add(&mut s, C, 0);
+        zero(&mut s, a);
+        lethal(&mut s, b);
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(group(&s, a), group(&s, b));
+        assert!(contexts(&s)
+            .iter()
+            .any(|c| c.subject.before.object.id == b && c.subject.kind == MovementKind::Destroy));
+    }
+    #[test]
+    fn baseline_red_legend_semantic_role() {
+        for reverse in [false, true] {
+            let mut s = fixture();
+            let first = add(&mut s, L, 0);
+            let second = add(&mut s, L, 0);
+            let (keep, lose) = if reverse {
+                (second, first)
+            } else {
+                (first, second)
+            };
+            s.objects.get_mut(&lose).unwrap().tapped = true;
+            rules::check_state_based_actions(&mut s);
+            assert!(s.battlefield.contains(&keep));
+            assert!(!s.battlefield.contains(&lose));
+        }
+    }
+    #[test]
+    fn baseline_red_loyalty_and_creature_common_group() {
+        let mut s = fixture();
+        let p = add(&mut s, P, 0);
+        s.objects.get_mut(&p).unwrap().loyalty_counters = 0;
+        let a = add(&mut s, C, 0);
+        zero(&mut s, a);
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(group(&s, p), group(&s, a));
+    }
+    #[test]
+    fn baseline_red_aura_passes() {
+        let mut s = fixture();
+        let a = add(&mut s, C, 0);
+        zero(&mut s, a);
+        let orphan = add(&mut s, A, 0);
+        let attached = add(&mut s, A, 0);
+        s.objects.get_mut(&attached).unwrap().attached_to = Some(a);
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(group(&s, a), group(&s, orphan));
+        assert_ne!(group(&s, a), group(&s, attached));
+    }
+    #[test]
+    fn baseline_control_historical_counter_eligibility() {
+        let mut s = fixture();
+        let a = add(&mut s, C, 0);
+        lethal(&mut s, a);
+        let inst = s.objects.get_mut(&a).unwrap();
+        inst.plus_counters = 1;
+        inst.minus_counters = 1;
+        inst.temp_keywords = vec![KeywordAbility::Undying, KeywordAbility::Persist];
+        rules::check_state_based_actions(&mut s);
+        assert!(!s
+            .pending_triggers
+            .iter()
+            .any(|t| matches!(t.context.effect, Effect::ReturnWithDeathKeyword { .. })));
+        assert!(!s.stack.iter().any(|e| matches!(&e.source, StackSource::TriggeredAbility{context,..} if matches!(context.effect,Effect::ReturnWithDeathKeyword{..}))));
+    }
+    fn variants(s: &GameState) -> Vec<GameState> {
+        let mut snapshot = s.clone();
+        snapshot.restore(s.snapshot());
+        let mut result = vec![
+            s.clone(),
+            snapshot,
+            serde_json::from_slice::<GameState>(&serde_json::to_vec(s).unwrap()).unwrap(),
+            bincode::deserialize::<GameState>(&bincode::serialize(s).unwrap()).unwrap(),
+        ];
+        for r in &mut result {
+            r.card_db = s.card_db.clone();
+        }
+        result
+    }
+    fn norm(s: &GameState) -> mtg_gto::rules::transitions::RetainedNormalization {
+        mtg_gto::info_set::InformationSet::normalize_retained_view(&s.visible_state(0))
+    }
+    fn coords(s: &GameState) -> (Vec<u8>, u64, Vec<Vec<u8>>) {
+        let n = norm(s);
+        let info = mtg_gto::info_set::InformationSet::from_view_with_normalization(
+            &s.visible_state(0),
+            s.card_db(),
+            &n,
+        );
+        let mut keys: Vec<_> =
+            mtg_gto::action::canonical::canonicalize_actions(&legal_actions_abstracted(s), s, &n)
+                .iter()
+                .map(|key| bincode::serialize(key).unwrap())
+                .collect();
+        keys.sort();
+        (n.encoding, info.hash_value(), keys)
+    }
+    fn drain(s: &mut GameState) {
+        for _ in 0..100 {
+            if s.pending_triggers.is_empty() && s.stack.is_empty() {
+                return;
+            }
+            let actions = legal_actions(s);
+            let action = actions
+                .iter()
+                .find(|a| {
+                    matches!(
+                        a,
+                        Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }
+                    )
+                })
+                .cloned()
+                .unwrap_or(Action::PassPriority);
+            rules::apply_action(s, &action);
+            assert!(!s.gameplay_stopped());
+        }
+        panic!("finite ordinary trigger fixture did not finish");
+    }
+    #[test]
+    fn same_pass_lethal_and_four_way_mixed_causes() {
+        for reverse in [false, true] {
+            let mut s = fixture();
+            let a = add(&mut s, C, 0);
+            let b = add(&mut s, C, 0);
+            let c = add(&mut s, C, 0);
+            let d = add(&mut s, C, 0);
+            let e = add(&mut s, C, 0);
+            zero(&mut s, a);
+            lethal(&mut s, b);
+            lethal(&mut s, c);
+            zero(&mut s, d);
+            lethal(&mut s, e);
+            for id in [c, d] {
+                s.objects
+                    .get_mut(&id)
+                    .unwrap()
+                    .temp_keywords
+                    .push(KeywordAbility::Indestructible);
+            }
+            if reverse {
+                s.battlefield.reverse();
+            }
+            rules::check_state_based_actions(&mut s);
+            assert_eq!(s.battlefield, vec![c]);
+            assert_eq!(s.players[0].graveyard.len(), 4);
+            for id in [a, b, d, e] {
+                assert_eq!(group(&s, a), group(&s, id));
+                assert_eq!(s.objects[&id].zone_change_count, 1);
+            }
+            for ctx in contexts(&s) {
+                assert_eq!(
+                    ctx.subject.kind,
+                    if [b, e].contains(&ctx.subject.before.object.id) {
+                        MovementKind::Destroy
+                    } else {
+                        MovementKind::Put
+                    }
+                );
+            }
+        }
+    }
+    #[test]
+    fn coalesced_legend_and_zero_keeper_can_independently_leave() {
+        use mtg_gto::rules::transitions::SbaCause;
+        let mut s = fixture();
+        let a = add(&mut s, L, 0);
+        let b = add(&mut s, L, 0);
+        zero(&mut s, a);
+        zero(&mut s, b);
+        s.objects.get_mut(&b).unwrap().tapped = true;
+        rules::check_state_based_actions(&mut s);
+        assert!(s.battlefield.is_empty());
+        assert_eq!(s.players[0].graveyard.len(), 2);
+        assert_eq!(group(&s, a), group(&s, b));
+        assert!(contexts(&s)
+            .iter()
+            .any(|ctx| ctx.subject.before.object.id == b
+                && ctx.subject.sba_causes == vec![SbaCause::ZeroToughness, SbaCause::Legend]));
+        assert_eq!(s.objects[&b].zone_change_count, 1);
+    }
+    #[test]
+    fn departing_watchers_multicontroller_owner_and_tokens_exact_multiplicity() {
+        let mut s = fixture();
+        let w0 = add(&mut s, W, 1);
+        s.objects.get_mut(&w0).unwrap().controller = 0;
+        let w1 = add(&mut s, W, 1);
+        let token = add(&mut s, W, 0);
+        s.objects.get_mut(&token).unwrap().is_token = true;
+        let victim = add(&mut s, C, 0);
+        let survivor = add(&mut s, W, 0);
+        for id in [w0, w1, token, victim] {
+            lethal(&mut s, id);
+        }
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(contexts(&s).len(), 17);
+        for w in [w0, w1, token, survivor] {
+            let own: Vec<_> = contexts(&s)
+                .into_iter()
+                .filter(|ctx| ctx.source_before.object.id == w)
+                .collect();
+            assert_eq!(own.len(), 4);
+            assert!(own.iter().all(|ctx| ctx.group_id == group(&s, victim)));
+        }
+        assert!(s.players[1].graveyard.contains(&w0));
+        assert!(!s.objects.contains_key(&token));
+        assert_eq!(
+            s.pending_triggers
+                .iter()
+                .filter(|t| t.source_id == w0)
+                .count(),
+            4
+        );
+        assert_eq!(s.priority_player, 0);
+        let events: Vec<_> = s
+            .pending_events
+            .iter()
+            .filter(|event| matches!(event,GameEvent::ZoneChange{object,..}if *object==token))
+            .collect();
+        assert_eq!(events.len(), 1);
+        drain(&mut s);
+        assert_eq!(s.players[0].life, 33);
+        assert_eq!(s.players[1].life, 24);
+    }
+    #[test]
+    fn layered_cascade_leaving_watcher_misses_only_later_pass() {
+        let mut s = fixture();
+        let l = add(&mut s, W, 0);
+        let a = add(&mut s, C, 0);
+        let b = add(&mut s, C, 0);
+        let survivor = add(&mut s, W, 1);
+        zero(&mut s, a);
+        zero(&mut s, b);
+        lethal(&mut s, l);
+        s.continuous_effects.push(ContinuousEffect {
+            source_id: l,
+            controller: 0,
+            timestamp: 1,
+            duration: Duration::WhileSourceOnBattlefield,
+            affected: AffectedObjects::OtherCreaturesControlledBy(0),
+            modification: LayerModification::ModifyPT(0, 1),
+        });
+        s.invalidate_characteristics_cache();
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(group(&s, a), group(&s, b));
+        assert_ne!(group(&s, l), group(&s, a));
+        assert_eq!(
+            contexts(&s)
+                .iter()
+                .filter(|ctx| ctx.source_before.object.id == l)
+                .count(),
+            1
+        );
+        assert_eq!(
+            contexts(&s)
+                .iter()
+                .filter(|ctx| ctx.source_before.object.id == survivor)
+                .count(),
+            3
+        );
+        assert!(
+            s.stack.is_empty(),
+            "APNAP placement has not passed mandatory active-player ordering"
+        );
+        assert_eq!(s.priority_player, 0);
+        drain(&mut s);
+        assert_eq!(s.players[0].life, 23);
+        assert_eq!(s.players[1].life, 23);
+    }
+    #[test]
+    fn legend_keys_counter_tap_effective_and_underlying_facts_allocation_invariant() {
+        for mode in 0..6 {
+            for reverse in [false, true] {
+                for history in [0, 20] {
+                    let mut s = fixture();
+                    s.next_object_id += history;
+                    let first = add(&mut s, L, 0);
+                    let second = add(&mut s, L, 0);
+                    let (keep, lose) = if reverse {
+                        (second, first)
+                    } else {
+                        (first, second)
+                    };
+                    match mode {
+                        0 => s.objects.get_mut(&lose).unwrap().tapped = true,
+                        1 => s.objects.get_mut(&lose).unwrap().plus_counters = 1,
+                        2 => s.objects.get_mut(&lose).unwrap().temp_power_mod = 1,
+                        3 => {
+                            s.objects.get_mut(&keep).unwrap().temp_power_mod = 1;
+                            s.objects.get_mut(&lose).unwrap().plus_counters = 1;
+                            s.objects.get_mut(&lose).unwrap().temp_toughness_mod = -1;
+                        }
+                        4 => s.objects.get_mut(&lose).unwrap().damage_marked = 1,
+                        _ => {
+                            s.objects
+                                .get_mut(&lose)
+                                .unwrap()
+                                .loyalty_activated_this_turn = true
+                        }
+                    }
+                    s.invalidate_characteristics_cache();
+                    s.battlefield.reverse();
+                    rules::check_state_based_actions(&mut s);
+                    assert!(s.sba_failure.is_none(), "mode={mode}");
+                    assert!(s.battlefield.contains(&keep), "mode={mode}");
+                    assert!(!s.battlefield.contains(&lose));
+                    assert_eq!(s.players[0].graveyard.len(), 1);
+                }
+            }
+        }
+    }
+    #[test]
+    fn legend_unique_linked_relationship_and_effective_controller_groups() {
+        let mut s = fixture();
+        let a = add(&mut s, L, 0);
+        let b = add(&mut s, L, 1);
+        s.objects.get_mut(&b).unwrap().controller = 0;
+        let linked = s.create_card_in_zone(C, 0, ZoneType::Exile);
+        s.objects.get_mut(&linked).unwrap().exiled_by = Some(a);
+        rules::check_state_based_actions(&mut s);
+        assert!(
+            s.battlefield.contains(&a),
+            "owner sorts before linked summary"
+        );
+        assert!(!s.battlefield.contains(&b));
+        assert!(s.players[1].graveyard.contains(&b));
+        let mut s = fixture();
+        let a = add(&mut s, L, 0);
+        let b = add(&mut s, L, 0);
+        s.continuous_effects.push(ContinuousEffect {
+            source_id: b,
+            controller: 0,
+            timestamp: 1,
+            duration: Duration::UntilEndOfTurn,
+            affected: AffectedObjects::Specific(b),
+            modification: LayerModification::ChangeController(1),
+        });
+        s.invalidate_characteristics_cache();
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(s.battlefield.len(), 2);
+        assert!(s.battlefield.contains(&a));
+    }
+    #[test]
+    fn isolated_legend_twins_and_unproved_relationship_ties() {
+        for mode in 0..9 {
+            let mut s = fixture();
+            let a = add(&mut s, L, 0);
+            let b = add(&mut s, L, 0);
+            let other = add(&mut s, E, 0);
+            match mode {
+                0 => {}
+                1 => s.objects.get_mut(&other).unwrap().attached_to = Some(a),
+                2 => s.combat.attackers.push(a),
+                3 => {
+                    let t =
+                        mtg_gto::game::PendingTrigger::from_source(&s, a, 0, 0, vec![]).unwrap();
+                    s.pending_triggers.push(t);
+                }
+                4 => s.continuous_effects.push(ContinuousEffect {
+                    source_id: other,
+                    controller: 0,
+                    timestamp: 1,
+                    duration: Duration::UntilEndOfTurn,
+                    affected: AffectedObjects::SpecificIncarnation {
+                        object_id: a,
+                        zone_change_count: 0,
+                    },
+                    modification: LayerModification::ModifyPT(0, 0),
+                }),
+                5 => s.replacement_effects.push(ReplacementEffect {
+                    source_id: a,
+                    controller: 0,
+                    applies_to: ReplacementEventKind::DamageDealt,
+                    action: ReplacementAction::Prevent,
+                    is_self_replacement: true,
+                    description: "identity".into(),
+                }),
+                6 => {
+                    s.stack.push(mtg_gto::game::StackEntry {
+                        id: 1,
+                        source: StackSource::ActivatedAbility {
+                            source_id: other,
+                            ability_index: 0,
+                        },
+                        controller: 0,
+                        targets: vec![Target::Object(a)],
+                        target_generations: vec![Some(0)],
+                    });
+                }
+                7 => s.objects.get_mut(&b).unwrap().zone_change_count = 1,
+                _ => s.players[0].hand.push(a),
+            }
+            let before = s.clone();
+            rules::check_state_based_actions(&mut s);
+            if mode == 0 {
+                assert_eq!(s.battlefield.len(), 2);
+                assert_eq!(s.players[0].graveyard.len(), 1);
+            } else {
+                assert_eq!(
+                    s.sba_failure,
+                    Some(mtg_gto::rules::sba::PreparedPassFailure::UnprovedLegendTie)
+                );
+                assert_eq!(s.battlefield, before.battlefield);
+                assert_eq!(s.players[0].graveyard, before.players[0].graveyard);
+                assert_eq!(s.next_zone_event_group_id, before.next_zone_event_group_id);
+                assert!(legal_actions(&s).is_empty());
+                for restored in variants(&s) {
+                    assert!(restored.gameplay_stopped());
+                    assert!(legal_actions(&restored).is_empty());
+                }
+            }
+        }
+    }
+    #[test]
+    fn legend_tie_rejects_hidden_stored_controller_difference_under_global_control() {
+        for reverse in [false, true] {
+            let mut s = fixture();
+            let a = add(&mut s, L, 0);
+            let b = add(&mut s, L, 0);
+            let other = add(&mut s, E, 0);
+            s.objects.get_mut(&b).unwrap().controller = 1;
+            s.continuous_effects.push(ContinuousEffect {
+                source_id: other,
+                controller: 0,
+                timestamp: 1,
+                duration: Duration::UntilEndOfTurn,
+                affected: AffectedObjects::AllPermanents,
+                modification: LayerModification::ChangeController(0),
+            });
+            s.invalidate_characteristics_cache();
+            for id in [a, b] {
+                assert_eq!(
+                    mtg_gto::layers::compute_characteristics(
+                        id,
+                        &s.continuous_effects,
+                        &s.objects,
+                        &s.battlefield.iter().copied().collect(),
+                        s.card_db()
+                    )
+                    .unwrap()
+                    .controller,
+                    0
+                );
+            }
+            if reverse {
+                s.battlefield.reverse();
+            }
+            for mut restored in variants(&s) {
+                let before = bincode::serialize(&restored).unwrap();
+                rules::check_state_based_actions(&mut restored);
+                assert_eq!(
+                    restored.sba_failure,
+                    Some(mtg_gto::rules::sba::PreparedPassFailure::UnprovedLegendTie)
+                );
+                assert_eq!(
+                    restored.next_zone_event_group_id,
+                    s.next_zone_event_group_id
+                );
+                assert!(restored.pending_triggers.is_empty() && restored.stack.is_empty());
+                assert!(legal_actions(&restored).is_empty());
+                restored.sba_failure = None;
+                assert_eq!(
+                    bincode::serialize(&restored).unwrap(),
+                    before,
+                    "tie rejection must be atomic"
+                );
+            }
+        }
+    }
+    #[test]
+    fn zero_loyalty_noncreature_and_layered_creature_actual_lki() {
+        for creature in [false, true] {
+            let mut s = fixture();
+            let p = add(&mut s, P, 1);
+            s.objects.get_mut(&p).unwrap().controller = 0;
+            s.objects.get_mut(&p).unwrap().loyalty_counters = 0;
+            let victim = add(&mut s, C, 0);
+            zero(&mut s, victim);
+            let watcher = add(&mut s, W, 0);
+            if creature {
+                s.continuous_effects.push(ContinuousEffect {
+                    source_id: watcher,
+                    controller: 0,
+                    timestamp: 1,
+                    duration: Duration::UntilEndOfTurn,
+                    affected: AffectedObjects::Specific(p),
+                    modification: LayerModification::AddType(CardType::Creature),
+                });
+            }
+            s.invalidate_characteristics_cache();
+            rules::check_state_based_actions(&mut s);
+            assert!(s.players[1].graveyard.contains(&p));
+            assert_eq!(group(&s, p), group(&s, victim));
+            assert_eq!(
+                contexts(&s)
+                    .iter()
+                    .filter(|ctx| ctx.source_before.object.id == watcher)
+                    .count(),
+                if creature { 2 } else { 1 }
+            );
+        }
+    }
+    #[test]
+    fn orphan_equipment_correction_and_aura_owner_predicate_only() {
+        let mut s = fixture();
+        let victim = add(&mut s, C, 0);
+        zero(&mut s, victim);
+        let existing = add(&mut s, E, 0);
+        s.objects.get_mut(&existing).unwrap().attached_to = Some(999_999);
+        let later = add(&mut s, E, 1);
+        s.objects.get_mut(&later).unwrap().attached_to = Some(victim);
+        rules::check_state_based_actions(&mut s);
+        assert!(s.battlefield.contains(&existing));
+        assert!(s.battlefield.contains(&later));
+        assert_eq!(s.objects[&existing].attached_to, None);
+        assert_eq!(s.objects[&later].attached_to, None);
+        assert!(s.sba_failure.is_none());
+    }
+    #[test]
+    fn counters_historical_keywords_and_delayed_ordinary_return() {
+        for keyword in [KeywordAbility::Undying, KeywordAbility::Persist] {
+            let mut s = fixture();
+            let a = add(&mut s, C, 0);
+            lethal(&mut s, a);
+            s.objects.get_mut(&a).unwrap().temp_keywords.push(keyword);
+            rules::check_state_based_actions(&mut s);
+            assert!(s.players[0].graveyard.contains(&a));
+            assert_eq!(
+                contexts(&s)
+                    .iter()
+                    .filter(|ctx| ctx.source_was_subject)
+                    .count(),
+                2
+            );
+            drain(&mut s);
+            assert!(s.battlefield.contains(&a));
+            assert_eq!(s.objects[&a].zone_change_count, 2);
+            assert_eq!(
+                s.objects[&a].plus_counters,
+                i32::from(keyword == KeywordAbility::Undying)
+            );
+            assert_eq!(
+                s.objects[&a].minus_counters,
+                i32::from(keyword == KeywordAbility::Persist)
+            );
+        }
+        let mut s = fixture();
+        let a = add(&mut s, C, 0);
+        s.objects.get_mut(&a).unwrap().plus_counters = 4;
+        s.objects.get_mut(&a).unwrap().minus_counters = 2;
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(s.objects[&a].plus_counters, 2);
+        assert_eq!(s.objects[&a].minus_counters, 0);
+        assert!(contexts(&s).is_empty());
+    }
+    #[test]
+    fn token_and_commander_actual_endpoints_no_fabricated_death() {
+        let mut s = fixture();
+        let token = add(&mut s, C, 0);
+        s.objects.get_mut(&token).unwrap().is_token = true;
+        let a = add(&mut s, C, 0);
+        lethal(&mut s, token);
+        lethal(&mut s, a);
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(group(&s, token), group(&s, a));
+        assert!(!s.objects.contains_key(&token));
+        assert!(contexts(&s)
+            .iter()
+            .any(|c| c.subject.before.object.id == token && c.subject.creature_died()));
+        let mut commander = GameState::new_commander(2);
+        commander.card_db = s.card_db.clone();
+        commander.phase = Phase::PreCombatMain;
+        let c = add(&mut commander, L, 0);
+        commander.players[0].commander_card_id = Some(L);
+        zero(&mut commander, c);
+        commander.objects.get_mut(&c).unwrap().temp_keywords =
+            vec![KeywordAbility::Undying, KeywordAbility::Persist];
+        rules::check_state_based_actions(&mut commander);
+        assert!(commander.players[0].command_zone.contains(&c));
+        assert!(commander.players[0].graveyard.is_empty());
+        assert!(contexts(&commander)
+            .iter()
+            .all(|ctx| !ctx.subject.creature_died()));
+        assert_eq!(contexts(&commander).len(), 1);
+    }
+    #[test]
+    fn correction_subject_dual_zone_counter_alone() {
+        correction_subject_dual_zone(false, false);
+    }
+    #[test]
+    fn correction_subject_dual_zone_counter_with_mover() {
+        correction_subject_dual_zone(false, true);
+    }
+    #[test]
+    fn correction_subject_dual_zone_equipment_alone() {
+        correction_subject_dual_zone(true, false);
+    }
+    #[test]
+    fn correction_subject_dual_zone_equipment_with_mover() {
+        correction_subject_dual_zone(true, true);
+    }
+    fn correction_subject_dual_zone(equipment: bool, with_mover: bool) {
+        for zone in 0..6 {
+            for reverse in [false, true] {
+                let mut s = fixture();
+                let correction = add(&mut s, if equipment { E } else { C }, 0);
+                if equipment {
+                    s.objects.get_mut(&correction).unwrap().attached_to = Some(999);
+                } else {
+                    s.objects.get_mut(&correction).unwrap().plus_counters = 2;
+                    s.objects.get_mut(&correction).unwrap().minus_counters = 2;
+                }
+                if with_mover {
+                    let mover = add(&mut s, C, 0);
+                    lethal(&mut s, mover);
+                }
+                match zone {
+                    0 => s.players[0].hand.push(correction),
+                    1 => s.players[1].library.push(correction),
+                    2 => s.players[0].graveyard.push(correction),
+                    3 => s.players[1].exile.push(correction),
+                    4 => s.players[0].command_zone.push(correction),
+                    _ => s.stack.push(mtg_gto::game::StackEntry {
+                        id: 1,
+                        source: StackSource::Spell(correction),
+                        controller: 0,
+                        targets: vec![],
+                        target_generations: vec![],
+                    }),
+                }
+                if reverse {
+                    s.battlefield.reverse();
+                }
+                let mut expected = s.clone();
+                expected.sba_failure = Some(mtg_gto::rules::sba::PreparedPassFailure::Transition(
+                    mtg_gto::rules::transitions::TransitionError::WrongZone(correction),
+                ));
+                assert!(!rules::check_state_based_actions(&mut s));
+                assert_eq!(serde_json::to_value(&s).unwrap(), serde_json::to_value(&expected).unwrap(),
+                    "complete state unchanged except failure latch: equipment={equipment} mover={with_mover} zone={zone} reverse={reverse}");
+                assert!(legal_actions(&s).is_empty());
+                assert_eq!(
+                    s.invalid_gameplay_reason(),
+                    Some(simulation::TerminationReason::PreparedSbaFailure)
+                );
+            }
+        }
+    }
+    #[test]
+    fn correction_subject_structural_failures_are_atomic() {
+        for equipment in [false, true] {
+            for with_mover in [false, true] {
+                for mode in 0..6 {
+                    for reverse in [false, true] {
+                        let mut s = fixture();
+                        let correction = add(&mut s, if equipment { E } else { C }, 0);
+                        s.objects.get_mut(&correction).unwrap().plus_counters = 2;
+                        s.objects.get_mut(&correction).unwrap().minus_counters = 2;
+                        if equipment {
+                            s.objects.get_mut(&correction).unwrap().attached_to = Some(999);
+                        }
+                        if with_mover {
+                            let mover = add(&mut s, C, 0);
+                            lethal(&mut s, mover);
+                        }
+                        match mode {
+                            0 => s.objects.get_mut(&correction).unwrap().object_id = 999,
+                            1 => s.objects.get_mut(&correction).unwrap().owner = 100,
+                            2 => s.objects.get_mut(&correction).unwrap().controller = 100,
+                            3 => s.objects.get_mut(&correction).unwrap().card_def_id = 999,
+                            4 => {
+                                s.objects.remove(&correction);
+                            }
+                            _ => s.battlefield.push(correction),
+                        }
+                        if reverse {
+                            s.battlefield.reverse();
+                        }
+                        let mut expected = s.clone();
+                        assert!(!rules::check_state_based_actions(&mut s));
+                        assert!(s.sba_failure.is_some());
+                        expected.sba_failure = s.sba_failure.clone();
+                        assert_eq!(serde_json::to_value(&s).unwrap(), serde_json::to_value(&expected).unwrap(),
+                            "atomic structural failure: equipment={equipment} mover={with_mover} mode={mode} reverse={reverse}");
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn correction_subject_controls_do_not_require_movement_capacity() {
+        for equipment in [false, true] {
+            for with_mover in [false, true] {
+                for reverse in [false, true] {
+                    let mut s = fixture();
+                    let correction = add(&mut s, if equipment { E } else { C }, 0);
+                    let inst = s.objects.get_mut(&correction).unwrap();
+                    inst.plus_counters = 3;
+                    inst.minus_counters = 2;
+                    inst.zone_change_count = u32::MAX;
+                    if equipment {
+                        inst.attached_to = Some(999);
+                    }
+                    // No departure from the correction subject means no linked
+                    // followup. Its linked card need not have generation room.
+                    let linked = s.create_card_in_zone(C, 0, ZoneType::Exile);
+                    s.objects.get_mut(&linked).unwrap().exiled_by = Some(correction);
+                    s.objects.get_mut(&linked).unwrap().zone_change_count = u32::MAX;
+                    let mover = if with_mover {
+                        let id = add(&mut s, C, 0);
+                        lethal(&mut s, id);
+                        Some(id)
+                    } else {
+                        // A corrections-only pass allocates no event group.
+                        s.next_zone_event_group_id = u64::MAX;
+                        None
+                    };
+                    if reverse {
+                        s.battlefield.reverse();
+                    }
+                    assert!(rules::check_state_based_actions(&mut s));
+                    assert!(s.sba_failure.is_none());
+                    let inst = &s.objects[&correction];
+                    assert_eq!((inst.plus_counters, inst.minus_counters), (1, 0));
+                    assert_eq!(inst.zone_change_count, u32::MAX);
+                    assert_eq!(inst.attached_to, None);
+                    assert!(s.players[0].exile.contains(&linked));
+                    if let Some(mover) = mover {
+                        assert!(s.players[0].graveyard.contains(&mover));
+                        assert_eq!(s.next_zone_event_group_id, 1);
+                        assert_eq!(contexts(&s).len(), 1);
+                    } else {
+                        assert_eq!(s.next_zone_event_group_id, u64::MAX);
+                        assert!(s.pending_events.is_empty());
+                        assert!(contexts(&s).is_empty());
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn correction_subject_overlap_with_movement_coalesces() {
+        let mut s = fixture();
+        let subject = add(&mut s, C, 0);
+        s.objects.get_mut(&subject).unwrap().plus_counters = 2;
+        s.objects.get_mut(&subject).unwrap().minus_counters = 2;
+        lethal(&mut s, subject);
+        rules::check_state_based_actions(&mut s);
+        assert!(s.sba_failure.is_none());
+        assert_eq!(s.players[0].graveyard, vec![subject]);
+        assert_eq!(s.next_zone_event_group_id, 1);
+        assert_eq!(contexts(&s).len(), 1);
+        let before = &contexts(&s)[0].subject.before;
+        assert_eq!((before.plus_counters, before.minus_counters), (2, 2));
+    }
+    #[test]
+    fn complete_nominal_preflight_before_prevention_and_atomic_corrections() {
+        for mode in 0..6 {
+            let mut s = fixture();
+            let protected = add(&mut s, C, 0);
+            lethal(&mut s, protected);
+            s.objects
+                .get_mut(&protected)
+                .unwrap()
+                .temp_keywords
+                .push(KeywordAbility::Indestructible);
+            let valid = add(&mut s, C, 0);
+            zero(&mut s, valid);
+            let counters = add(&mut s, C, 0);
+            s.objects.get_mut(&counters).unwrap().plus_counters = 2;
+            s.objects.get_mut(&counters).unwrap().minus_counters = 1;
+            match mode {
+                0 => s.objects.get_mut(&protected).unwrap().zone_change_count = u32::MAX,
+                1 => s.next_zone_event_group_id = u64::MAX,
+                2 => s.objects.get_mut(&protected).unwrap().owner = 100,
+                3 => {
+                    let linked = s.create_card_in_zone(C, 0, ZoneType::Exile);
+                    let inst = s.objects.get_mut(&linked).unwrap();
+                    inst.exiled_by = Some(protected);
+                    inst.zone_change_count = u32::MAX;
+                }
+                4 => {
+                    s.battlefield.push(protected);
+                }
+                _ => {
+                    s.players[0].hand.push(protected);
+                }
+            }
+            let before = s.clone();
+            rules::check_state_based_actions(&mut s);
+            assert!(s.sba_failure.is_some());
+            assert_eq!(s.battlefield, before.battlefield);
+            assert_eq!(s.players[0].graveyard, before.players[0].graveyard);
+            assert_eq!(s.objects[&counters].plus_counters, 2);
+            assert_eq!(s.objects[&counters].minus_counters, 1);
+            assert_eq!(s.next_zone_event_group_id, before.next_zone_event_group_id);
+            assert!(s.pending_events.is_empty());
+            assert!(s.pending_triggers.is_empty());
+        }
+    }
+    #[test]
+    fn prevented_mandatory_sba_fails_closed_without_false_events_or_loop() {
+        let mut s = fixture();
+        let a = add(&mut s, C, 0);
+        zero(&mut s, a);
+        s.replacement_effects.push(ReplacementEffect {
+            source_id: a,
+            controller: 0,
+            applies_to: ReplacementEventKind::WouldDie,
+            action: ReplacementAction::Prevent,
+            is_self_replacement: true,
+            description: "represented prevention".into(),
+        });
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(
+            s.sba_failure,
+            Some(mtg_gto::rules::sba::PreparedPassFailure::PreventedMandatoryMovement)
+        );
+        assert!(s.battlefield.contains(&a));
+        assert!(contexts(&s).is_empty());
+        assert!(s.pending_events.is_empty());
+        assert_eq!(s.next_zone_event_group_id, 0);
+        assert!(!rules::check_state_based_actions(&mut s));
+    }
+    #[test]
+    fn common_pass_terminal_and_unsupported_preserve_checkpoint_contract() {
+        for players in [2, 3] {
+            let mut s = fixture();
+            if players == 3 {
+                let db = s.card_db.clone();
+                s = GameState::new(3);
+                s.card_db = db;
+                s.phase = Phase::PreCombatMain;
+            }
+            let a = add(&mut s, C, 0);
+            zero(&mut s, a);
+            s.loss_boundary.pending_failed_draws.push(0);
+            rules::check_state_based_actions(&mut s);
+            assert!(s.battlefield.contains(&a));
+            assert!(contexts(&s).is_empty());
+            assert!(legal_actions(&s).is_empty());
+            assert!(s.sba_failure.is_none());
+            if players == 2 {
+                assert!(s.game_over);
+                assert_eq!(s.winner, Some(1));
+                assert!(s.loss_boundary.pending_failed_draws.is_empty());
+            } else {
+                assert!(!s.game_over);
+                assert!(s.loss_boundary.unsupported.is_some());
+                assert_eq!(s.loss_boundary.pending_failed_draws, vec![0]);
+            }
+        }
+    }
+    fn equivalent_common_state(start: u64, reverse: bool, seven: bool) -> GameState {
+        let mut s = fixture();
+        s.next_object_id = start;
+        s.next_zone_event_group_id = start;
+        let count = if seven { 7 } else { 2 };
+        let mut watcher = None;
+        if !reverse {
+            watcher = Some(add(&mut s, W, 0));
+        }
+        let ids: Vec<_> = (0..count).map(|_| add(&mut s, C, 0)).collect();
+        if reverse {
+            watcher = Some(add(&mut s, W, 0));
+        }
+        for (index, &id) in ids.iter().enumerate() {
+            zero(&mut s, id);
+            if index % 2 == 0 {
+                s.objects.get_mut(&id).unwrap().is_token = true;
+            }
+        }
+        if seven {
+            let mut db = s.card_db().clone();
+            let mut c = db.get(C).unwrap().clone();
+            c.triggered_abilities.clear();
+            db.insert(c);
+            s.card_db = Some(Arc::new(db));
+        }
+        let _ = watcher;
+        if reverse {
+            s.battlefield.reverse();
+        }
+        rules::check_state_based_actions(&mut s);
+        if reverse {
+            s.pending_triggers.reverse();
+        }
+        s
+    }
+    #[test]
+    fn canonical_under_six_complete_cross_state_keys_and_continuation() {
+        let base = equivalent_common_state(1, false, false);
+        let other = equivalent_common_state(400, true, false);
+        assert_eq!(coords(&base), coords(&other));
+        let n = norm(&base);
+        let keys = mtg_gto::action::canonical::canonicalize_actions(
+            &legal_actions_abstracted(&base),
+            &base,
+            &n,
+        );
+        for key in keys {
+            let a = resolve(&key, &base, 0).unwrap();
+            let b = resolve(&key, &other, 0).unwrap();
+            assert_eq!(canonicalize(&b, &other), key);
+            let mut left = base.clone();
+            let mut right = other.clone();
+            rules::apply_action(&mut left, &a);
+            rules::apply_action(&mut right, &b);
+            if matches!(a, Action::Concede) {
+                assert_eq!(left.winner, right.winner);
+                assert!(left.game_over && right.game_over);
+            } else {
+                drain(&mut left);
+                drain(&mut right);
+                assert_eq!(coords(&left).1, coords(&right).1);
+            }
+        }
+    }
+    #[test]
+    fn above_six_semantic_info_and_same_state_fifo_only() {
+        let base = equivalent_common_state(1, false, true);
+        let other = equivalent_common_state(800, true, true);
+        let n = norm(&base);
+        let n2 = norm(&other);
+        assert_eq!(n.encoding, n2.encoding);
+        let hash = |s: &GameState| {
+            mtg_gto::info_set::InformationSet::from_view(&s.visible_state(0), s.card_db())
+                .hash_value()
+        };
+        assert_eq!(hash(&base), hash(&other));
+        for action in legal_actions_abstracted(&base) {
+            let key = canonicalize(&action, &base);
+            assert!(resolve(&key, &base, 0).is_some());
+        }
+    }
+    #[test]
+    fn clone_snapshot_json_bincode_before_and_after_settlement_order_stack_final() {
+        let mut before = fixture();
+        let a = add(&mut before, C, 0);
+        let b = add(&mut before, C, 0);
+        zero(&mut before, a);
+        lethal(&mut before, b);
+        let mut reference = before.clone();
+        rules::check_state_based_actions(&mut reference);
+        for mut s in variants(&before) {
+            rules::check_state_based_actions(&mut s);
+            assert_eq!(coords(&s), coords(&reference));
+        }
+        for mut s in variants(&reference) {
+            assert_eq!(coords(&s), coords(&reference));
+            drain(&mut s);
+            assert_eq!(s.players[0].life, 22);
+            assert!(s.battlefield.is_empty());
+        }
+        let first = legal_actions(&reference)
+            .into_iter()
+            .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+            .unwrap();
+        rules::apply_action(&mut reference, &first);
+        assert!(!reference.stack.is_empty());
+        for mut s in variants(&reference) {
+            drain(&mut s);
+            assert_eq!(s.players[0].life, 22);
+            for final_state in variants(&s) {
+                assert_eq!(coords(&final_state), coords(&s));
+            }
+        }
+        let mut tie = fixture();
+        let a = add(&mut tie, L, 0);
+        add(&mut tie, L, 0);
+        tie.combat.attackers.push(a);
+        for mut s in variants(&tie) {
+            rules::check_state_based_actions(&mut s);
+            assert_eq!(
+                s.sba_failure,
+                Some(mtg_gto::rules::sba::PreparedPassFailure::UnprovedLegendTie)
+            );
+        }
+    }
+    #[test]
+    fn direct_complete_action_and_fast_forward_failures_are_invalid() {
+        let mut s = fixture();
+        let a = add(&mut s, L, 0);
+        add(&mut s, L, 0);
+        s.combat.attackers.push(a);
+        let land = s.create_card_in_zone(E, 0, ZoneType::Hand); // invalid land action is not used to settle
+        let _ = land;
+        rules::check_state_based_actions(&mut s);
+        let before = bincode::serialize(&s).unwrap();
+        assert_eq!(rules::fast_forward_goldfish_turn(&mut s), 0);
+        rules::apply_action(&mut s, &Action::PassPriority);
+        assert_eq!(bincode::serialize(&s).unwrap(), before);
+        assert_eq!(
+            simulation::apply_counted_action(
+                &mut s,
+                &Action::PassPriority,
+                &[Action::PassPriority]
+            ),
+            Err(simulation::TerminationReason::PreparedSbaFailure)
+        );
+    }
+    #[test]
+    fn common_pass_performance_diagnostics() {
+        for scenario in 0..6 {
+            let mut s = fixture();
+            let subjects = match scenario {
+                0 => 3,
+                1 => 20,
+                2 => 3,
+                3 => 3,
+                4 => 3,
+                _ => 24,
+            };
+            let watchers = if scenario == 5 || scenario == 2 { 3 } else { 1 };
+            let ws: Vec<_> = (0..watchers).map(|i| add(&mut s, W, i % 2)).collect();
+            // Token board shape uses plain victims; no authored card expansion.
+            let mut db = s.card_db().clone();
+            let mut def = db.get(C).unwrap().clone();
+            def.triggered_abilities.clear();
+            db.insert(def);
+            s.card_db = Some(Arc::new(db));
+            let ids: Vec<_> = (0..subjects).map(|_| add(&mut s, C, 0)).collect();
+            for &id in &ids {
+                lethal(&mut s, id);
+                if scenario == 1 || scenario == 5 {
+                    s.objects.get_mut(&id).unwrap().is_token = true;
+                }
+            }
+            if scenario == 2 {
+                for &w in &ws {
+                    lethal(&mut s, w);
+                }
+            }
+            if scenario == 3 {
+                let l = ids[0];
+                for &id in &ids[1..] {
+                    zero(&mut s, id);
+                    s.objects.get_mut(&id).unwrap().damage_marked = 0;
+                }
+                s.continuous_effects.push(ContinuousEffect {
+                    source_id: l,
+                    controller: 0,
+                    timestamp: 1,
+                    duration: Duration::WhileSourceOnBattlefield,
+                    affected: AffectedObjects::OtherCreaturesControlledBy(0),
+                    modification: LayerModification::ModifyPT(0, 1),
+                });
+                s.objects.get_mut(&l).unwrap().damage_marked = 3;
+            }
+            if scenario == 4 {
+                let a = add(&mut s, L, 0);
+                let b = add(&mut s, L, 0);
+                s.objects.get_mut(&a).unwrap().tapped = true;
+                zero(&mut s, b);
+            }
+            s.invalidate_characteristics_cache();
+            let started = std::time::Instant::now();
+            rules::check_state_based_actions(&mut s);
+            let settlement = started.elapsed();
+            assert!(s.sba_failure.is_none());
+            let n = norm(&s);
+            println!("common-pass scenario={scenario} subjects={subjects} occurrences={} sources={} components={:?} ties={:?} nodes={} candidates={} settlement_us={} normalize_ns={}",s.pending_triggers.len()+s.stack.len(),n.source_ranks.len(),n.stats.component_sizes,n.stats.tied_cell_sizes,n.stats.search_nodes,n.stats.encoded_candidates,settlement.as_micros(),n.stats.elapsed_nanos);
+        }
+    }
+    #[test]
+    fn semantic_legend_stable_definition_and_linked_summary_preferences() {
+        let mut s = fixture();
+        let mut db = s.card_db().clone();
+        let mut def = db.get(L).unwrap().clone();
+        def.id = L + 10;
+        db.insert(def);
+        s.card_db = Some(Arc::new(db));
+        let greater = add(&mut s, L + 10, 0);
+        let smaller = add(&mut s, L, 0);
+        rules::check_state_based_actions(&mut s);
+        assert!(s.battlefield.contains(&smaller));
+        assert!(!s.battlefield.contains(&greater));
+        let mut s = fixture();
+        let linked_source = add(&mut s, L, 0);
+        let empty_source = add(&mut s, L, 0);
+        let exiled = s.create_card_in_zone(C, 0, ZoneType::Exile);
+        s.objects.get_mut(&exiled).unwrap().exiled_by = Some(linked_source);
+        rules::check_state_based_actions(&mut s);
+        assert!(s.battlefield.contains(&empty_source));
+        assert!(s.players[0].graveyard.contains(&linked_source));
+        assert!(s.players[0].graveyard.contains(&exiled));
+        let mut s = fixture();
+        let a = add(&mut s, L, 0);
+        let b = add(&mut s, L, 0);
+        for source in [a, b] {
+            let exiled = s.create_card_in_zone(C, 0, ZoneType::Exile);
+            s.objects.get_mut(&exiled).unwrap().exiled_by = Some(source);
+        }
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(
+            s.sba_failure,
+            Some(mtg_gto::rules::sba::PreparedPassFailure::UnprovedLegendTie)
+        );
+        assert_eq!(s.battlefield.len(), 2);
+        assert_eq!(s.players[0].exile.len(), 2);
+    }
+    #[test]
+    fn legend_effective_controller_not_stored_controller_and_commander_distinction() {
+        let mut s = fixture();
+        let a = add(&mut s, L, 0);
+        let b = add(&mut s, L, 1);
+        s.continuous_effects.push(ContinuousEffect {
+            source_id: b,
+            controller: 1,
+            timestamp: 1,
+            duration: Duration::UntilEndOfTurn,
+            affected: AffectedObjects::Specific(b),
+            modification: LayerModification::ChangeController(0),
+        });
+        s.invalidate_characteristics_cache();
+        rules::check_state_based_actions(&mut s);
+        assert!(s.battlefield.contains(&a));
+        assert!(!s.battlefield.contains(&b));
+        assert!(s.players[1].graveyard.contains(&b));
+        assert_eq!(contexts(&s)[0].subject.before.controller, 0);
+        let db = fixture().card_db;
+        let mut s = GameState::new_commander(2);
+        s.card_db = db;
+        let ordinary = add(&mut s, L, 0);
+        let commander = add(&mut s, L, 0);
+        s.players[0].commander_card_id = Some(L);
+        s.players[0].commander_object_id = Some(commander);
+        rules::check_state_based_actions(&mut s);
+        assert!(s.battlefield.contains(&ordinary));
+        assert!(s.players[0].command_zone.contains(&commander));
+        assert!(contexts(&s).iter().all(|ctx| !ctx.subject.creature_died()));
+    }
+    #[test]
+    fn legend_anthem_removal_creates_later_common_pass() {
+        let mut s = fixture();
+        let keeper = add(&mut s, L, 0);
+        let lord = add(&mut s, L, 0);
+        s.objects.get_mut(&lord).unwrap().tapped = true;
+        let a = add(&mut s, C, 0);
+        let b = add(&mut s, C, 0);
+        zero(&mut s, a);
+        zero(&mut s, b);
+        s.continuous_effects.push(ContinuousEffect {
+            source_id: lord,
+            controller: 0,
+            timestamp: 1,
+            duration: Duration::WhileSourceOnBattlefield,
+            affected: AffectedObjects::OtherCreatures,
+            modification: LayerModification::ModifyPT(0, 1),
+        });
+        // Equal effective legend P/T keeps the untapped semantic role.
+        s.continuous_effects.push(ContinuousEffect {
+            source_id: lord,
+            controller: 0,
+            timestamp: 2,
+            duration: Duration::WhileSourceOnBattlefield,
+            affected: AffectedObjects::Source,
+            modification: LayerModification::ModifyPT(0, 1),
+        });
+        s.invalidate_characteristics_cache();
+        rules::check_state_based_actions(&mut s);
+        assert!(s.battlefield.contains(&keeper));
+        assert_eq!(group(&s, a), group(&s, b));
+        assert_ne!(group(&s, lord), group(&s, a));
+    }
+    #[test]
+    fn represented_redirect_retains_common_event_without_false_keyword_death() {
+        let mut s = fixture();
+        let a = add(&mut s, C, 0);
+        zero(&mut s, a);
+        let b = add(&mut s, C, 0);
+        lethal(&mut s, b);
+        let w = add(&mut s, W, 0);
+        s.objects
+            .get_mut(&a)
+            .unwrap()
+            .temp_keywords
+            .push(KeywordAbility::Undying);
+        s.replacement_effects.push(ReplacementEffect {
+            source_id: w,
+            controller: 0,
+            applies_to: ReplacementEventKind::WouldDie,
+            action: ReplacementAction::RedirectToZone(ZoneType::Exile),
+            is_self_replacement: true,
+            description: "represented redirect".into(),
+        });
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(s.players[0].exile.len(), 2);
+        assert_eq!(group(&s, a), group(&s, b));
+        assert_eq!(contexts(&s).len(), 2);
+        assert!(contexts(&s).iter().all(|ctx| !ctx.subject.creature_died()));
+    }
+    #[test]
+    fn blocked_mandatory_pass_cannot_partially_cancel_or_clear_equipment() {
+        let mut s = fixture();
+        let a = add(&mut s, C, 0);
+        zero(&mut s, a);
+        let counter = add(&mut s, C, 0);
+        s.objects.get_mut(&counter).unwrap().plus_counters = 1;
+        s.objects.get_mut(&counter).unwrap().minus_counters = 1;
+        let equip = add(&mut s, E, 0);
+        s.objects.get_mut(&equip).unwrap().attached_to = Some(777);
+        s.replacement_effects.push(ReplacementEffect {
+            source_id: a,
+            controller: 0,
+            applies_to: ReplacementEventKind::WouldDie,
+            action: ReplacementAction::Prevent,
+            is_self_replacement: true,
+            description: "prevent".into(),
+        });
+        rules::check_state_based_actions(&mut s);
+        assert_eq!(
+            s.sba_failure,
+            Some(mtg_gto::rules::sba::PreparedPassFailure::PreventedMandatoryMovement)
+        );
+        assert_eq!(s.objects[&counter].plus_counters, 1);
+        assert_eq!(s.objects[&counter].minus_counters, 1);
+        assert_eq!(s.objects[&equip].attached_to, Some(777));
+    }
+    #[test]
+    fn accepted_action_settlement_propagates_preparation_failure() {
+        let mut s = fixture();
+        let mut db = s.card_db().clone();
+        db.insert(CardDef {
+            id: 995_309,
+            name: "Settlement land".into(),
+            card_types: vec![CardType::Land],
+            ..Default::default()
+        });
+        s.card_db = Some(Arc::new(db));
+        let a = add(&mut s, L, 0);
+        add(&mut s, L, 0);
+        s.combat.attackers.push(a);
+        let land = s.create_card_in_zone(995_309, 0, ZoneType::Hand);
+        let action = Action::PlayLand { object_id: land };
+        let legal = legal_actions(&s);
+        assert_eq!(
+            simulation::apply_counted_action(&mut s, &action, &legal),
+            Err(simulation::TerminationReason::PreparedSbaFailure)
+        );
+        assert!(s.battlefield.contains(&land));
+        assert_eq!(s.loss_boundary.accepted_actions, 1);
+        assert_eq!(s.players[0].graveyard.len(), 0);
+        assert!(legal_actions(&s).is_empty());
+    }
 }

@@ -279,8 +279,8 @@ fn try_mcts_search(
     config: &MctsConfig,
     root: &mut MctsNode,
 ) -> Result<Option<Action>, TerminationReason> {
-    if state.unsupported_continuing_elimination() {
-        return Err(TerminationReason::UnsupportedContinuingElimination);
+    if let Some(reason) = state.invalid_gameplay_reason() {
+        return Err(reason);
     }
     if state.gameplay_stopped() { return Ok(None); }
     let actions = legal_actions(state);
@@ -469,8 +469,8 @@ fn tree_walk(
     // This loop replaces what was previously tail-recursion through
     // non-decision states, preventing O(phases × turns) stack depth.
     loop {
-        if state.unsupported_continuing_elimination() {
-            return Err(TerminationReason::UnsupportedContinuingElimination);
+        if let Some(reason) = state.invalid_gameplay_reason() {
+            return Err(reason);
         }
         // Terminal check
         if state.game_over || state.turn_number > GOLDFISH_MAX_TURNS {
@@ -586,8 +586,8 @@ fn rollout(
     goldfish_strategy: &GoldfishStrategy,
     config: &MctsConfig,
 ) -> Result<f64, TerminationReason> {
-    if state.unsupported_continuing_elimination() {
-        return Err(TerminationReason::UnsupportedContinuingElimination);
+    if let Some(reason) = state.invalid_gameplay_reason() {
+        return Err(reason);
     }
     let mut actions_taken: u32 = 0;
 
@@ -620,8 +620,8 @@ fn rollout(
         }
     }
 
-    if state.unsupported_continuing_elimination() {
-        return Err(TerminationReason::UnsupportedContinuingElimination);
+    if let Some(reason) = state.invalid_gameplay_reason() {
+        return Err(reason);
     }
     let sl = format_starting_life(state.format);
     let combo_bonus = if let Some(ref registry) = state.combo_registry {
@@ -668,8 +668,7 @@ impl MctsStrategy {
 
 impl Strategy for MctsStrategy {
     fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Action {
-        assert!(!state.unsupported_continuing_elimination(),
-            "INVALID reason=unsupported_continuing_elimination");
+        if let Some(reason) = state.invalid_gameplay_reason() { panic!("INVALID reason={}", reason.code()); }
         assert!(!state.gameplay_stopped(), "MCTS action requested for stopped gameplay");
         // MCTS only makes sense for the pilot (player 0)
         if player != 0 {
@@ -2838,5 +2837,47 @@ mod completed_invalid_action_tests {
         let record = result.loss_boundary.unsupported.unwrap();
         assert_eq!(record.coordinates.action_index, 42);
         assert_eq!(record.losses[0].causes, vec![LossCause::LifeTotal]);
+    }
+}
+
+#[cfg(test)]
+mod common_pass_search_tests {
+    use super::*;
+    #[test]
+    fn prepared_pass_failure_rejects_search_rollout_and_runner_before_cache() {
+        let mut state = GameState::new(2);
+        state.sba_failure = Some(crate::rules::sba::PreparedPassFailure::UnprovedLegendTie);
+        state.turn_number = u32::MAX;
+        let before = bincode::serialize(&state).unwrap();
+        let config = MctsConfig {
+            max_rollout_actions: 0,
+            ..Default::default()
+        };
+        let mut root = MctsNode::new();
+        assert_eq!(
+            try_mcts_search(&state, &config, &mut root),
+            Err(TerminationReason::PreparedSbaFailure)
+        );
+        assert_eq!(
+            tree_walk(
+                &mut state,
+                &mut root,
+                &config,
+                &GreedyStrategy,
+                &GoldfishStrategy,
+                u32::MAX
+            ),
+            Err(TerminationReason::PreparedSbaFailure)
+        );
+        assert_eq!(
+            rollout(&mut state, &GreedyStrategy, &GoldfishStrategy, &config),
+            Err(TerminationReason::PreparedSbaFailure)
+        );
+        assert_eq!(root.visits, 0);
+        assert_eq!(
+            run_mcts_goldfish_game(&mut state, &config, false, None).outcome,
+            MctsOutcome::Invalid
+        );
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
     }
 }

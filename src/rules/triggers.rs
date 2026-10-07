@@ -20,17 +20,6 @@ pub(super) fn check_triggers(state: &mut GameState, condition: TriggerCondition,
     state.pending_triggers.extend(triggers);
 }
 
-/// Capture a source's triggers before a zone change, while its battlefield
-/// incarnation and instructions are still available. Callers may queue them
-/// after state-based actions settle.
-pub(super) fn capture_source_triggers(
-    state: &GameState,
-    condition: TriggerCondition,
-    source_id: ObjectId,
-) -> Vec<PendingTrigger> {
-    collect_triggers(state, condition, Some(source_id))
-}
-
 fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint: Option<ObjectId>) -> Vec<PendingTrigger> {
     {
         let db = state.card_db();
@@ -75,45 +64,6 @@ fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint:
         }
         found
     }
-}
-
-/// Check `ACreatureYouControlDies` triggers — only fires for permanents whose
-/// controller matches the dying creature's controller.
-pub(super) fn check_your_creature_dies_triggers(
-    state: &mut GameState,
-    dying_controllers: &[PlayerIndex],
-) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
-    let triggers: Vec<PendingTrigger> = {
-        let db = state.card_db();
-        let mut found = Vec::new();
-
-        for &obj_id in &state.battlefield {
-            let inst = &state.objects[&obj_id];
-            let controller = inst.controller;
-            let def = match db.get(inst.card_def_id) {
-                Some(d) => d,
-                None => continue,
-            };
-
-            for (i, trigger) in def.triggered_abilities.iter().enumerate() {
-                if trigger.trigger == TriggerCondition::ACreatureYouControlDies
-                    && dying_controllers.contains(&controller)
-                {
-                    found.push(PendingTrigger {
-                        source_id: obj_id,
-                        ability_index: i,
-                        controller,
-                        targets: vec![],
-                        context: captured_context(inst, trigger, None),
-                    });
-                }
-            }
-        }
-        found
-    };
-
-    state.pending_triggers.extend(triggers);
 }
 
 /// Flush pending triggers onto the stack in APNAP order

@@ -1,6 +1,6 @@
 //! Validated, synchronous zone transitions. `ExileTarget` and explicit
 //! destruction, resolved creature sacrifice, bounce, and battlefield-to-library
-//! effects use this kernel;
+//! effects and common-pass SBAs use this kernel;
 //! other movement families remain legacy.
 //! A batch is one simultaneous event, independent of the later 2A trigger
 //! placement window. The batch itself is transient; occurrences own history.
@@ -79,12 +79,19 @@ pub enum MovementKind {
     Draw { player: PlayerIndex },
 }
 
+/// Frozen reasons for one SBA incarnation. Non-destructive reasons take
+/// precedence over lethal destruction; all applicable reasons remain owned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SbaCause { ZeroToughness, LethalDamage, Legend, ZeroLoyalty, OrphanAura }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommittedTransition {
     pub before: LastKnownObject,
     pub after: ExactObjectRef,
     pub destination: ZoneLocation,
     pub kind: MovementKind,
+    #[serde(default)]
+    pub sba_causes: Vec<SbaCause>,
 }
 
 impl CommittedTransition {
@@ -326,6 +333,7 @@ pub fn public_occurrence_info(
 /// sets. Numeric runtime IDs/generations remain only in the owned rules data.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ZoneSubjectInfo {
+    pub sba_causes: Vec<SbaCause>,
     pub card_id: CardId,
     pub owner: PlayerIndex,
     pub controller_before: PlayerIndex,
@@ -389,6 +397,7 @@ impl ZoneTriggerContext {
         colors.sort_by_key(|value| *value as u8);
         keywords.sort_by_key(|value| *value as u8);
         ZoneSubjectInfo {
+            sba_causes: self.subject.sba_causes.clone(),
             card_id: before.card_id,
             owner: before.owner,
             controller_before: before.controller,
@@ -997,7 +1006,7 @@ pub fn exhaustive_retained_oracle(
     result
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransitionError {
     MissingDatabase,
     MissingObject(ObjectId),
@@ -1040,7 +1049,7 @@ fn actual_destination(state: &GameState, id: ObjectId, to: ZoneType) -> ZoneType
     }
 }
 
-fn validate_subjects(
+fn validate_battlefield_subjects(
     state: &GameState,
     subjects: &[ExactObjectRef],
 ) -> Result<(), TransitionError> {
@@ -1058,14 +1067,58 @@ fn validate_subjects(
         if !state.battlefield.contains(&id) {
             return Err(TransitionError::WrongZone(id));
         }
-        if inst.zone_change_count == u32::MAX {
-            return Err(TransitionError::GenerationExhausted(id));
-        }
         if inst.owner >= state.players.len() || inst.controller >= state.players.len() {
             return Err(TransitionError::InvalidPlayer(id));
         }
         if db.get(inst.card_def_id).is_none() {
             return Err(TransitionError::MissingDefinition(inst.card_def_id));
+        }
+    }
+    Ok(())
+}
+
+fn validate_subjects(
+    state: &GameState,
+    subjects: &[ExactObjectRef],
+) -> Result<(), TransitionError> {
+    validate_battlefield_subjects(state, subjects)?;
+    for subject in subjects {
+        if subject.generation == u32::MAX {
+            return Err(TransitionError::GenerationExhausted(subject.id));
+        }
+    }
+    Ok(())
+}
+
+/// Structural preflight shared by every common-pass subject, including frozen
+/// corrections. Generation increments, linked departures and event capacity
+/// belong to movement preparation, not to nonmovement-only work.
+pub(super) fn validate_sba_subjects(
+    state: &GameState,
+    subjects: &[ExactObjectRef],
+) -> Result<(), TransitionError> {
+    validate_battlefield_subjects(state, subjects)?;
+    for subject in subjects {
+        let id = subject.id;
+        if state.objects[&id].object_id != id {
+            return Err(TransitionError::StaleIncarnation(id));
+        }
+        // An exact battlefield incarnation cannot simultaneously occupy a
+        // private/shared spell zone. Check nominal protected members too.
+        if state.players.iter().any(|player| {
+            [
+                &player.library,
+                &player.hand,
+                &player.graveyard,
+                &player.exile,
+                &player.command_zone,
+            ]
+            .iter()
+            .any(|zone| zone.contains(&id))
+        }) || state.stack.iter().any(
+            |entry| matches!(entry.source, crate::game::StackSource::Spell(spell) if spell == id),
+        ) {
+            return Err(TransitionError::WrongZone(id));
         }
     }
     Ok(())
@@ -1143,15 +1196,88 @@ pub fn resolved_sacrifice_batch(
     commit_batch(state, &requests, PreparedKind::ResolvedSacrifice).map(Some)
 }
 
+/// Private synchronous common-pass adapter. Validate the COMPLETE nominal
+/// mixed-cause set before indestructible or represented WouldDie filtering.
+/// It owns no GameState and cannot be persisted or suspended.
+pub(super) struct PreparedSbaMovements {
+    requests: Vec<TransitionRequest>,
+    causes: HashMap<ExactObjectRef, Vec<SbaCause>>,
+    pub prevented_mandatory: bool,
+}
+
+impl PreparedSbaMovements {
+    pub fn has_movers(&self) -> bool {
+        !self.requests.is_empty()
+    }
+    pub fn commit(self, state: &mut GameState) -> Result<(), TransitionError> {
+        if self.requests.is_empty() {
+            return Ok(());
+        }
+        commit_batch_with_causes(state, &self.requests, PreparedKind::Sba, &self.causes)?;
+        Ok(())
+    }
+}
+
+pub(super) fn prepare_sba_movements(
+    state: &GameState,
+    nominal: &[(ExactObjectRef, Vec<SbaCause>)],
+) -> Result<PreparedSbaMovements, TransitionError> {
+    let intents: Vec<_> = nominal
+        .iter()
+        .map(|(object, causes)| TransitionRequest {
+            object: *object,
+            from: ZoneType::Battlefield,
+            to: ZoneType::Graveyard,
+            kind: if causes.iter().any(|cause| *cause != SbaCause::LethalDamage) {
+                MovementKind::Put
+            } else {
+                MovementKind::Destroy
+            },
+        })
+        .collect();
+    if !intents.is_empty() {
+        validate(state, &intents, PreparedKind::Sba)?;
+    }
+    let mut requests = Vec::new();
+    let mut prevented_mandatory = false;
+    for mut intent in intents {
+        if intent.kind == MovementKind::Destroy
+            && state.has_keyword(intent.object.id, KeywordAbility::Indestructible)
+        {
+            continue;
+        }
+        if state.is_creature(intent.object.id) {
+            intent.to = state.death_replacement_zone(intent.object.id);
+        }
+        if intent.to == ZoneType::Battlefield {
+            prevented_mandatory = true;
+        } else {
+            requests.push(intent);
+        }
+    }
+    if !requests.is_empty() {
+        validate(state, &requests, PreparedKind::Sba)?;
+    }
+    Ok(PreparedSbaMovements {
+        requests,
+        causes: nominal.iter().cloned().collect(),
+        prevented_mandatory,
+    })
+}
+
 #[derive(Clone, Copy)]
-enum PreparedKind { Put, Destroy, ResolvedSacrifice }
+enum PreparedKind { Put, Destroy, ResolvedSacrifice, Sba }
 
 fn validate(
     state: &GameState,
     requests: &[TransitionRequest],
     prepared: PreparedKind,
 ) -> Result<Vec<LinkedExileFollowup>, TransitionError> {
-    validate_subjects(state, &requests.iter().map(|r| r.object).collect::<Vec<_>>())?;
+    let subjects: Vec<_> = requests.iter().map(|r| r.object).collect();
+    validate_subjects(state, &subjects)?;
+    if matches!(prepared, PreparedKind::Sba) {
+        validate_sba_subjects(state, &subjects)?;
+    }
     for request in requests {
         // This first adapter supports battlefield departures only. Other
         // locations enter the same data model in later complete families.
@@ -1163,6 +1289,7 @@ fn validate(
         if request.kind != MovementKind::Put
             && !matches!((prepared, request.kind),
                 (PreparedKind::Destroy, MovementKind::Destroy)
+                | (PreparedKind::Sba, MovementKind::Destroy)
                 | (PreparedKind::ResolvedSacrifice, MovementKind::Sacrifice { .. }))
         {
             return Err(TransitionError::UnsupportedPath);
@@ -1380,8 +1507,8 @@ fn eligible_death_keywords(before: &LastKnownObject) -> impl Iterator<Item = Key
     })
 }
 
-/// One owner of keyword occurrences for both migrated departures and the
-/// temporary legacy observer. No current object state participates in matching.
+/// One owner of keyword occurrences for migrated departures, including SBAs.
+/// No current object state participates in matching.
 fn collect_death_keywords(batch: &CommittedTransitionBatch) -> Vec<PendingTrigger> {
     let mut found = Vec::new();
     for subject in &batch.transitions {
@@ -1413,47 +1540,6 @@ fn collect_death_keywords(batch: &CommittedTransitionBatch) -> Vec<PendingTrigge
         }
     }
     found
-}
-
-/// Owned snapshots taken before each legacy inner SBA iteration mutates
-/// counters or characteristics. Core common-pass work will replace this source.
-pub(super) fn capture_legacy_death_keywords(state: &GameState) -> HashMap<ObjectId, LastKnownObject> {
-    state.battlefield.iter().filter_map(|&id| {
-        let before = capture_subject(state, id);
-        let eligible = eligible_death_keywords(&before).next().is_some();
-        eligible.then_some((id, before))
-    }).collect()
-}
-
-/// Observe an actual legacy movement without changing its sequential semantics.
-/// The snapshot is not a attempted-death list and is never matched post-move.
-pub(super) fn move_legacy_sba_with_keywords(
-    state: &mut GameState, id: ObjectId, to: ZoneType,
-    observations: &HashMap<ObjectId, LastKnownObject>,
-) {
-    let Some(before) = observations.get(&id).filter(|before| {
-        state.battlefield.contains(&id) && state.objects.get(&id)
-            .is_some_and(|inst| inst.zone_change_count == before.object.generation)
-    }) else {
-        state.move_object(id, ZoneType::Battlefield, to);
-        return;
-    };
-    // Legacy SBA failure propagation remains core 2B.3b work. Guard the
-    // observer's event identity before mutation rather than wrapping it.
-    let next_group = state.next_zone_event_group_id.checked_add(1)
-        .expect("legacy keyword event group exhausted");
-    state.move_object_for_keyword_observation(id, to);
-    let destination = actual_destination(state, id, to);
-    if destination == ZoneType::Graveyard && state.players[before.owner].graveyard.contains(&id) {
-        let after = ExactObjectRef { id, generation: state.objects[&id].zone_change_count };
-        let batch = CommittedTransitionBatch { group_id: state.next_zone_event_group_id,
-            transitions: vec![CommittedTransition { before: before.clone(), after,
-                destination: ZoneLocation { zone: destination, player: before.owner },
-                kind: MovementKind::Put }] };
-        state.pending_triggers.extend(collect_death_keywords(&batch));
-        state.next_zone_event_group_id = next_group;
-    }
-    state.purge_transitioned_token(id, destination);
 }
 
 /// Narrow exact graveyard-return adapter for owned Undying/Persist. A stale or
@@ -1546,6 +1632,13 @@ fn commit_batch(
     requests: &[TransitionRequest],
     prepared: PreparedKind,
 ) -> Result<CommittedTransitionBatch, TransitionError> {
+    commit_batch_with_causes(state, requests, prepared, &HashMap::new())
+}
+
+fn commit_batch_with_causes(
+    state: &mut GameState, requests: &[TransitionRequest], prepared: PreparedKind,
+    causes: &HashMap<ExactObjectRef, Vec<SbaCause>>,
+) -> Result<CommittedTransitionBatch, TransitionError> {
     let followups = validate(state, requests, prepared)?;
     let group_id = state.next_zone_event_group_id;
     // Shared preflight has already checked this counter before mutation.
@@ -1582,6 +1675,7 @@ fn commit_batch(
                 },
                 before,
                 kind: request.kind,
+                sba_causes: causes.get(&request.object).cloned().unwrap_or_default(),
             }
         })
         .collect();

@@ -551,7 +551,7 @@ mod terminal_copy_integration_tests {
         assert_eq!(state.pending_triggers.len(), 2);
         assert_eq!(state.priority_player, 1);
         let order = crate::action::legal_actions(&state).into_iter()
-            .find(|action| matches!(action, Action::OrderTriggers { .. })).unwrap();
+            .find(|action| matches!(action, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. })).unwrap();
         super::super::apply_action(&mut state, &order);
         assert_eq!(state.priority_player, 0);
         assert!(state.pending_triggers.is_empty());

@@ -210,7 +210,7 @@ fn three_player_wrath_token_occurrences_continue_identically_after_restores() {
 }
 
 #[test]
-fn explicit_destroy_and_later_legacy_sba_death_keep_separate_contexts() {
+fn explicit_destroy_and_later_common_sba_death_keep_separate_contexts() {
     const WATCHER: u64 = 998_300;
     let effect = Effect::DestroyTarget { target: TargetSpec::AnyCreature };
     let (mut state, source, subject, _) = ability_game(effect);
@@ -232,10 +232,12 @@ fn explicit_destroy_and_later_legacy_sba_death_keep_separate_contexts() {
     let occurrences: Vec<_> = state.pending_triggers.iter()
         .filter(|pending| pending.source_id == watcher).collect();
     assert_eq!(occurrences.len(), 2);
-    assert_eq!(occurrences.iter().filter(|pending|
-        pending.context.zone_transition.is_some()).count(), 1);
-    assert_eq!(occurrences.iter().filter(|pending|
-        pending.context.zone_transition.is_none()).count(), 1);
+    assert!(occurrences.iter().all(|pending| pending.context.zone_transition.is_some()));
+    let contexts: Vec<_> = occurrences.iter().map(|p| p.context.zone_transition.as_ref().unwrap()).collect();
+    assert_ne!(contexts[0].group_id, contexts[1].group_id);
+    assert!(contexts.iter().any(|c| c.subject.before.object.id == subject));
+    assert!(contexts.iter().any(|c| c.subject.before.object.id == cascade));
+    assert!(contexts.iter().all(|c| c.subject.creature_died()));
     assert!(state.players[1].graveyard.contains(&subject));
     assert!(state.players[1].graveyard.contains(&cascade));
 }

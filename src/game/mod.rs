@@ -502,6 +502,11 @@ pub struct GameState {
     /// The current synchronous action owns its accepted-action coordinate.
     #[serde(skip)]
     pub(crate) loss_action_in_progress: bool,
+
+    /// Failed common-pass preparation at an external INVALID boundary.
+    /// No pass plan is persisted.
+    #[serde(default)]
+    pub sba_failure: Option<crate::rules::sba::PreparedPassFailure>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -763,6 +768,7 @@ pub struct GameStateSnapshot {
     game_over: bool,
     winner: Option<PlayerIndex>,
     loss_boundary: LossBoundary,
+    sba_failure: Option<crate::rules::sba::PreparedPassFailure>,
 }
 
 // ---------------------------------------------------------------------------
@@ -801,6 +807,7 @@ pub struct PlayerView<'a> {
     pub cleanup_discard_in_progress: bool,
     pub pending_copy_order: Option<&'a PendingCopyOrder>,
     pub pending_failed_draws: &'a [PlayerIndex],
+    pub sba_preparation_failed: bool,
     /// Which player currently has priority.
     pub priority_player: PlayerIndex,
 
@@ -996,6 +1003,7 @@ impl GameState {
             cleanup_discard_in_progress: self.cleanup_discard_in_progress,
             pending_copy_order: self.pending_copy_order.as_ref(),
             pending_failed_draws: &self.loss_boundary.pending_failed_draws,
+            sba_preparation_failed: self.sba_failure.is_some(),
             priority_player: self.priority_player,
 
             my_life: self.players[player].life,
@@ -1068,6 +1076,7 @@ impl GameState {
             characteristics_cache: CharacteristicsCache::default(),
             loss_boundary: LossBoundary { turns_taken: vec![0; num_players], ..Default::default() },
             loss_action_in_progress: false,
+            sba_failure: None,
         }
     }
 
@@ -1112,6 +1121,7 @@ impl GameState {
             characteristics_cache: CharacteristicsCache::default(),
             loss_boundary: LossBoundary { turns_taken: vec![0; num_players], ..Default::default() },
             loss_action_in_progress: false,
+            sba_failure: None,
         };
         // Initialize commander damage tracking (each player tracks damage from each opponent)
         for i in 0..num_players {
@@ -1128,8 +1138,18 @@ impl GameState {
                 && self.players.iter().any(|player| player.has_lost))
     }
 
+    /// Preserve existing INVALID reporting while distinguishing prepared-pass
+    /// failure from continuing elimination. Both stop all production consumers.
+    pub fn invalid_gameplay_reason(&self) -> Option<crate::simulation::TerminationReason> {
+        if self.unsupported_continuing_elimination() {
+            Some(crate::simulation::TerminationReason::UnsupportedContinuingElimination)
+        } else if self.sba_failure.is_some() {
+            Some(crate::simulation::TerminationReason::PreparedSbaFailure)
+        } else { None }
+    }
+
     pub fn gameplay_stopped(&self) -> bool {
-        self.game_over || self.unsupported_continuing_elimination()
+        self.game_over || self.invalid_gameplay_reason().is_some()
     }
 
     pub fn loss_coordinates(&self) -> LossCoordinates {
@@ -1186,6 +1206,7 @@ impl GameState {
             game_over: self.game_over,
             winner: self.winner,
             loss_boundary: self.loss_boundary.clone(),
+            sba_failure: self.sba_failure.clone(),
         }
     }
 
@@ -1223,6 +1244,7 @@ impl GameState {
         self.game_over = snap.game_over;
         self.winner = snap.winner;
         self.loss_boundary = snap.loss_boundary;
+        self.sba_failure = snap.sba_failure;
         self.loss_action_in_progress = false;
         self.pending_events.clear();
         self.invalidate_characteristics_cache();
@@ -1296,13 +1318,6 @@ impl GameState {
     /// its destination until its event context has been captured.
     pub(crate) fn move_object_for_transition(&mut self, obj_id: ObjectId, from: ZoneType, to: ZoneType) {
         self.move_object_with_policy(obj_id, from, to, false, false, false);
-    }
-
-    /// Temporary legacy-SBA keyword observer retains a token only until owned
-    /// history is collected. Existing notifications and linked follow-ups stay
-    /// on their legacy path; this does not turn the movement into a batch.
-    pub(crate) fn move_object_for_keyword_observation(&mut self, obj_id: ObjectId, to: ZoneType) {
-        self.move_object_with_policy(obj_id, ZoneType::Battlefield, to, false, true, true);
     }
 
     pub(crate) fn purge_transitioned_token(&mut self, obj_id: ObjectId, destination: ZoneType) {

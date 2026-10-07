@@ -25,6 +25,7 @@ pub enum TerminationReason {
     StateEncoding,
     InvalidTerminalState,
     UnsupportedContinuingElimination,
+    PreparedSbaFailure,
 }
 
 impl TerminationReason {
@@ -38,6 +39,7 @@ impl TerminationReason {
             Self::StateEncoding => "state_encoding",
             Self::InvalidTerminalState => "invalid_terminal_state",
             Self::UnsupportedContinuingElimination => "unsupported_continuing_elimination",
+            Self::PreparedSbaFailure => "prepared_sba_failure",
         }
     }
 }
@@ -67,8 +69,8 @@ impl std::fmt::Display for GameOutcome {
 
 pub(crate) fn classify_outcome(state: &GameState, max_turns: u32, max_actions: u32, actions: u32,
     interrupted: Option<GameOutcome>) -> GameOutcome {
-    if state.unsupported_continuing_elimination() {
-        return GameOutcome::Invalid(TerminationReason::UnsupportedContinuingElimination);
+    if let Some(reason) = state.invalid_gameplay_reason() {
+        return GameOutcome::Invalid(reason);
     }
     if state.winner.is_some_and(|winner| !state.game_over || winner >= state.players.len()) {
         return GameOutcome::Invalid(TerminationReason::InvalidTerminalState);
@@ -116,8 +118,8 @@ pub(crate) const MAX_REJECTED_IN_ROW: u32 = 3;
 /// reject a proposal without mutating the canonical state.
 pub fn apply_counted_action(state: &mut GameState, action: &crate::action::Action,
     legal: &[crate::action::Action]) -> Result<bool, TerminationReason> {
-    if state.unsupported_continuing_elimination() {
-        return Err(TerminationReason::UnsupportedContinuingElimination);
+    if let Some(reason) = state.invalid_gameplay_reason() {
+        return Err(reason);
     }
     if state.gameplay_stopped() || !legal.contains(action) { return Ok(false); }
     let accepted_before = state.loss_boundary.accepted_actions;
@@ -128,8 +130,8 @@ pub fn apply_counted_action(state: &mut GameState, action: &crate::action::Actio
         Some(bincode::serialize(state).map_err(|_| TerminationReason::StateEncoding)?)
     } else { None };
     rules::apply_action(state, action);
-    if state.unsupported_continuing_elimination() {
-        return Err(TerminationReason::UnsupportedContinuingElimination);
+    if let Some(reason) = state.invalid_gameplay_reason() {
+        return Err(reason);
     }
     if let Some(before) = before {
         let after = bincode::serialize(state).map_err(|_| TerminationReason::StateEncoding)?;
@@ -148,7 +150,7 @@ pub(crate) fn count_completed_unsupported_actions(
     reason: TerminationReason,
     actions_taken: &mut u32,
 ) {
-    if reason == TerminationReason::UnsupportedContinuingElimination {
+    if matches!(reason, TerminationReason::UnsupportedContinuingElimination | TerminationReason::PreparedSbaFailure) {
         let accepted = state.loss_boundary.accepted_actions.saturating_sub(accepted_before);
         *actions_taken = actions_taken.saturating_add(
             u32::try_from(accepted).unwrap_or(u32::MAX));
@@ -714,10 +716,9 @@ pub(crate) fn run_goldfish_loop(
             };
             let accepted_before = state.loss_boundary.accepted_actions;
             let advanced = rules::fast_forward_goldfish_turn(state);
-            if state.unsupported_continuing_elimination() {
-                count_completed_unsupported_actions(state, accepted_before,
-                    TerminationReason::UnsupportedContinuingElimination, &mut actions_taken);
-                interrupted = Some(GameOutcome::Invalid(TerminationReason::UnsupportedContinuingElimination));
+            if let Some(reason) = state.invalid_gameplay_reason() {
+                count_completed_unsupported_actions(state, accepted_before, reason, &mut actions_taken);
+                interrupted = Some(GameOutcome::Invalid(reason));
                 break;
             }
             if advanced == 0 {
@@ -1649,5 +1650,26 @@ mod completed_invalid_action_tests {
             assert_eq!(record.losses[0].player, 0);
             assert_eq!(record.losses[0].causes, vec![LossCause::LifeTotal]);
         }
+    }
+}
+
+#[cfg(test)]
+mod common_pass_consumer_tests {
+    use super::*;
+    #[test]
+    fn prepared_pass_failure_is_invalid_before_budgets_and_runner_decisions() {
+        let mut state = GameState::new(2);
+        state.sba_failure = Some(crate::rules::sba::PreparedPassFailure::UnprovedLegendTie);
+        state.turn_number = u32::MAX;
+        let before = bincode::serialize(&state).unwrap();
+        assert_eq!(
+            classify_outcome(&state, 0, 0, 0, None),
+            GameOutcome::Invalid(TerminationReason::PreparedSbaFailure)
+        );
+        assert_eq!(
+            run_goldfish_loop(&mut state, &crate::strategy::GoldfishStrategy, false).outcome,
+            GameOutcome::Invalid(TerminationReason::PreparedSbaFailure)
+        );
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
     }
 }

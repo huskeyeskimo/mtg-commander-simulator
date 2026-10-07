@@ -461,7 +461,10 @@ fn copy_commit_sba_death_orders_nonactive_triggers_before_priority() {
     assert!(!state.battlefield.contains(&doomed));
     assert_eq!(state.pending_triggers.len(), 2);
     assert_eq!(state.priority_player, 1);
-    let order = legal_actions(&state).into_iter().find(|action| matches!(action, Action::OrderTriggers { .. })).unwrap();
+    let contexts: Vec<_> = state.pending_triggers.iter().map(|trigger| trigger.context.zone_transition.as_ref().unwrap()).collect();
+    assert!(contexts.iter().all(|context| context.subject.before.object.id == doomed));
+    assert_eq!(contexts[0].group_id, contexts[1].group_id);
+    let order = legal_actions(&state).into_iter().find(|action| matches!(action, Action::OrderTriggerOccurrences { .. })).unwrap();
     rules::apply_action(&mut state, &order);
     assert_eq!(state.priority_player, 0);
 }

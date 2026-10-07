@@ -102,7 +102,7 @@ enum SearchOutcome {
 }
 
 fn classify_search(win_turn: Option<u32>, stats: &SearchStats) -> SearchOutcome {
-    if stats.invalid && stats.invalid_reason == "unsupported_continuing_elimination" {
+    if stats.invalid && matches!(stats.invalid_reason, "unsupported_continuing_elimination" | "prepared_sba_failure") {
         return SearchOutcome::Invalid(stats.invalid_reason);
     }
     if let Some(turn) = win_turn {
@@ -594,11 +594,11 @@ fn dfs_search(
     let mut linear_depth: usize = 0; // track linear actions pushed
 
     loop {
-        if stats.invalid && stats.invalid_reason == "unsupported_continuing_elimination" { break; }
-        if work.unsupported_continuing_elimination() {
+        if stats.invalid && matches!(stats.invalid_reason, "unsupported_continuing_elimination" | "prepared_sba_failure") { break; }
+        if let Some(reason) = work.invalid_gameplay_reason() {
             stats.invalid = true;
             stats.invalid_branches += 1;
-            stats.invalid_reason = "unsupported_continuing_elimination";
+            stats.invalid_reason = reason.code();
             break;
         }
         // Win check
@@ -773,7 +773,7 @@ fn dfs_search(
         // Multiple actions — branch via recursion on clones.
         for action in &pruned {
             if stats.timed_out || stats.hit_state_cap
-                || (stats.invalid && stats.invalid_reason == "unsupported_continuing_elimination") {
+                || (stats.invalid && matches!(stats.invalid_reason, "unsupported_continuing_elimination" | "prepared_sba_failure")) {
                 break;
             }
             let desc = format_action_name(&work, action);
@@ -1200,5 +1200,20 @@ mod loss_boundary_search_tests {
         stats.invalid_reason = "unsupported_continuing_elimination";
         assert_eq!(classify_search(Some(2), &stats),
             SearchOutcome::Invalid("unsupported_continuing_elimination"));
+    }
+}
+
+#[cfg(test)]
+mod common_pass_bfs_tests {
+    use super::*;
+    #[test]
+    fn prepared_pass_failure_cannot_be_reported_as_a_found_win() {
+        let mut stats = SearchStats::new();
+        stats.invalid = true;
+        stats.invalid_reason = "prepared_sba_failure";
+        assert_eq!(
+            classify_search(Some(1), &stats),
+            SearchOutcome::Invalid("prepared_sba_failure")
+        );
     }
 }

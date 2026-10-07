@@ -5,7 +5,7 @@ mod mana;
 mod phases;
 mod resolution;
 mod spell_copy;
-mod sba;
+pub mod sba;
 mod setup;
 mod tokens;
 mod triggers;
