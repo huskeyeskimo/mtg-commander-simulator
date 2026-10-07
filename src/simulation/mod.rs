@@ -88,7 +88,7 @@ pub(crate) fn classify_outcome(state: &GameState, max_turns: u32, max_actions: u
 /// A pending copy choice owns the action while its resolution is suspended.
 pub fn invalid_cleanup_state(state: &GameState) -> bool {
     if state.pending_copy_order.is_some() { return false; }
-    let hand = state.players[state.active_player].hand.len();
+    let hand = state.card_count(&state.players[state.active_player].hand);
     if state.cleanup_discard_in_progress {
         state.phase != crate::game::Phase::Cleanup
             || state.cleanup_needs_repeat

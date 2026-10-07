@@ -281,9 +281,10 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
     if state.phase == Phase::Cleanup
         && !state.cleanup_needs_repeat
         && player == state.active_player
-        && state.players[player].hand.len() > 7
+        && state.card_count(&state.players[player].hand) > 7
     {
         for &obj_id in &state.players[player].hand {
+            if !state.is_card(obj_id) { continue; }
             actions.push(Action::Discard { object_id: obj_id });
         }
         return actions;
@@ -467,6 +468,7 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
             let hand = &state.players[player].hand;
 
             for &obj_id in hand {
+                if !state.is_card(obj_id) { continue; }
                 let inst = &state.objects[&obj_id];
                 let def = match db.get(inst.card_def_id) {
                     Some(d) => d,
@@ -534,6 +536,7 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
             {
                 let graveyard = state.players[player].graveyard.clone();
                 for &obj_id in &graveyard {
+                if !state.is_card(obj_id) { continue; }
                     let inst = &state.objects[&obj_id];
                     let def = match db.get(inst.card_def_id) {
                         Some(d) => d,
@@ -579,7 +582,7 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                             is_main
                         };
                         // Need enough other cards in graveyard to exile
-                        let gy_count = state.players[player].graveyard.len() as u32;
+                        let gy_count = state.card_count(&state.players[player].graveyard) as u32;
                         if can_cast_timing && gy_count > exile_count {
                             if let Some(ref cost) = def.mana_cost {
                                 let reduction = crate::rules::total_cost_reduction(
@@ -618,6 +621,7 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                 if has_gy_land_play {
                     let graveyard = state.players[player].graveyard.clone();
                     for &obj_id in &graveyard {
+                if !state.is_card(obj_id) { continue; }
                         let inst = &state.objects[&obj_id];
                         let def = match db.get(inst.card_def_id) {
                             Some(d) => d,
@@ -634,6 +638,7 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
             if state.is_commander_format() && is_main {
                 let cmd_zone = &state.players[player].command_zone;
                 for &obj_id in cmd_zone {
+                    if !state.is_card(obj_id) { continue; }
                     let inst = &state.objects[&obj_id];
                     let def = match db.get(inst.card_def_id) {
                         Some(d) => d,
@@ -697,6 +702,7 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                             Effect::ExileFromHandLinked => {
                                 // Generate one action per card in hand
                                 for &hand_id in &state.players[player].hand {
+                if !state.is_card(hand_id) { continue; }
                                     actions.push(Action::ActivateAbility {
                                         object_id: obj_id,
                                         ability_index: i,
@@ -707,7 +713,7 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                             Effect::ReturnLinkedExileToHand => {
                                 // Generate one action per card exiled by this permanent
                                 for &eid in &state.players[player].exile {
-                                    if state.objects[&eid].exiled_by == Some(obj_id) {
+                                    if state.is_card(eid) && state.objects[&eid].exiled_by == Some(obj_id) {
                                         actions.push(Action::ActivateAbility {
                                             object_id: obj_id,
                                             ability_index: i,
@@ -870,6 +876,7 @@ fn tutor_target_actions(state: &GameState, player: PlayerIndex) -> Vec<Action> {
     if !subtype_filter.is_empty() {
         // Fetch-land style: filter by subtype
         for &obj_id in library {
+                if !state.is_card(obj_id) { continue; }
             let card_id = state.objects[&obj_id].card_def_id;
             if seen.insert(card_id) {
                 if let Some(def) = db.get(card_id) {
@@ -884,6 +891,7 @@ fn tutor_target_actions(state: &GameState, player: PlayerIndex) -> Vec<Action> {
         // Original behavior: use tutor_targets list
         let targets = &state.players[player].tutor_targets;
         for &obj_id in library {
+                if !state.is_card(obj_id) { continue; }
             let card_id = state.objects[&obj_id].card_def_id;
             if targets.contains(&card_id) && seen.insert(card_id) {
                 actions.push(Action::ChooseTutorTarget { card_id });

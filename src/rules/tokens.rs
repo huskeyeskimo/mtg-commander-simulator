@@ -58,14 +58,14 @@ fn token_to_card_def(token_def: &TokenDef, card_id: u64) -> CardDef {
 /// DynamicValue variants that need hand/graveyard information.
 pub(super) fn build_dynamic_context(state: &GameState, controller: PlayerIndex) -> crate::card::DynamicContext {
     let hand_size = state.players.get(controller)
-        .map(|p| p.hand.len())
+        .map(|p| state.card_count(&p.hand))
         .unwrap_or(0);
     let db = state.card_db();
     let mut graveyard_card_types = Vec::new();
     let mut creatures_in_graveyard = 0usize;
     if let Some(player) = state.players.get(controller) {
         for &gid in &player.graveyard {
-            if let Some(gi) = state.objects.get(&gid) {
+            if let Some(gi) = state.objects.get(&gid).filter(|inst| !inst.is_token) {
                 if let Some(gdef) = db.get(gi.card_def_id) {
                     graveyard_card_types.push(gdef.card_types.clone());
                     if gdef.is_creature() {

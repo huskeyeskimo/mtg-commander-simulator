@@ -33,7 +33,7 @@ fn cleanup_discard_required(state: &GameState) -> bool {
     state.cleanup_discard_in_progress
         || (state.phase == Phase::Cleanup
             && !state.cleanup_needs_repeat
-            && state.players[state.active_player].hand.len() > 7)
+            && state.card_count(&state.players[state.active_player].hand) > 7)
 }
 
 /// A pending trigger-order decision owns the next action. The placement
@@ -456,8 +456,8 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         if state.phase != Phase::Cleanup
             || state.cleanup_needs_repeat
             || state.priority_player != state.active_player
-            || state.players[state.active_player].hand.len() <= 7
-            || !state.players[state.active_player].hand.contains(object_id)
+            || state.card_count(&state.players[state.active_player].hand) <= 7
+            || (!state.players[state.active_player].hand.contains(object_id) || !state.is_card(*object_id))
         {
             return false;
         }
@@ -487,7 +487,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
             ZoneType::Graveyard => &state.players[player].graveyard,
             _ => &state.players[player].command_zone,
         };
-        if !zone_cards.contains(&id) { return false; }
+        if !zone_cards.contains(&id) || !state.is_card(id) { return false; }
         let Some(def) = state.objects.get(&id).and_then(|inst| state.card_db().get(inst.card_def_id)) else { return false; };
         if !crate::targeting::valid_spell_targets(state, player, def, targets) { return false; }
     }
@@ -503,7 +503,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
 
             if state.phase == Phase::Cleanup
                 && !state.cleanup_needs_repeat
-                && state.players[state.active_player].hand.len() > 7
+                && state.card_count(&state.players[state.active_player].hand) > 7
             {
                 debug_assert!(
                     false,
@@ -526,10 +526,10 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                 return false;
             }
             let player = state.active_player;
-            if !state.players[player].hand.contains(object_id) {
+            if !state.players[player].hand.contains(object_id) || !state.is_card(*object_id) {
                 return false;
             }
-            if state.players[player].hand.len() <= 7 {
+            if state.card_count(&state.players[player].hand) <= 7 {
                 return false;
             }
 
@@ -542,7 +542,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
             // Fire discard triggers (e.g., Monument to Endurance)
             triggers::check_triggers(state, TriggerCondition::YouDiscardACard, None);
 
-            if state.players[player].hand.len() <= 7 {
+            if state.card_count(&state.players[player].hand) <= 7 {
                 state.cleanup_discard_in_progress = false;
                 phases::finalize_cleanup(state);
             }
@@ -550,6 +550,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
 
         Action::PlayLand { object_id } => {
             let obj_id = *object_id;
+            if !state.is_card(obj_id) { return false; }
             let player = state.priority_player;
             state.players[player].land_plays_remaining -= 1;
             state.move_object(obj_id, ZoneType::Hand, ZoneType::Battlefield);
@@ -570,6 +571,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
 
         Action::PlayLandFromGraveyard { object_id } => {
             let obj_id = *object_id;
+            if !state.is_card(obj_id) { return false; }
             let player = state.priority_player;
             state.players[player].land_plays_remaining -= 1;
             state.move_object(obj_id, ZoneType::Graveyard, ZoneType::Battlefield);
@@ -1096,6 +1098,9 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                     }
                 }
             } else if let Some(exile_count) = escape_exile_count {
+                if state.players[player].graveyard.iter().filter(|&&id| id != obj_id && state.is_card(id)).count() < exile_count as usize {
+                    return false;
+                }
                 // Escape: pay regular mana cost + exile N cards from graveyard
                 if let Some(ref cost) = def.mana_cost {
                     let reduction = mana::total_cost_reduction(state, player, is_creature);
@@ -1111,7 +1116,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                     if exiled >= exile_count {
                         break;
                     }
-                    if gy_id != obj_id {
+                    if gy_id != obj_id && state.is_card(gy_id) {
                         state.move_object(gy_id, ZoneType::Graveyard, ZoneType::Exile);
                         exiled += 1;
                     }
@@ -1197,9 +1202,9 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                 if let Some(pos) = state.players[player]
                     .library
                     .iter()
-                    .position(|&obj_id| state.objects[&obj_id].card_def_id == *card_id)
+                    .position(|&obj_id| state.is_card(obj_id) && state.objects[&obj_id].card_def_id == *card_id)
                 {
-                    let obj_id = state.players[player].library.remove(pos);
+                    let obj_id = state.players[player].library[pos];
                     state.move_object(obj_id, ZoneType::Library, destination);
                 }
             }
@@ -1272,7 +1277,7 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
     );
 
     for _ in 0..count {
-        if state.players[player].library.is_empty() && !has_renfield && !has_abundance {
+        if state.first_library_card(player).is_none() && !has_renfield && !has_abundance {
             // CR 704: complete the enclosing effect before this condition
             // becomes a loss at settlement. Repeated attempts share one fact.
             if !state.loss_boundary.pending_failed_draws.contains(&player) {
@@ -1282,7 +1287,7 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
             return;
         }
 
-        let hand_was_empty = state.players[player].hand.is_empty();
+        let hand_was_empty = state.card_count(&state.players[player].hand) == 0;
 
         // Determine how many actual cards to put in hand for this single draw.
         // Phial doubles the draw (draw 2 instead of 1) as a true replacement
@@ -1293,10 +1298,11 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
             // Simplified: put 2 cards in hand (in practice they'd be exiled and
             // playable this turn). This is a replacement, so no CardDrawn event.
             for _ in 0..2 {
-                if state.players[player].library.is_empty() {
+                if state.first_library_card(player).is_none() {
                     break;
                 }
-                let card_id = state.players[player].library.remove(0);
+                let index = state.first_library_card(player).expect("drawable card checked");
+                let card_id = state.players[player].library.remove(index);
                 state.players[player].hand.push(card_id);
                 state.emit_event(GameEvent::ZoneChange {
                     object: card_id,
@@ -1311,18 +1317,19 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
             let land_idx = {
                 let db = state.card_db();
                 state.players[player].library.iter().position(|&id| {
-                    state.objects.get(&id)
+                    state.objects.get(&id).filter(|inst| !inst.is_token)
                         .and_then(|inst| db.get(inst.card_def_id))
                         .map_or(false, |def| def.is_land())
                 })
             };
             if let Some(idx) = land_idx {
-                // Remove revealed non-land cards (indices 0..idx) and put on bottom
-                let revealed: Vec<ObjectId> = state.players[player].library.drain(0..idx).collect();
-                // Now the land is at index 0; remove it and put in hand
-                let card_id = state.players[player].library.remove(0);
+                let card_id = state.players[player].library[idx];
+                let revealed: Vec<ObjectId> = state.players[player].library[..idx].iter()
+                    .copied().filter(|&id| state.is_card(id)).collect();
+                let removed: std::collections::HashSet<_> = revealed.iter().copied()
+                    .chain(std::iter::once(card_id)).collect();
+                state.players[player].library.retain(|id| !removed.contains(id));
                 state.players[player].hand.push(card_id);
-                // Put revealed non-lands on the bottom of the library
                 state.players[player].library.extend(revealed);
                 state.emit_event(GameEvent::ZoneChange {
                     object: card_id,
@@ -1337,14 +1344,15 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
             // Normal draw, possibly doubled by Phial
             let draws = if has_phial && hand_was_empty { 2 } else { 1 };
             for _ in 0..draws {
-                if state.players[player].library.is_empty() {
+                if state.first_library_card(player).is_none() {
                     if !state.loss_boundary.pending_failed_draws.contains(&player) {
                         state.loss_boundary.pending_failed_draws.push(player);
                         state.loss_boundary.pending_failed_draws.sort_unstable();
                     }
                     break;
                 }
-                let card_id = state.players[player].library.remove(0);
+                let index = state.first_library_card(player).expect("drawable card checked");
+                let card_id = state.players[player].library.remove(index);
                 state.players[player].hand.push(card_id);
                 state.emit_event(GameEvent::CardDrawn {
                     player,
@@ -1405,11 +1413,10 @@ fn clear_lost_tutor_choice(state: &mut GameState) {
 fn discard_random(state: &mut GameState, player: PlayerIndex, count: usize) {
     let mut rng = rand::thread_rng();
     for _ in 0..count {
-        if state.players[player].hand.is_empty() {
-            break;
-        }
-        let idx = rng.gen_range(0..state.players[player].hand.len());
-        let obj_id = state.players[player].hand[idx];
+        let cards: Vec<_> = state.players[player].hand.iter().copied()
+            .filter(|&id| state.is_card(id)).collect();
+        if cards.is_empty() { break; }
+        let obj_id = cards[rng.gen_range(0..cards.len())];
         apply_action(state, &Action::Discard { object_id: obj_id });
     }
 }

@@ -59,6 +59,8 @@ pub struct InformationSet {
 
     /// Cards in our hand, represented as sorted CardIds.
     pub my_hand: Vec<u64>,
+    /// Observable transient nonbattlefield tokens, distinct from cards.
+    pub visible_zone_tokens: Vec<(u8, usize, u64)>,
     /// Opponent's hand size (contents unknown).
     pub opp_hand_size: usize,
     /// Opponent's library size (contents unknown).
@@ -170,7 +172,7 @@ impl InformationSet {
         let mut my_hand: Vec<u64> = view
             .my_hand
             .iter()
-            .filter_map(|&id| view.objects.get(&id).map(|inst| inst.card_def_id))
+            .filter_map(|&id| view.objects.get(&id).filter(|inst| !inst.is_token).map(|inst| inst.card_def_id))
             .collect();
         my_hand.sort();
 
@@ -222,14 +224,14 @@ impl InformationSet {
         let mut my_graveyard: Vec<u64> = view
             .my_graveyard
             .iter()
-            .filter_map(|&id| view.objects.get(&id).map(|inst| inst.card_def_id))
+            .filter_map(|&id| view.objects.get(&id).filter(|inst| !inst.is_token).map(|inst| inst.card_def_id))
             .collect();
         my_graveyard.sort();
 
         let mut opp_graveyard: Vec<u64> = view
             .opp_graveyard
             .iter()
-            .filter_map(|&id| view.objects.get(&id).map(|inst| inst.card_def_id))
+            .filter_map(|&id| view.objects.get(&id).filter(|inst| !inst.is_token).map(|inst| inst.card_def_id))
             .collect();
         opp_graveyard.sort();
 
@@ -237,14 +239,14 @@ impl InformationSet {
         let mut my_exile: Vec<u64> = view
             .my_exile
             .iter()
-            .filter_map(|&id| view.objects.get(&id).map(|inst| inst.card_def_id))
+            .filter_map(|&id| view.objects.get(&id).filter(|inst| !inst.is_token).map(|inst| inst.card_def_id))
             .collect();
         my_exile.sort();
 
         let mut opp_exile: Vec<u64> = view
             .opp_exile
             .iter()
-            .filter_map(|&id| view.objects.get(&id).map(|inst| inst.card_def_id))
+            .filter_map(|&id| view.objects.get(&id).filter(|inst| !inst.is_token).map(|inst| inst.card_def_id))
             .collect();
         opp_exile.sort();
 
@@ -263,14 +265,14 @@ impl InformationSet {
         let mut my_command_zone: Vec<u64> = view
             .my_command_zone
             .iter()
-            .filter_map(|&id| view.objects.get(&id).map(|inst| inst.card_def_id))
+            .filter_map(|&id| view.objects.get(&id).filter(|inst| !inst.is_token).map(|inst| inst.card_def_id))
             .collect();
         my_command_zone.sort();
 
         let mut opp_command_zone: Vec<u64> = view
             .opp_command_zone
             .iter()
-            .filter_map(|&id| view.objects.get(&id).map(|inst| inst.card_def_id))
+            .filter_map(|&id| view.objects.get(&id).filter(|inst| !inst.is_token).map(|inst| inst.card_def_id))
             .collect();
         opp_command_zone.sort();
 
@@ -282,6 +284,7 @@ impl InformationSet {
             my_life: view.my_life,
             opp_life: view.opp_life,
             my_hand,
+            visible_zone_tokens: view.visible_zone_tokens.clone(),
             opp_hand_size: view.opp_hand_size,
             opp_library_size: view.opp_library_size,
             battlefield,
@@ -321,6 +324,7 @@ impl InformationSet {
         self.my_life.hash(&mut hasher);
         self.opp_life.hash(&mut hasher);
         self.my_hand.hash(&mut hasher);
+        if !self.visible_zone_tokens.is_empty() { self.visible_zone_tokens.hash(&mut hasher); }
         self.opp_hand_size.hash(&mut hasher);
         self.opp_library_size.hash(&mut hasher);
         self.battlefield.hash(&mut hasher);

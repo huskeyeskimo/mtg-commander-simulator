@@ -354,7 +354,7 @@ fn successive_events_do_not_reuse_departed_observers() {
 }
 
 #[test]
-fn token_bridge_owns_event_before_legacy_purge() {
+fn token_departure_owns_event_before_sba_cessation() {
     let mut state = game();
     let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
     state.objects.get_mut(&id).unwrap().is_token = true;
@@ -372,9 +372,11 @@ fn token_bridge_owns_event_before_legacy_purge() {
             .before
             .is_token
     );
+    assert!(state.objects.contains_key(&id));
+    assert!(state.players[0].exile.contains(&id));
+    settle_token_residents(&mut state);
     assert!(!state.objects.contains_key(&id));
     assert!(!state.players[0].exile.contains(&id));
-    // The immediate purge is temporary legacy behavior, not 2C cessation.
 }
 
 #[test]
@@ -643,6 +645,7 @@ fn subject_occurrence_game(with_purged_prefix: bool) -> GameState {
         state.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&state, token, ZoneType::Exile);
         transition_batch(&mut state, &[req]).unwrap();
+        settle_token_residents(&mut state);
         state.pending_events.clear();
     }
     state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
@@ -1194,7 +1197,7 @@ fn linked_followup_plan_rejects_invalid_pre_event_entries_atomically() {
 }
 
 #[test]
-fn newly_exiled_linked_token_has_one_event_then_purges() {
+fn newly_exiled_linked_token_has_one_event_then_ceases() {
     let mut state = game();
     let source = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
     let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
@@ -1207,6 +1210,8 @@ fn newly_exiled_linked_token_has_one_event_then_purges() {
     let batch = transition_batch(&mut state, &requests).unwrap();
     assert_eq!(batch.transitions.len(), 2);
     assert!(batch.transitions[1].before.is_token);
+    assert!(state.players[0].exile.contains(&token));
+    settle_token_residents(&mut state);
     assert!(!state.objects.contains_key(&token));
     assert_eq!(
         state
@@ -1307,6 +1312,7 @@ fn source_relationship_game(extra_allocation: bool) -> GameState {
         state.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&state, token, ZoneType::Exile);
         transition_batch(&mut state, &[req]).unwrap();
+        settle_token_residents(&mut state);
         state.pending_events.clear();
     }
     let first = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
@@ -1420,6 +1426,7 @@ fn grouped_state(simultaneous: bool, extra_allocation: bool) -> GameState {
         state.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&state, token, ZoneType::Exile);
         transition_batch(&mut state, &[req]).unwrap();
+        settle_token_residents(&mut state);
     }
     state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
     let a = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
@@ -1594,6 +1601,8 @@ fn restored_token_occurrences_finish_after_subject_purge() {
     state.objects.get_mut(&token).unwrap().is_token = true;
     let req = request(&state, token, ZoneType::Exile);
     transition_batch(&mut state, &[req]).unwrap();
+    assert!(state.players[0].exile.contains(&token));
+    settle_token_residents(&mut state);
     assert!(!state.objects.contains_key(&token));
     assert_final_continuation_matches(state, 4);
 }
@@ -1707,6 +1716,7 @@ fn shared_source_pattern(pattern: [usize; 3], shift_ids: bool) -> GameState {
         state.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&state, token, ZoneType::Exile);
         transition_batch(&mut state, &[req]).unwrap();
+        settle_token_residents(&mut state);
     }
     let sources: Vec<_> = (0..3)
         .map(|_| state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield))
@@ -2051,6 +2061,7 @@ fn linked_source_choice_game(
         state.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&state, token, ZoneType::Exile);
         transition_batch(&mut state, &[req]).unwrap();
+        settle_token_residents(&mut state);
     }
     let first = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
     let second = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
@@ -2416,6 +2427,7 @@ fn incoming_stacked_subject_game(
         s.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&s, token, ZoneType::Exile);
         transition_batch(&mut s, &[req]).unwrap();
+        settle_token_residents(&mut s);
     }
     let watcher = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
     let first = s.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
@@ -3844,4 +3856,10 @@ fn later_opponent_public_occurrences_continue_identically_after_all_restores() {
         if let Some(ref expected) = expected { assert_eq!(&finished, expected); }
         else { expected = Some(finished); }
     }
+}
+
+// 2C: inspect actual destination residence, then preserve the prior settled
+// historical/ordering invariant at the appropriate settled boundary.
+fn settle_token_residents(state: &mut GameState) {
+    mtg_gto::rules::check_state_based_actions(state);
 }

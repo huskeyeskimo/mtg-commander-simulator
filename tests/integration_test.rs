@@ -319,7 +319,11 @@ mod ordinary_keyword_prerequisite {
             let (mut state, id) = fixture(vec![KeywordAbility::Undying, KeywordAbility::Persist]);
             state.objects.get_mut(&id).unwrap().is_token = true;
             if legacy { lethal_sba(&mut state, id); }
-            else { depart(&mut state, &[id], ZoneType::Graveyard); }
+            else {
+                depart(&mut state, &[id], ZoneType::Graveyard);
+                assert!(state.players[0].graveyard.contains(&id));
+                rules::check_state_based_actions(&mut state);
+            }
             assert!(!state.objects.contains_key(&id));
             assert_eq!(state.pending_triggers.len(), 2);
             for mut candidate in boundary_2b3a_review_roundtrips(&state) {
@@ -413,6 +417,7 @@ mod ordinary_keyword_prerequisite {
             let token = state.create_card_in_zone(996_701, 0, ZoneType::Battlefield);
             state.objects.get_mut(&token).unwrap().is_token = true;
             state.move_object(token, ZoneType::Battlefield, ZoneType::Exile);
+            rules::check_state_based_actions(&mut state);
         }
         let db = Arc::make_mut(state.card_db.as_mut().unwrap());
         let mut persist = db.get(996_701).unwrap().clone();
@@ -4506,7 +4511,7 @@ fn test_token_ceases_to_exist_when_leaving_battlefield() {
     state.card_db = Some(Arc::new(db));
 
     // Test the move_object behavior for tokens (CR 111.7)
-    let token_id = state.create_card_in_zone(100000, 0, ZoneType::Battlefield);
+    let token_id = state.create_card_in_zone(sample::ids::LLANOWAR_ELVES, 0, ZoneType::Battlefield);
     if let Some(inst) = state.objects.get_mut(&token_id) {
         inst.is_token = true;
     }
@@ -4514,10 +4519,13 @@ fn test_token_ceases_to_exist_when_leaving_battlefield() {
     assert!(state.objects.contains_key(&token_id));
     assert!(state.battlefield.contains(&token_id));
 
-    // Move token to graveyard — it should cease to exist
+    // Real departure precedes nonmovement cessation at the next SBA check.
     state.move_object(token_id, ZoneType::Battlefield, ZoneType::Graveyard);
 
-    // Token should be gone entirely
+    assert!(state.players[0].graveyard.contains(&token_id));
+    assert!(state.objects.contains_key(&token_id));
+    rules::check_state_based_actions(&mut state);
+    // Token should now be gone entirely.
     assert!(!state.objects.contains_key(&token_id));
     assert!(!state.battlefield.contains(&token_id));
     assert!(!state.players[0].graveyard.contains(&token_id));
@@ -4969,6 +4977,7 @@ fn test_multi_phase_abstraction() {
 
     // Create a minimal info set for testing
     let info_set_main = InformationSet {
+        visible_zone_tokens: Vec::new(),
         pending_failed_draws: vec![],
         sba_preparation_failed: false,
         phase: 3, // PreCombatMain

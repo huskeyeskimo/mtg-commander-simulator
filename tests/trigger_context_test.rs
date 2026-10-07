@@ -192,6 +192,8 @@ fn trigger_survives_source_leaving_or_changing_control() {
             0 => {
                 state.objects.get_mut(&watcher).unwrap().is_token = true;
                 state.move_object(watcher, ZoneType::Battlefield, ZoneType::Graveyard);
+                assert!(state.players[0].graveyard.contains(&watcher));
+                rules::check_state_based_actions(&mut state);
                 assert!(!state.objects.contains_key(&watcher));
             }
             1 => state.objects.get_mut(&watcher).unwrap().controller = 1,
@@ -330,6 +332,8 @@ fn copy_of_trigger_source_uses_live_or_captured_incarnation() {
             _ => {
                 state.objects.get_mut(&source).unwrap().is_token = true;
                 state.move_object(source, ZoneType::Battlefield, ZoneType::Graveyard);
+                assert!(state.players[0].graveyard.contains(&source));
+                rules::check_state_based_actions(&mut state);
                 assert!(!state.objects.contains_key(&source));
             },
         }

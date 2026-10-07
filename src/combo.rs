@@ -412,8 +412,8 @@ fn apply_effect_recursive(
         }
         ComboEffect::DrawCards(count) => {
             for _ in 0..*count {
-                if !state.players[player].library.is_empty() {
-                    let card_id = state.players[player].library.remove(0);
+                if let Some(index) = state.first_library_card(player) {
+                    let card_id = state.players[player].library.remove(index);
                     state.players[player].hand.push(card_id);
                 }
             }

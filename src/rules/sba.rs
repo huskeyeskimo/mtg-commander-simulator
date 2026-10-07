@@ -8,8 +8,9 @@ use std::collections::{BTreeMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use super::transitions::{self, ExactObjectRef, PreparedSbaMovements, SbaCause, TransitionError};
-use crate::card::{CardType, ObjectId, Supertype};
+use crate::card::{CardId, CardType, ObjectId, Supertype, ZoneType};
 use crate::game::{GameState, StackSource, Target};
+use super::transitions::ZoneLocation;
 use crate::layers::AffectedObjects;
 
 /// A stopped external boundary, never a suspended planner. Existing consumers
@@ -209,10 +210,145 @@ fn isolated_twins(state: &GameState, candidates: &[ObjectId]) -> bool {
     })
 }
 
+/// Frozen nonmovement subject; no departure generation or event capacity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedTokenCessation {
+    object: ExactObjectRef,
+    definition: CardId,
+    owner: usize,
+    location: ZoneLocation,
+}
+
+/// Inventory memberships once; include battlefield tokens with malformed
+/// destination duplicates, and reject dangling token objects rather than
+/// silently erasing them. Spell copies have no physical ObjectId membership.
+fn prepare_token_cessations(
+    state: &GameState,
+) -> Result<Vec<PreparedTokenCessation>, TransitionError> {
+    let db = state
+        .card_db
+        .as_ref()
+        .ok_or(TransitionError::MissingDatabase)?;
+    let mut locations = BTreeMap::<ObjectId, Vec<ZoneLocation>>::new();
+    for (player, seat) in state.players.iter().enumerate() {
+        for (zone, ids) in [
+            (ZoneType::Library, &seat.library),
+            (ZoneType::Hand, &seat.hand),
+            (ZoneType::Graveyard, &seat.graveyard),
+            (ZoneType::Exile, &seat.exile),
+            (ZoneType::Command, &seat.command_zone),
+        ] {
+            for &id in ids {
+                locations
+                    .entry(id)
+                    .or_default()
+                    .push(ZoneLocation { zone, player });
+            }
+        }
+    }
+    let mut battlefield = BTreeMap::<ObjectId, usize>::new();
+    for &id in &state.battlefield {
+        *battlefield.entry(id).or_default() += 1;
+    }
+    let mut physical_stack = BTreeMap::<ObjectId, Vec<usize>>::new();
+    for entry in &state.stack {
+        if let StackSource::Spell(id) = entry.source {
+            physical_stack.entry(id).or_default().push(entry.controller);
+        }
+    }
+    // A physical spell may be temporarily owned by the existing copy-order
+    // continuation. Normal SBA entry is deferred there; keep preflight exact.
+    if let Some(entry) = state
+        .pending_copy_order
+        .as_ref()
+        .and_then(|pending| pending.resolving_entry())
+    {
+        if let StackSource::Spell(id) = entry.source {
+            physical_stack.entry(id).or_default().push(entry.controller);
+        }
+    }
+    let mut result = Vec::new();
+    let mut tokens: Vec<_> = state
+        .objects
+        .iter()
+        .filter(|(_, inst)| inst.is_token)
+        .collect();
+    tokens.sort_by_key(|(id, _)| **id);
+    for (&id, inst) in tokens {
+        if inst.object_id != id {
+            return Err(TransitionError::StaleIncarnation(id));
+        }
+        if inst.owner >= state.players.len() || inst.controller >= state.players.len() {
+            return Err(TransitionError::InvalidPlayer(id));
+        }
+        let def = db
+            .get(inst.card_def_id)
+            .ok_or(TransitionError::MissingDefinition(inst.card_def_id))?;
+        if def.id != inst.card_def_id {
+            return Err(TransitionError::StaleIncarnation(id));
+        }
+        let zones = locations.get(&id).map(Vec::as_slice).unwrap_or(&[]);
+        let spells = physical_stack.get(&id).map(Vec::as_slice).unwrap_or(&[]);
+        let bf = battlefield.get(&id).copied().unwrap_or(0);
+        if bf + zones.len() + spells.len() != 1 {
+            return Err(TransitionError::WrongZone(id));
+        }
+        if bf == 1 {
+            continue;
+        }
+        let location = if let Some(&location) = zones.first() {
+            if location.player != inst.owner {
+                return Err(TransitionError::WrongZone(id));
+            }
+            location
+        } else {
+            if spells[0] >= state.players.len() || spells[0] != inst.controller {
+                return Err(TransitionError::InvalidPlayer(id));
+            }
+            ZoneLocation {
+                zone: ZoneType::Stack,
+                player: inst.owner,
+            }
+        };
+        result.push(PreparedTokenCessation {
+            object: ExactObjectRef {
+                id,
+                generation: inst.zone_change_count,
+            },
+            definition: inst.card_def_id,
+            owner: inst.owner,
+            location,
+        });
+    }
+    Ok(result)
+}
+
+fn commit_token_cessations(state: &mut GameState, subjects: &[PreparedTokenCessation]) {
+    let ids: HashSet<_> = subjects.iter().map(|subject| subject.object.id).collect();
+    for player in &mut state.players {
+        for zone in [
+            &mut player.library,
+            &mut player.hand,
+            &mut player.graveyard,
+            &mut player.exile,
+            &mut player.command_zone,
+        ] {
+            zone.retain(|id| !ids.contains(id));
+        }
+    }
+    state
+        .stack
+        .retain(|entry| !matches!(entry.source, StackSource::Spell(id) if ids.contains(&id)));
+    for subject in subjects {
+        state.objects.remove(&subject.object.id);
+    }
+}
+
 struct PreparedPass {
     movements: PreparedSbaMovements,
     cancellations: Vec<(ExactObjectRef, i32)>,
     orphan_equipment: Vec<ExactObjectRef>,
+    token_cessations: Vec<PreparedTokenCessation>,
 }
 
 fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> {
@@ -221,6 +357,7 @@ fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> 
         .card_db
         .as_ref()
         .ok_or_else(|| fail(TransitionError::MissingDatabase))?;
+    let token_cessations = prepare_token_cessations(state).map_err(fail)?;
     let mut nominal = BTreeMap::<ObjectId, (ExactObjectRef, Vec<SbaCause>)>::new();
     let mut cancellations = Vec::new();
     let mut orphan_equipment = Vec::new();
@@ -340,17 +477,23 @@ fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> 
     // Counter cancellation preserves net P/T, and the existing orphan
     // correction refers only to absent targets. Neither can resolve a blocked
     // mandatory mover when no departure can change the next pass's view.
-    if !movements.has_movers() && movements.prevented_mandatory {
+    if !movements.has_movers() && token_cessations.is_empty() && movements.prevented_mandatory {
         return Err(PreparedPassFailure::PreventedMandatoryMovement);
     }
     Ok(PreparedPass {
         movements,
         cancellations,
         orphan_equipment,
+        token_cessations,
     })
 }
 
 fn commit_pass(state: &mut GameState, pass: PreparedPass) -> Result<(), TransitionError> {
+    // Revalidate the exact frozen nonmovement plan before any mutation.
+    // A private stale plan must not accidentally remove a later incarnation.
+    if prepare_token_cessations(state)? != pass.token_cessations {
+        return Err(TransitionError::UnsupportedPath);
+    }
     // Revalidate and capture from S before frozen nonmovement corrections.
     pass.movements.commit(state)?;
     for (object, cancel) in pass.cancellations {
@@ -372,6 +515,7 @@ fn commit_pass(state: &mut GameState, pass: PreparedPass) -> Result<(), Transiti
             inst.attached_to = None;
         }
     }
+    commit_token_cessations(state, &pass.token_cessations);
     state.refresh_continuous_effects();
     state.refresh_replacement_effects();
     state.invalidate_characteristics_cache();
@@ -410,7 +554,8 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
         };
         let progress = pass.movements.has_movers()
             || !pass.cancellations.is_empty()
-            || !pass.orphan_equipment.is_empty();
+            || !pass.orphan_equipment.is_empty()
+            || !pass.token_cessations.is_empty();
         if !progress {
             if pass.movements.prevented_mandatory {
                 state.sba_failure = Some(PreparedPassFailure::PreventedMandatoryMovement);
@@ -594,5 +739,330 @@ mod common_pass_tests {
             .subject
             .before;
         assert_eq!((before.plus_counters, before.minus_counters), (1, 1));
+    }
+    fn resident(s: &mut GameState, zone: ZoneType) -> ObjectId {
+        let id = s.create_card_in_zone(1, 0, zone);
+        s.objects.get_mut(&id).unwrap().is_token = true;
+        id
+    }
+
+    #[test]
+    fn token_pass_boundary_is_frozen_and_cessation_has_no_event() {
+        let mut s = fixture();
+        let id = resident(&mut s, ZoneType::Battlefield);
+        s.objects.get_mut(&id).unwrap().damage_marked = 2;
+        let first = prepare_pass(&s).unwrap();
+        assert!(first.token_cessations.is_empty());
+        commit_pass(&mut s, first).unwrap();
+        assert!(s.players[0].graveyard.contains(&id));
+        assert_eq!(s.objects[&id].zone_change_count, 1);
+        assert_eq!(s.pending_triggers.len(), 1);
+        assert!(s.stack.is_empty());
+        let events = format!("{:?}", s.pending_events);
+        let groups = s.next_zone_event_group_id;
+        let history = serde_json::to_value(&s.pending_triggers).unwrap();
+        let second = prepare_pass(&s).unwrap();
+        assert_eq!(second.token_cessations.len(), 1);
+        assert!(!second.movements.has_movers());
+        commit_pass(&mut s, second).unwrap();
+        assert!(!s.objects.contains_key(&id));
+        assert_eq!(format!("{:?}", s.pending_events), events);
+        assert_eq!(s.next_zone_event_group_id, groups);
+        assert_eq!(serde_json::to_value(&s.pending_triggers).unwrap(), history);
+        assert!(s.stack.is_empty());
+        assert!(prepare_pass(&s).unwrap().token_cessations.is_empty());
+    }
+
+    #[test]
+    fn all_resident_zones_cease_together_without_movement_capacity() {
+        let mut s = fixture();
+        let mut ids = Vec::new();
+        for zone in [
+            ZoneType::Library,
+            ZoneType::Hand,
+            ZoneType::Graveyard,
+            ZoneType::Exile,
+            ZoneType::Command,
+        ] {
+            let id = resident(&mut s, zone);
+            s.objects.get_mut(&id).unwrap().zone_change_count = u32::MAX;
+            ids.push(id);
+        }
+        s.next_zone_event_group_id = u64::MAX;
+        let allocator = s.next_object_id;
+        let pass = prepare_pass(&s).unwrap();
+        assert_eq!(pass.token_cessations.len(), 5);
+        commit_pass(&mut s, pass).unwrap();
+        assert!(ids.iter().all(|id| !s.objects.contains_key(id)));
+        assert!(s.pending_events.is_empty());
+        assert!(s.pending_triggers.is_empty());
+        assert_eq!(s.next_zone_event_group_id, u64::MAX);
+        assert_eq!(s.next_object_id, allocator);
+        let fresh = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        assert!(!ids.contains(&fresh));
+    }
+
+    #[test]
+    fn malformed_mixed_token_pass_is_atomic_in_both_orders() {
+        for reverse in [false, true] {
+            for malformed in 0..9 {
+                let mut s = fixture();
+                let token = resident(&mut s, ZoneType::Exile);
+                let mover = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+                s.objects.get_mut(&mover).unwrap().damage_marked = 2;
+                let counter = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+                let inst = s.objects.get_mut(&counter).unwrap();
+                inst.plus_counters = 2;
+                inst.minus_counters = 1;
+                let equipment = s.create_card_in_zone(3, 0, ZoneType::Battlefield);
+                s.objects.get_mut(&equipment).unwrap().attached_to = Some(900);
+                match malformed {
+                    0 => s.objects.get_mut(&token).unwrap().object_id = 900,
+                    1 => s.players[0].exile.push(token),
+                    2 => s.battlefield.push(token),
+                    3 => s.objects.get_mut(&token).unwrap().owner = 9,
+                    4 => s.objects.get_mut(&token).unwrap().card_def_id = 900,
+                    5 => s.stack.push(crate::game::StackEntry {
+                        id: 1,
+                        source: StackSource::Spell(token),
+                        controller: 0,
+                        targets: vec![],
+                        target_generations: vec![],
+                    }),
+                    6 => {
+                        s.players[0].exile.clear();
+                    }
+                    7 => {
+                        Arc::make_mut(s.card_db.as_mut().unwrap())
+                            .cards
+                            .get_mut(&1)
+                            .unwrap()
+                            .id = 900;
+                    }
+                    _ => s.objects.get_mut(&mover).unwrap().zone_change_count = u32::MAX,
+                }
+                if reverse {
+                    s.battlefield.reverse();
+                    s.players[0].exile.reverse();
+                }
+                let before = serde_json::to_value(&s).unwrap();
+                let events = format!("{:?}", s.pending_events);
+                check_state_based_actions(&mut s);
+                assert!(s.sba_failure.is_some(), "case {malformed}");
+                s.sba_failure = None;
+                assert_eq!(
+                    serde_json::to_value(&s).unwrap(),
+                    before,
+                    "case {malformed}"
+                );
+                assert_eq!(format!("{:?}", s.pending_events), events);
+                assert!(s.objects.contains_key(&token));
+                assert_eq!(s.objects[&counter].plus_counters, 2);
+                assert_eq!(s.objects[&equipment].attached_to, Some(900));
+            }
+        }
+    }
+
+    #[test]
+    fn stale_prepared_cessation_rejects_before_frozen_work() {
+        for field in 0..5 {
+            let mut s = fixture();
+            let id = resident(&mut s, ZoneType::Hand);
+            let mut pass = prepare_pass(&s).unwrap();
+            match field {
+                0 => pass.token_cessations[0].object.id = 900,
+                1 => pass.token_cessations[0].object.generation += 1,
+                2 => pass.token_cessations[0].definition = 900,
+                3 => pass.token_cessations[0].owner = 1,
+                _ => pass.token_cessations[0].location.zone = ZoneType::Exile,
+            }
+            let before = serde_json::to_value(&s).unwrap();
+            assert!(commit_pass(&mut s, pass).is_err());
+            assert_eq!(serde_json::to_value(&s).unwrap(), before);
+            assert!(s.objects.contains_key(&id));
+        }
+    }
+
+    #[test]
+    fn coherent_physical_token_stack_membership_ceases_not_spell_copy() {
+        let mut s = fixture();
+        let id = resident(&mut s, ZoneType::Stack);
+        s.stack.push(crate::game::StackEntry {
+            id: 1,
+            source: StackSource::Spell(id),
+            controller: 0,
+            targets: vec![],
+            target_generations: vec![],
+        });
+        let pass = prepare_pass(&s).unwrap();
+        assert_eq!(pass.token_cessations.len(), 1);
+        commit_pass(&mut s, pass).unwrap();
+        assert!(s.stack.is_empty());
+        assert!(!s.objects.contains_key(&id));
+        assert!(s.pending_events.is_empty());
+    }
+
+    #[test]
+    fn cessation_can_progress_before_prevented_mandatory_failure() {
+        use crate::replacement::{ReplacementAction, ReplacementEffect, ReplacementEventKind};
+        let mut s = fixture();
+        let id = resident(&mut s, ZoneType::Graveyard);
+        let mover = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        s.objects.get_mut(&mover).unwrap().temp_toughness_mod = -2;
+        s.replacement_effects.push(ReplacementEffect {
+            source_id: mover,
+            controller: 0,
+            applies_to: ReplacementEventKind::WouldDie,
+            action: ReplacementAction::Prevent,
+            is_self_replacement: true,
+            description: "prevent".into(),
+        });
+        s.invalidate_characteristics_cache();
+        let pass = prepare_pass(&s).unwrap();
+        assert!(pass.movements.prevented_mandatory);
+        commit_pass(&mut s, pass).unwrap();
+        assert!(!s.objects.contains_key(&id));
+        assert!(matches!(
+            prepare_pass(&s),
+            Err(PreparedPassFailure::PreventedMandatoryMovement)
+        ));
+        assert!(s.battlefield.contains(&mover));
+        assert!(s.pending_events.is_empty());
+    }
+
+    #[test]
+    fn token_lord_cessation_and_next_pass_cascade_share_frozen_state() {
+        let mut s = fixture();
+        let lord = resident(&mut s, ZoneType::Battlefield);
+        let child = resident(&mut s, ZoneType::Battlefield);
+        s.objects.get_mut(&lord).unwrap().damage_marked = 2;
+        s.objects.get_mut(&child).unwrap().temp_toughness_mod = -2;
+        s.continuous_effects.push(ContinuousEffect {
+            source_id: lord,
+            controller: 0,
+            timestamp: 1,
+            duration: Duration::WhileSourceOnBattlefield,
+            affected: AffectedObjects::Specific(child),
+            modification: LayerModification::ModifyPT(0, 1),
+        });
+        s.invalidate_characteristics_cache();
+        let first = prepare_pass(&s).unwrap();
+        commit_pass(&mut s, first).unwrap();
+        assert!(s.objects.contains_key(&lord));
+        assert!(s.battlefield.contains(&child));
+        let next = prepare_pass(&s).unwrap();
+        assert_eq!(next.token_cessations[0].object.id, lord);
+        commit_pass(&mut s, next).unwrap();
+        assert!(!s.objects.contains_key(&lord));
+        assert!(s.players[0].graveyard.contains(&child));
+        let groups: Vec<_> = s
+            .pending_triggers
+            .iter()
+            .map(|trigger| trigger.context.zone_transition.as_ref().unwrap().group_id)
+            .collect();
+        assert_eq!(groups, vec![0, 1]);
+        let third = prepare_pass(&s).unwrap();
+        assert_eq!(third.token_cessations[0].object.id, child);
+        commit_pass(&mut s, third).unwrap();
+        assert!(!s.objects.contains_key(&child));
+        assert!(s.stack.is_empty());
+        assert_eq!(s.next_zone_event_group_id, 2);
+    }
+
+    #[test]
+    fn cessation_refreshes_graveyard_source_effect_before_next_pass() {
+        let mut s = fixture();
+        let source = resident(&mut s, ZoneType::Graveyard);
+        let child = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        s.objects.get_mut(&child).unwrap().temp_toughness_mod = -2;
+        s.continuous_effects.push(ContinuousEffect {
+            source_id: source,
+            controller: 0,
+            timestamp: 1,
+            duration: Duration::WhileSourceInGraveyard,
+            affected: AffectedObjects::Specific(child),
+            modification: LayerModification::ModifyPT(0, 1),
+        });
+        s.invalidate_characteristics_cache();
+        let pass = prepare_pass(&s).unwrap();
+        assert!(!pass.movements.has_movers());
+        commit_pass(&mut s, pass).unwrap();
+        assert!(!s.objects.contains_key(&source));
+        assert!(s.continuous_effects.is_empty());
+        assert_eq!(s.effective_toughness(child), 0);
+        let later = prepare_pass(&s).unwrap();
+        assert!(later.movements.has_movers());
+        commit_pass(&mut s, later).unwrap();
+        assert!(s.players[0].graveyard.contains(&child));
+    }
+
+    #[test]
+    #[ignore = "diagnostic only; no timing threshold"]
+    fn token_lifecycle_performance_diagnostic() {
+        use crate::info_set::InformationSet;
+        use std::time::Instant;
+        for count in [10, 20, 50, 100] {
+            for watchers in [0, 1, 3] {
+                for mixed in [false, true] {
+                    let mut s = fixture();
+                    let db = Arc::make_mut(s.card_db.as_mut().unwrap());
+                    db.cards.get_mut(&1).unwrap().triggered_abilities.clear();
+                    db.insert(CardDef {
+                        id: 4,
+                        name: "Goblin death observer shape".into(),
+                        card_types: vec![CardType::Enchantment],
+                        triggered_abilities: vec![TriggeredAbility {
+                            trigger: TriggerCondition::ACreatureDies,
+                            effect: Effect::GainLife { amount: 1 },
+                            description: "observe".into(),
+                        }],
+                        ..Default::default()
+                    });
+                    for _ in 0..watchers {
+                        s.create_card_in_zone(4, 0, ZoneType::Battlefield);
+                    }
+                    let mut ids: Vec<_> = (0..count)
+                        .map(|_| resident(&mut s, ZoneType::Battlefield))
+                        .collect();
+                    if mixed {
+                        ids.push(s.create_card_in_zone(1, 0, ZoneType::Battlefield));
+                    }
+                    let requests: Vec<_> = ids
+                        .iter()
+                        .map(|&id| transitions::TransitionRequest {
+                            object: ExactObjectRef { id, generation: 0 },
+                            from: ZoneType::Battlefield,
+                            to: ZoneType::Graveyard,
+                            kind: transitions::MovementKind::Put,
+                        })
+                        .collect();
+                    let start = Instant::now();
+                    transitions::transition_batch(&mut s, &requests).unwrap();
+                    let departure = start.elapsed().as_nanos();
+                    let occurrences = s.pending_triggers.len();
+                    let mut settlement = s.clone();
+                    settlement.trigger_placement_deferred = true;
+                    let start = Instant::now();
+                    check_state_based_actions(&mut settlement);
+                    let settlement_ns = start.elapsed().as_nanos();
+                    let start = Instant::now();
+                    let pass = prepare_pass(&s).unwrap();
+                    let prepare = start.elapsed().as_nanos();
+                    assert_eq!(pass.token_cessations.len(), count);
+                    let start = Instant::now();
+                    commit_pass(&mut s, pass).unwrap();
+                    let cessation = start.elapsed().as_nanos();
+                    assert_eq!(s.pending_triggers.len(), occurrences);
+                    assert!(s.stack.is_empty());
+                    let view = s.visible_state(0);
+                    let normal = InformationSet::normalize_retained_view(&view);
+                    println!("2C_PERF build={} tokens={} mixed={} watchers={} cessations={} occurrences={} sources={} components={:?} ties={:?} nodes={} candidates={} departure_ns={} cessation_prepare_ns={} cessation_commit_ns={} settlement_ns={} normalization_ns={}",
+                        if cfg!(debug_assertions) { "debug" } else { "release" }, count, mixed, watchers, count, occurrences,
+                        normal.source_ranks.len(), normal.stats.component_sizes, normal.stats.tied_cell_sizes,
+                        normal.stats.search_nodes, normal.stats.encoded_candidates, departure, prepare, cessation,
+                        settlement_ns, normal.stats.elapsed_nanos);
+                }
+            }
+        }
     }
 }

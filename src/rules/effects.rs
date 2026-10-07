@@ -254,6 +254,10 @@ mod destruction_migration_tests {
         let token_ref = exact(&state, token);
         let batch = destroy_batch(&mut state, &[token_ref]).unwrap().unwrap();
         assert!(batch.transitions[0].creature_died());
+        assert!(state.players[0].graveyard.contains(&token));
+        state.trigger_placement_deferred = true;
+        super::super::sba::check_state_based_actions(&mut state);
+        state.trigger_placement_deferred = false;
         assert!(!state.objects.contains_key(&token));
         let occurrence = state.pending_triggers.iter().find(|p| p.source_id == watcher)
             .unwrap().context.zone_transition.as_ref().unwrap();
@@ -830,8 +834,8 @@ fn resolve_effect_inner(
             for target in targets {
                 if let Target::Player(p) = target {
                     for _ in 0..*count {
-                        if !state.players[*p].library.is_empty() {
-                            let card_id = state.players[*p].library.remove(0);
+                        if let Some(index) = state.first_library_card(*p) {
+                            let card_id = state.players[*p].library[index];
                             state.move_object(card_id, ZoneType::Library, ZoneType::Graveyard);
                         }
                     }
@@ -954,8 +958,8 @@ fn resolve_effect_inner(
                 });
             } else if state.players[controller].tutor_targets.is_empty() {
                 // Legacy behavior: no tutor targets configured, take top card.
-                if !state.players[controller].library.is_empty() {
-                    let card_obj = state.players[controller].library.remove(0);
+                if let Some(index) = state.first_library_card(controller) {
+                    let card_obj = state.players[controller].library[index];
                     state.move_object(card_obj, ZoneType::Library, *destination);
                 }
             } else {
@@ -1003,7 +1007,7 @@ fn resolve_effect_inner(
             for target in targets {
                 match target {
                     Target::Object(obj_id) => {
-                        if let Some(inst) = state.objects.get(obj_id) {
+                        if let Some(inst) = state.objects.get(obj_id).filter(|inst| !inst.is_token) {
                             let owner = inst.owner;
                             state.move_object(*obj_id, ZoneType::Graveyard, ZoneType::Library);
                             // Move to front (top) of library
@@ -1036,7 +1040,7 @@ fn resolve_effect_inner(
         Effect::ReturnFromGraveyardToBattlefield { .. } => {
             for target in targets {
                 if let Target::Object(id) = target {
-                    if state.players.iter().any(|p| p.graveyard.contains(id)) {
+                    if state.is_card(*id) && state.players.iter().any(|p| p.graveyard.contains(id)) {
                         state.move_object(*id, ZoneType::Graveyard, ZoneType::Battlefield);
                         if let Some(inst) = state.objects.get_mut(id) {
                             inst.controller = controller;
@@ -1051,7 +1055,7 @@ fn resolve_effect_inner(
         Effect::ReturnFromGraveyardToHand { .. } => {
             for target in targets {
                 if let Target::Object(id) = target {
-                    if state.players.iter().any(|p| p.graveyard.contains(id)) {
+                    if state.is_card(*id) && state.players.iter().any(|p| p.graveyard.contains(id)) {
                         state.move_object(*id, ZoneType::Graveyard, ZoneType::Hand);
                     }
                 }
@@ -1061,7 +1065,7 @@ fn resolve_effect_inner(
         Effect::ExileFromGraveyard { .. } => {
             for target in targets {
                 if let Target::Object(id) = target {
-                    if state.players.iter().any(|p| p.graveyard.contains(id)) {
+                    if state.is_card(*id) && state.players.iter().any(|p| p.graveyard.contains(id)) {
                         state.move_object(*id, ZoneType::Graveyard, ZoneType::Exile);
                     }
                 }
@@ -1076,7 +1080,7 @@ fn resolve_effect_inner(
                         let controller = state.objects.get(&source)
                             .map(|i| i.controller)
                             .unwrap_or(0);
-                        if state.players[controller].hand.contains(id) {
+                        if state.is_card(*id) && state.players[controller].hand.contains(id) {
                             state.move_object(*id, ZoneType::Hand, ZoneType::Exile);
                             if let Some(inst) = state.objects.get_mut(id) {
                                 inst.exiled_by = Some(source);
@@ -1093,7 +1097,7 @@ fn resolve_effect_inner(
                 for target in targets {
                     if let Target::Object(id) = target {
                         let owner = state.objects.get(id).map(|i| i.owner).unwrap_or(0);
-                        if state.players[owner].exile.contains(id)
+                        if state.is_card(*id) && state.players[owner].exile.contains(id)
                             && state.objects.get(id).and_then(|i| i.exiled_by) == Some(source)
                         {
                             if let Some(inst) = state.objects.get_mut(id) {
@@ -1111,7 +1115,7 @@ fn resolve_effect_inner(
             if let Some(batch) = targeted_departure(state, targets, target_generations, ZoneType::Library) {
                 // Validated owners and library capacities make this infallible.
                 // Shuffle once per moved target, as the legacy instruction did,
-                // including a token which has already been purged by the bridge.
+                // including a resident token; shuffling is not a second zone change.
                 let mut rng = rand::thread_rng();
                 for moved in &batch.transitions {
                     state.players[moved.before.owner].library.shuffle(&mut rng);
@@ -1447,12 +1451,11 @@ fn resolve_effect_inner(
         Effect::Surveil { count } => {
             // Simplified surveil: mill N cards (put top N into graveyard).
             // Full surveil would let you choose which go to GY vs stay on top.
-            let n = (*count).min(state.players[controller].library.len() as u32);
-            for _ in 0..n {
-                if !state.players[controller].library.is_empty() {
-                    let card_id = state.players[controller].library.remove(0);
+            for _ in 0..*count {
+                if let Some(index) = state.first_library_card(controller) {
+                    let card_id = state.players[controller].library.remove(index);
                     state.players[controller].graveyard.push(card_id);
-                }
+                } else { break; }
             }
         }
 
@@ -1569,7 +1572,7 @@ fn evaluate_condition(
         }
         Condition::Always => true,
         Condition::HandIsEmpty => {
-            state.players[controller].hand.is_empty()
+            state.card_count(&state.players[controller].hand) == 0
         }
         Condition::ControlNOrMorePermanents { count } => {
             let matching = state.battlefield.iter().filter(|&&id| {
@@ -1635,6 +1638,296 @@ mod each_opponent_sacrifice_tests {
             resolve_effect(&mut state, &Effect::EachOpponentSacrifices { count: 1 }, 0, &[], &[], None);
             assert_eq!(serde_json::to_value(&state).unwrap(), before);
             assert_eq!(state.pending_events, events);
+        }
+    }
+}
+
+#[cfg(test)]
+mod token_lifecycle_tests {
+    use super::*;
+    use crate::card::effects::Condition;
+    use crate::card::{CardDef, CardType, DynamicValue, TargetSpec, TokenDef};
+    use crate::game::CardDatabase;
+    use std::sync::Arc;
+    fn fixture() -> GameState {
+        let mut db = CardDatabase::new();
+        db.insert(CardDef {
+            id: 1,
+            name: "Supported token fixture".into(),
+            card_types: vec![CardType::Creature],
+            power: Some(2),
+            toughness: Some(2),
+            ..Default::default()
+        });
+        let mut s = GameState::new(2);
+        s.card_db = Some(Arc::new(db));
+        s
+    }
+    fn token(s: &mut GameState, zone: ZoneType) -> ObjectId {
+        let id = s.create_card_in_zone(1, 0, zone);
+        s.objects.get_mut(&id).unwrap().is_token = true;
+        id
+    }
+    fn effect(s: &mut GameState, effect: Effect, targets: &[Target]) {
+        let generations = crate::targeting::target_generations(s, targets);
+        resolve_effect(s, &effect, 0, targets, &generations, None);
+    }
+    #[test]
+    fn same_resolution_bounce_then_hand_card_count_and_empty_condition() {
+        for real_card in [false, true] {
+            let mut s = fixture();
+            let id = token(&mut s, ZoneType::Battlefield);
+            if real_card {
+                s.create_card_in_zone(1, 0, ZoneType::Hand);
+            }
+            effect(
+                &mut s,
+                Effect::Multiple(vec![
+                    Effect::BounceTo {
+                        zone: ZoneType::Hand,
+                        target: TargetSpec::AnyCreature,
+                    },
+                    Effect::GainDynamicLife {
+                        amount: DynamicValue::CardsInHand,
+                    },
+                    Effect::Conditional {
+                        condition: Condition::HandIsEmpty,
+                        if_true: Box::new(Effect::GainLife { amount: 3 }),
+                        if_false: None,
+                    },
+                ]),
+                &[Target::Object(id)],
+            );
+            assert!(s.players[0].hand.contains(&id));
+            assert_eq!(s.players[0].life, if real_card { 21 } else { 23 });
+            super::super::sba::check_state_based_actions(&mut s);
+            assert!(!s.objects.contains_key(&id));
+        }
+    }
+    #[test]
+    fn library_card_operations_ignore_residents_in_the_same_effect_tree() {
+        for operation in [
+            Effect::MillCards {
+                count: 2,
+                target: TargetSpec::Controller,
+            },
+            Effect::Surveil { count: 2 },
+            Effect::SearchLibrary {
+                destination: ZoneType::Hand,
+                subtype_filter: vec![],
+            },
+        ] {
+            let mut s = fixture();
+            let id = token(&mut s, ZoneType::Battlefield);
+            let card = s.create_card_in_zone(1, 0, ZoneType::Library);
+            effect(
+                &mut s,
+                Effect::Multiple(vec![
+                    Effect::PutOnBottomOfLibrary {
+                        target: TargetSpec::AnyCreature,
+                    },
+                    operation.clone(),
+                ]),
+                &[Target::Object(id)],
+            );
+            assert_eq!(s.players[0].library, vec![id]);
+            assert!(s.objects.contains_key(&id));
+            assert_eq!(s.objects[&id].zone_change_count, 1);
+            assert!(!s.players[0].hand.contains(&id));
+            assert!(!s.players[0].graveyard.contains(&id));
+            assert!(s.players[0].graveyard.contains(&card) || s.players[0].hand.contains(&card));
+            assert_eq!(s.pending_events.iter().filter(|event| matches!(event, GameEvent::ZoneChange { object, .. } if *object == id)).count(), 1);
+        }
+    }
+    #[test]
+    fn required_library_reordering_preserves_residents_and_real_card_order() {
+        let mut s = fixture();
+        let id = token(&mut s, ZoneType::Battlefield);
+        let cards: Vec<_> = (0..8)
+            .map(|_| s.create_card_in_zone(1, 0, ZoneType::Library))
+            .collect();
+        effect(
+            &mut s,
+            Effect::PutOnBottomOfLibrary {
+                target: TargetSpec::AnyCreature,
+            },
+            &[Target::Object(id)],
+        );
+        assert_eq!(s.players[0].library.last(), Some(&id));
+        assert_eq!(s.players[0].library[..8], cards);
+        super::super::sba::check_state_based_actions(&mut s);
+        assert_eq!(s.players[0].library, cards);
+        let mut changed = false;
+        for _ in 0..4 {
+            let mut s = fixture();
+            let id = token(&mut s, ZoneType::Battlefield);
+            let mut expected: Vec<_> = (0..24)
+                .map(|_| s.create_card_in_zone(1, 0, ZoneType::Library))
+                .collect();
+            expected.push(id);
+            effect(
+                &mut s,
+                Effect::ShuffleIntoLibrary {
+                    target: TargetSpec::AnyCreature,
+                },
+                &[Target::Object(id)],
+            );
+            changed |= s.players[0].library != expected;
+            expected.sort_unstable();
+            let mut actual = s.players[0].library.clone();
+            actual.sort_unstable();
+            assert_eq!(actual, expected);
+            assert_eq!(s.objects[&id].zone_change_count, 1);
+        }
+        // Same existing thread_rng control methodology as departure coverage.
+        assert!(changed);
+    }
+    #[test]
+    fn resident_return_and_linked_return_have_no_success_side_effects() {
+        for return_effect in [
+            Effect::ReturnFromGraveyardToBattlefield {
+                target: TargetSpec::AnyCreature,
+            },
+            Effect::ReturnFromGraveyardToHand {
+                target: TargetSpec::AnyCreature,
+            },
+            Effect::ExileFromGraveyard {
+                target: TargetSpec::AnyCreature,
+            },
+            Effect::ReturnToTopOfLibrary {
+                target: TargetSpec::AnyCreature,
+            },
+        ] {
+            let mut s = fixture();
+            let id = token(&mut s, ZoneType::Graveyard);
+            let before = serde_json::to_value(&s).unwrap();
+            effect(&mut s, return_effect, &[Target::Object(id)]);
+            assert_eq!(serde_json::to_value(&s).unwrap(), before);
+            assert!(s.pending_events.is_empty());
+        }
+        let mut s = fixture();
+        let source = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let id = token(&mut s, ZoneType::Exile);
+        s.objects.get_mut(&id).unwrap().exiled_by = Some(source);
+        let before = serde_json::to_value(&s).unwrap();
+        resolve_effect(
+            &mut s,
+            &Effect::ReturnLinkedExileToHand,
+            0,
+            &[Target::Object(id)],
+            &[Some(0)],
+            Some(source),
+        );
+        assert_eq!(serde_json::to_value(&s).unwrap(), before);
+        assert!(s.pending_events.is_empty());
+    }
+    #[test]
+    fn departing_token_source_performs_only_its_real_linked_followup() {
+        let mut s = fixture();
+        let source = token(&mut s, ZoneType::Battlefield);
+        let card = s.create_card_in_zone(1, 0, ZoneType::Exile);
+        s.objects.get_mut(&card).unwrap().exiled_by = Some(source);
+        let t = token(&mut s, ZoneType::Exile);
+        s.objects.get_mut(&t).unwrap().exiled_by = Some(source);
+        s.objects.get_mut(&t).unwrap().zone_change_count = u32::MAX;
+        let exact = super::super::transitions::ExactObjectRef {
+            id: source,
+            generation: 0,
+        };
+        super::super::transitions::destroy_batch(&mut s, &[exact]).unwrap();
+        assert!(s.players[0].graveyard.contains(&source));
+        assert!(s.players[0].graveyard.contains(&card));
+        assert!(s.players[0].exile.contains(&t));
+        assert_eq!(s.objects[&t].exiled_by, Some(source));
+        let events = s.pending_events.len();
+        super::super::sba::check_state_based_actions(&mut s);
+        assert!(!s.objects.contains_key(&source));
+        assert!(!s.objects.contains_key(&t));
+        assert_eq!(s.pending_events.len(), events);
+        assert_eq!(s.objects[&card].zone_change_count, 1);
+    }
+    #[test]
+    fn battlefield_creation_and_definition_based_copy_survive_cessation_selection() {
+        let mut s = fixture();
+        effect(
+            &mut s,
+            Effect::CreateTokens {
+                token: TokenDef {
+                    name: "Goblin shape".into(),
+                    power: 1,
+                    toughness: 1,
+                    colors: vec![],
+                    subtypes: vec![],
+                    keywords: vec![],
+                },
+                count: DynamicValue::Fixed(3),
+            },
+            &[],
+        );
+        effect(&mut s, Effect::CreateTokenFromDef { card_def_id: 1 }, &[]);
+        let source = s.battlefield[0];
+        resolve_effect(
+            &mut s,
+            &Effect::CreateTokenCopyOfSource,
+            0,
+            &[],
+            &[],
+            Some(source),
+        );
+        assert_eq!(s.battlefield.len(), 5);
+        super::super::sba::check_state_based_actions(&mut s);
+        assert_eq!(s.battlefield.len(), 5);
+        assert!(s.objects.values().all(|inst| inst.is_token));
+        for &id in &s.battlefield {
+            assert!(s.objects.contains_key(&id));
+        }
+        s.move_object(source, ZoneType::Battlefield, ZoneType::Hand);
+        assert!(s.players[0].hand.contains(&source));
+        super::super::sba::check_state_based_actions(&mut s);
+        assert_eq!(s.battlefield.len(), 4);
+        assert!(!s.objects.contains_key(&source));
+    }
+    #[test]
+    fn draw_replacements_skip_library_tokens_and_use_card_hand_emptiness() {
+        use crate::layers::StaticAbility;
+        for ability in [
+            StaticAbility::RenfieldDrawReplacement,
+            StaticAbility::AbundanceReplacement,
+            StaticAbility::PhialDrawDoubler,
+        ] {
+            let mut s = fixture();
+            let db = Arc::make_mut(s.card_db.as_mut().unwrap());
+            db.insert(CardDef {
+                id: 2,
+                name: "Draw replacement control".into(),
+                card_types: vec![CardType::Enchantment],
+                static_abilities: vec![ability.clone()],
+                ..Default::default()
+            });
+            db.insert(CardDef {
+                id: 3,
+                name: "Land".into(),
+                card_types: vec![CardType::Land],
+                ..Default::default()
+            });
+            s.create_card_in_zone(2, 0, ZoneType::Battlefield);
+            let library_token = token(&mut s, ZoneType::Library);
+            let hand_token = token(&mut s, ZoneType::Hand);
+            let first = s.create_card_in_zone(1, 0, ZoneType::Library);
+            let land = s.create_card_in_zone(3, 0, ZoneType::Library);
+            super::super::draw_cards(&mut s, 0, 1);
+            assert!(s.players[0].library.contains(&library_token));
+            assert!(s.players[0].hand.contains(&hand_token));
+            assert_eq!(s.objects[&library_token].zone_change_count, 0);
+            assert_eq!(s.objects[&hand_token].zone_change_count, 0);
+            assert!(s.loss_boundary.pending_failed_draws.is_empty());
+            if ability == StaticAbility::AbundanceReplacement {
+                assert!(s.players[0].library.contains(&first));
+                assert!(s.players[0].hand.contains(&land));
+            } else {
+                assert!(s.players[0].hand.contains(&first));
+                assert!(s.players[0].hand.contains(&land));
+            }
         }
     }
 }

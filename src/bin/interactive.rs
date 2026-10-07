@@ -477,7 +477,7 @@ fn display_game_state(state: &GameState, db: &CardDatabase) {
 
     // Library size
     println!();
-    println!("Library: {} cards", p.library.len());
+    println!("Library: {} cards", state.card_count(&p.library));
     println!("----------------------------------------");
 }
 

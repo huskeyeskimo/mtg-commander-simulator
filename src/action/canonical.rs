@@ -825,7 +825,7 @@ fn hand_instance_index(state: &GameState, player: PlayerIndex, obj_id: ObjectId)
         .hand
         .iter()
         .copied()
-        .filter(|&id| state.objects[&id].card_def_id == card_id)
+        .filter(|&id| state.is_card(id) && state.objects[&id].card_def_id == card_id)
         .collect();
     siblings.sort();
     siblings.iter().position(|&id| id == obj_id).unwrap_or(0)
@@ -842,7 +842,7 @@ fn find_in_hand_by_index(
         .hand
         .iter()
         .copied()
-        .filter(|&id| state.objects[&id].card_def_id == card_id)
+        .filter(|&id| state.is_card(id) && state.objects[&id].card_def_id == card_id)
         .collect();
     matches.sort();
     matches.get(instance_index).copied()
@@ -872,7 +872,7 @@ fn graveyard_instance_index(state: &GameState, player: PlayerIndex, obj_id: Obje
         .graveyard
         .iter()
         .copied()
-        .filter(|&id| state.objects[&id].card_def_id == card_id)
+        .filter(|&id| state.is_card(id) && state.objects[&id].card_def_id == card_id)
         .collect();
     siblings.sort();
     siblings.iter().position(|&id| id == obj_id).unwrap_or(0)
@@ -889,7 +889,7 @@ fn find_in_graveyard_by_index(
         .graveyard
         .iter()
         .copied()
-        .filter(|&id| state.objects[&id].card_def_id == card_id)
+        .filter(|&id| state.is_card(id) && state.objects[&id].card_def_id == card_id)
         .collect();
     matches.sort();
     matches.get(instance_index).copied()
@@ -905,7 +905,7 @@ fn find_in_command_zone(
         .command_zone
         .iter()
         .copied()
-        .find(|&id| state.objects[&id].card_def_id == card_id)
+        .find(|&id| state.is_card(id) && state.objects[&id].card_def_id == card_id)
 }
 
 /// Find the N-th instance of `card_id` controlled by `controller` on the battlefield.

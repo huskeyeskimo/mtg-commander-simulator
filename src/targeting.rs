@@ -210,7 +210,7 @@ pub fn target_is_legal(
                 return false;
             }
             if matches!(spec, TargetSpec::CardInHand) {
-                return state.players[controller].hand.contains(id);
+                return state.is_card(*id) && state.players[controller].hand.contains(id);
             }
             if !state.battlefield.contains(id) {
                 return false;

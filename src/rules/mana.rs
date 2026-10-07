@@ -150,7 +150,7 @@ pub fn spell_cost_reduction(state: &GameState, player: PlayerIndex, card_def_id:
     // Delve: simplified — reduce by number of cards in graveyard
     // (auto-delve: exile as many as needed, up to generic cost)
     if def.keywords.contains(&KeywordAbility::Delve) {
-        let graveyard_count = state.players[player].graveyard.len() as u32;
+        let graveyard_count = state.card_count(&state.players[player].graveyard) as u32;
         extra += graveyard_count;
     }
 

@@ -222,7 +222,7 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
 
         Phase::Cleanup => {
             // Discard down to max hand size (7)
-            let hand_size = state.players[active].hand.len();
+            let hand_size = state.card_count(&state.players[active].hand);
             if hand_size > 7 {
                 state.cleanup_discard_in_progress = true;
                 state.priority_player = active;

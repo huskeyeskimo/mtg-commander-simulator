@@ -864,6 +864,9 @@ pub struct PlayerView<'a> {
     /// reference grants no additional access to a current hidden instance.
     /// Owned trigger contexts retain historical source information separately.
     pub objects: HashMap<ObjectId, &'a CardInstance>,
+    /// Observable nonbattlefield token residents: (zone tag, seat, definition).
+    /// No ObjectIds, generations or hidden-zone identity are disclosed.
+    pub visible_zone_tokens: Vec<(u8, usize, CardId)>,
     /// Authoritative public zone membership from every seat.
     pub(crate) public_zones: Vec<&'a [ObjectId]>,
     /// Evaluated facts for live sources of owned transition occurrences only.
@@ -990,6 +993,26 @@ impl GameState {
         let zone_live_sources = retained_live_ids.into_iter().filter_map(|id|
             crate::rules::transitions::capture_live_source(self, id).map(|info| (id, info))).collect();
 
+        let mut visible_zone_tokens = Vec::new();
+        for (seat, zones) in self.players.iter().enumerate() {
+            for (tag, ids) in [(0, &zones.hand), (1, &zones.graveyard),
+                (2, &zones.exile), (3, &zones.command_zone)] {
+                if tag == 0 && seat != player { continue; }
+                for &id in ids {
+                    if let Some(inst) = self.objects.get(&id).filter(|inst| inst.is_token) {
+                        visible_zone_tokens.push((tag, seat, inst.card_def_id));
+                    }
+                }
+            }
+        }
+        for entry in &self.stack {
+            if let StackSource::Spell(id) = entry.source {
+                if let Some(inst) = self.objects.get(&id).filter(|inst| inst.is_token) {
+                    visible_zone_tokens.push((4, inst.owner, inst.card_def_id));
+                }
+            }
+        }
+        visible_zone_tokens.sort_unstable();
         PlayerView {
             phase: self.phase,
             active_player: self.active_player,
@@ -1012,8 +1035,8 @@ impl GameState {
             opp_graveyard: &self.players[opp].graveyard,
             my_exile: &self.players[player].exile,
             opp_exile: &self.players[opp].exile,
-            opp_hand_size: self.players[opp].hand.len(),
-            opp_library_size: self.players[opp].library.len(),
+            opp_hand_size: self.card_count(&self.players[opp].hand),
+            opp_library_size: self.card_count(&self.players[opp].library),
 
             my_hand: &self.players[player].hand,
 
@@ -1031,6 +1054,7 @@ impl GameState {
 
             objects: visible,
             public_zones,
+            visible_zone_tokens,
             zone_live_sources,
             card_db: self.card_db(),
         }
@@ -1310,35 +1334,41 @@ impl GameState {
         from: ZoneType,
         to: ZoneType,
     ) {
-        self.move_object_with_policy(obj_id, from, to, true, true, true);
+        self.move_object_with_policy(obj_id, from, to, true, true);
     }
 
     /// Storage adapter for the validated transition kernel. The caller owns
     /// committed notifications and trigger collection; the token remains in
-    /// its destination until its event context has been captured.
+    /// its destination until a following state-based cessation pass.
     pub(crate) fn move_object_for_transition(&mut self, obj_id: ObjectId, from: ZoneType, to: ZoneType) {
-        self.move_object_with_policy(obj_id, from, to, false, false, false);
+        self.move_object_with_policy(obj_id, from, to, false, false);
     }
 
-    pub(crate) fn purge_transitioned_token(&mut self, obj_id: ObjectId, destination: ZoneType) {
-        let Some(inst) = self.objects.get(&obj_id) else { return; };
-        if !inst.is_token || destination == ZoneType::Battlefield { return; }
-        let owner = inst.owner;
-        match destination {
-            ZoneType::Library => self.players[owner].library.retain(|&id| id != obj_id),
-            ZoneType::Hand => self.players[owner].hand.retain(|&id| id != obj_id),
-            ZoneType::Graveyard => self.players[owner].graveyard.retain(|&id| id != obj_id),
-            ZoneType::Exile => self.players[owner].exile.retain(|&id| id != obj_id),
-            ZoneType::Command => self.players[owner].command_zone.retain(|&id| id != obj_id),
-            ZoneType::Stack | ZoneType::Battlefield => {},
-        }
-        self.objects.remove(&obj_id);
+    /// CR 111.8: a token outside the battlefield cannot change zones again.
+    /// Check both the declared source and current residence before any side effect.
+    pub(crate) fn token_movement_prohibited(&self, id: ObjectId, from: ZoneType) -> bool {
+        self.objects.get(&id).is_some_and(|inst| inst.is_token
+            && (from != ZoneType::Battlefield || !self.battlefield.contains(&id)))
+    }
+
+    /// Card-only operations must ignore resident tokens (CR 111.6).
+    pub fn is_card(&self, id: ObjectId) -> bool {
+        self.objects.get(&id).is_some_and(|inst| !inst.is_token)
+    }
+
+    pub fn card_count(&self, zone: &[ObjectId]) -> usize {
+        zone.iter().filter(|&&id| self.is_card(id)).count()
+    }
+
+    pub(crate) fn first_library_card(&self, player: PlayerIndex) -> Option<usize> {
+        self.players[player].library.iter().position(|&id| self.is_card(id))
     }
 
     fn move_object_with_policy(
         &mut self, obj_id: ObjectId, from: ZoneType, to: ZoneType,
-        purge_token: bool, emit_primary_event: bool, run_linked_followup: bool,
+        emit_primary_event: bool, run_linked_followup: bool,
     ) {
+        if self.token_movement_prohibited(obj_id, from) { return; }
         // Commander redirect: graveyard/exile -> command zone (see doc above)
         let actual_to = if self.format == GameFormat::Commander
             && (to == ZoneType::Graveyard || to == ZoneType::Exile)
@@ -1397,15 +1427,6 @@ impl GameState {
             }
         });
 
-        // CR 111.7: Tokens that leave the battlefield cease to exist.
-        // They briefly visit the destination zone then are removed.
-        let is_token = self.objects.get(&obj_id).map_or(false, |i| i.is_token);
-        if purge_token && is_token && actual_to != ZoneType::Battlefield {
-            // Token ceases to exist — remove it entirely
-            self.objects.remove(&obj_id);
-            return;
-        }
-
         // Add to destination zone
         match actual_to {
             ZoneType::Library => self.players[owner].library.push(obj_id),
@@ -1439,7 +1460,7 @@ impl GameState {
         let linked_exiles: Vec<(ObjectId, usize)> = self.players.iter().enumerate()
             .flat_map(|(pi, p)| {
                 p.exile.iter()
-                    .filter(|&&eid| self.objects.get(&eid).and_then(|i| i.exiled_by) == Some(obj_id))
+                    .filter(|&&eid| self.is_card(eid) && self.objects.get(&eid).and_then(|i| i.exiled_by) == Some(obj_id))
                     .map(move |&eid| (eid, pi))
                     .collect::<Vec<_>>()
             })
@@ -1453,6 +1474,7 @@ impl GameState {
     /// linked exile.
     pub(crate) fn move_prevalidated_linked_exiles(&mut self, linked_exiles: &[(ObjectId, usize)]) {
         for &(eid, player_idx) in linked_exiles {
+            if self.token_movement_prohibited(eid, ZoneType::Exile) { continue; }
             if let Some(inst) = self.objects.get_mut(&eid) {
                 inst.exiled_by = None;
                 inst.zone_change_count += 1;
@@ -1726,13 +1748,13 @@ impl GameState {
         let dyn_ctx = self.objects.get(&obj_id).map(|inst| {
             let controller = inst.controller;
             let hand_size = self.players.get(controller)
-                .map(|p| p.hand.len())
+                .map(|p| self.card_count(&p.hand))
                 .unwrap_or(0);
             let db = self.card_db();
             let mut graveyard_card_types = Vec::new();
             for player in &self.players {
                 for &gid in &player.graveyard {
-                    if let Some(gi) = self.objects.get(&gid) {
+                    if let Some(gi) = self.objects.get(&gid).filter(|inst| !inst.is_token) {
                         if let Some(gdef) = db.get(gi.card_def_id) {
                             graveyard_card_types.push(gdef.card_types.clone());
                         }

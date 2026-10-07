@@ -1307,6 +1307,9 @@ fn validate(
             let Some(inst) = state.objects.get(&id) else {
                 return Err(TransitionError::InvalidLinkedState(id));
             };
+            // CR 111.8: a resident token cannot be a linked movement subject.
+            // Exclude it before generation/event/destination capacity checks.
+            if inst.is_token { continue; }
             let Some(source) = inst
                 .exiled_by
                 .and_then(|source| subjects.get(&source).copied())
@@ -1558,7 +1561,7 @@ pub fn return_death_keyword(
     }
     let id = subject.after.id;
     let Some(inst) = state.objects.get(&id) else { return Ok(false); };
-    if inst.zone_change_count != subject.after.generation { return Ok(false); }
+    if inst.is_token || inst.zone_change_count != subject.after.generation { return Ok(false); }
     let owner = before.owner;
     if owner >= state.players.len() { return Err(TransitionError::InvalidPlayer(id)); }
     if !state.players[owner].graveyard.contains(&id) { return Ok(false); }
@@ -1698,11 +1701,6 @@ fn commit_batch_with_causes(
         .extend(collect_occurrences(&observers, &batch));
     state.pending_triggers.extend(collect_death_keywords(&batch));
 
-    // Temporary 2B.1 bridge: purge only after event and occurrence ownership.
-    // Correct token residence/cessation at SBA time remains 2C.
-    for transition in &batch.transitions {
-        state.purge_transitioned_token(transition.before.object.id, transition.destination.zone);
-    }
     // Existing linked-exile movement is a separate legacy follow-up event.
     // It must not run between members of the primary simultaneous batch.
     let linked: Vec<_> = followups

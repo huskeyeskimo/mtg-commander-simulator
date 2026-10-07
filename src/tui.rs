@@ -800,7 +800,7 @@ fn render_detail_panel(f: &mut Frame, app: &App, area: Rect) {
     }
 
     lines.push(Line::styled(
-        format!("Library: {} cards", app.state.players[0].library.len()),
+        format!("Library: {} cards", app.state.card_count(&app.state.players[0].library)),
         Style::default().fg(Color::Blue),
     ));
 
