@@ -153,11 +153,11 @@ use mtg_gto::{
     info_set::InformationSet,
 };
 fn info(s: &GameState, player: usize) -> u64 {
-    InformationSet::from_view(&s.visible_state(player), s.card_db()).hash_value()
+    InformationSet::from_view(&s.visible_state(player), s.card_db()).unwrap().hash_value()
 }
 fn restores(s: &GameState) -> Vec<GameState> {
     let mut snapshot = s.clone();
-    snapshot.restore(s.snapshot());
+    snapshot.restore(s.snapshot()).unwrap();
     let mut result = vec![
         s.clone(),
         snapshot,
@@ -329,6 +329,14 @@ fn transient_visibility_counts_and_token_card_projection_are_distinct() {
         let token_info = info(&s, 0);
         let mut real = s.clone();
         real.objects.get_mut(&id).unwrap().is_token = false;
+        // Compare a consistent alternate card world. Exact identity joins
+        // require owned pre-event facts to agree with that world's token role.
+        for trigger in &mut real.pending_triggers {
+            if let Some(zone) = &mut trigger.context.zone_transition {
+                if zone.source_before.object.id == id { zone.source_before.is_token = false; }
+                if zone.subject.before.object.id == id { zone.subject.before.is_token = false; }
+            }
+        }
         if zone != ZoneType::Library {
             assert_ne!(token_info, info(&real, 0));
         }
@@ -460,13 +468,13 @@ fn six_or_fewer_canonical_orders_survive_residence_and_cessation() {
         assert!(b.objects.is_empty());
         let actions_a = legal_actions(&a);
         let actions_b = legal_actions(&b);
-        let normal_a = InformationSet::normalize_retained_view(&a.visible_state(0));
-        let normal_b = InformationSet::normalize_retained_view(&b.visible_state(0));
-        let mut ca: Vec<_> = canonicalize_actions(&actions_a, &a, &normal_a)
+        let normal_a = InformationSet::normalize_retained_view(&a.visible_state(0)).unwrap();
+        let normal_b = InformationSet::normalize_retained_view(&b.visible_state(0)).unwrap();
+        let mut ca: Vec<_> = canonicalize_actions(&actions_a, &a, &normal_a).unwrap()
             .iter()
             .map(|c| serde_json::to_vec(c).unwrap())
             .collect();
-        let mut cb: Vec<_> = canonicalize_actions(&actions_b, &b, &normal_b)
+        let mut cb: Vec<_> = canonicalize_actions(&actions_b, &b, &normal_b).unwrap()
             .iter()
             .map(|c| serde_json::to_vec(c).unwrap())
             .collect();
@@ -477,10 +485,10 @@ fn six_or_fewer_canonical_orders_survive_residence_and_cessation() {
             .iter()
             .filter(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
         {
-            let canonical = canonicalize(action, &a);
-            let rebuilt = resolve(&canonical, &b, b.priority_player).unwrap();
+            let canonical = canonicalize(action, &a).unwrap();
+            let rebuilt = resolve(&canonical, &b, b.priority_player).unwrap().unwrap();
             assert!(actions_b.contains(&rebuilt));
-            assert_eq!(canonicalize(&rebuilt, &b), canonical);
+            assert_eq!(canonicalize(&rebuilt, &b).unwrap(), canonical);
         }
         finish(&mut a);
         finish(&mut b);
@@ -501,8 +509,8 @@ fn more_than_six_preserves_semantic_projection_and_own_fifo_boundary() {
             .filter(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
             .collect();
         assert_eq!(orders.len(), 1);
-        let c = canonicalize(&orders[0], s);
-        let rebuilt = resolve(&c, s, s.priority_player).unwrap();
+        let c = canonicalize(&orders[0], s).unwrap();
+        let rebuilt = resolve(&c, s, s.priority_player).unwrap().unwrap();
         assert_eq!(rebuilt, orders[0]);
         finish(s);
     }
@@ -530,8 +538,8 @@ fn token_and_real_same_definition_do_not_share_card_action_coordinates() {
         object_id: t,
         targets: vec![]
     }));
-    let c = canonicalize(&cast, &a);
-    assert_eq!(resolve(&c, &b, 0), Some(cast.clone()));
+    let c = canonicalize(&cast, &a).unwrap();
+    assert_eq!(resolve(&c, &b, 0).unwrap(), Some(cast.clone()));
     assert!(matches!(
         c,
         mtg_gto::action::canonical::CanonicalAction::CastSpell { hand_index: 0, .. }

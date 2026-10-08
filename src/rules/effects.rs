@@ -163,7 +163,7 @@ mod destruction_migration_tests {
         assert_eq!(simultaneous.pending_triggers.len(), 4);
         assert_eq!(successive.pending_triggers.len(), 4);
         let encoding = |state: &GameState| {
-            crate::info_set::InformationSet::normalize_retained_view(&state.visible_state(0)).encoding
+            crate::info_set::InformationSet::normalize_retained_view(&state.visible_state(0)).unwrap().encoding.clone()
         };
         assert_ne!(encoding(&simultaneous), encoding(&successive));
         assert_eq!(simultaneous.next_zone_event_group_id, 1);

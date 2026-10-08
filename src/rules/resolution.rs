@@ -84,13 +84,9 @@ fn resolve_spell(
         // Aura attachment: when an aura spell resolves, attach it to its target
         if def.is_aura() {
             if let Some(Target::Object(target_id)) = targets.first() {
-                // Set attachment relationship
-                if let Some(aura_inst) = state.objects.get_mut(&obj_id) {
-                    aura_inst.attached_to = Some(*target_id);
-                }
-                if let Some(target_inst) = state.objects.get_mut(target_id) {
-                    if !target_inst.attachments.contains(&obj_id) {
-                        target_inst.attachments.push(obj_id);
+                if let (Some(source), Some(target)) = (state.exact_object(obj_id), state.exact_object(*target_id)) {
+                    if let Ok(prepared) = state.prepare_attach(source, target, crate::card::AttachmentContext::ExistingAuraResolution) {
+                        let _ = state.commit_attach(prepared);
                     }
                 }
             }

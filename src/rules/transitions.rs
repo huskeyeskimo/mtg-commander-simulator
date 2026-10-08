@@ -17,11 +17,7 @@ use crate::events::GameEvent;
 use crate::game::{GameState, PendingTrigger, PlayerIndex, Target, TriggerContext};
 use crate::mana::Color;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ExactObjectRef {
-    pub id: ObjectId,
-    pub generation: u32,
-}
+pub use crate::card::ExactObjectRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ZoneLocation {
@@ -29,12 +25,32 @@ pub struct ZoneLocation {
     pub player: PlayerIndex,
 }
 
-/// A raw legacy attachment ID is insufficient to prove a wearer incarnation.
-/// 2D will add exact links after attachment state itself becomes versioned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum AttachmentLki {
-    Unattached,
-    UnverifiedLegacyLink,
+/// Owned common-pre-event attachment evidence. Malformed fixture links are
+/// recorded explicitly as unproved, never asserted as actual relationships.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AttachmentLki {
+    pub links: Vec<crate::card::AttachmentEvidence>,
+    pub malformed_link: Option<crate::card::AttachmentLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PublicAttachmentFacts {
+    pub source_is_frame: bool,
+    pub kind: crate::card::AttachmentKind,
+    pub source: (CardId, usize, usize, bool),
+    pub target: (CardId, usize, usize, bool),
+}
+
+impl AttachmentLki {
+    fn public_facts(&self, frame: ExactObjectRef) -> Vec<PublicAttachmentFacts> {
+        let mut facts: Vec<_> = self.links.iter().map(|link| PublicAttachmentFacts {
+            source_is_frame: link.source == frame, kind: link.kind,
+            source: (link.source_card_id, link.source_owner, link.source_controller, link.source_is_token),
+            target: (link.target_card_id, link.target_owner, link.target_controller, link.target_is_token),
+        }).collect();
+        facts.sort_by_cached_key(typed_bytes);
+        facts
+    }
 }
 
 /// Owned pre-event public subject facts. `card_id` refers to the stable
@@ -191,7 +207,7 @@ fn linked_exile_info(inst: &crate::card::CardInstance) -> LinkedExileInfo {
         temp_keywords,
         loyalty_counters: inst.loyalty_counters,
         loyalty_activated_this_turn: inst.loyalty_activated_this_turn,
-        has_legacy_attachment: inst.attached_to.is_some() || !inst.attachments.is_empty(),
+        has_legacy_attachment: inst.attachment_link().is_some(),
         generation_exhausted: inst.zone_change_count == u32::MAX,
     }
 }
@@ -258,7 +274,7 @@ pub struct ZoneSourceInfo {
     pub plus_counters: i32,
     pub minus_counters: i32,
     pub tapped: bool,
-    pub attachment: AttachmentLki,
+    pub attachment: Vec<PublicAttachmentFacts>,
     pub live: Option<LiveSourceInfo>,
 }
 
@@ -282,6 +298,8 @@ pub struct ZoneOccurrenceInfo {
     pub subject_source_relation: Option<SubjectSourceRelation>,
     /// Only for legacy occurrences without owned transition context.
     pub legacy_source_index: Option<usize>,
+    /// Per-decision semantic occurrence key; never stored in GameState history.
+    pub decision_coordinate: Option<crate::public_projection::SemanticCoordinate>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -304,6 +322,7 @@ pub fn public_occurrence_info(
 ) -> ZoneOccurrenceInfo {
     let zone = context.zone_transition.as_ref();
     ZoneOccurrenceInfo {
+        decision_coordinate: None,
         source_card_id: context.source_card_id,
         controller,
         ability_index,
@@ -381,7 +400,7 @@ impl ZoneTriggerContext {
             plus_counters: before.plus_counters,
             minus_counters: before.minus_counters,
             tapped: before.tapped,
-            attachment: before.attachment,
+            attachment: before.attachment.public_facts(before.object),
             live: live.cloned(),
         }
     }
@@ -1377,7 +1396,7 @@ fn validate(
     Ok(followups)
 }
 
-fn capture_subject(state: &GameState, id: ObjectId) -> LastKnownObject {
+fn capture_subject(state: &GameState, id: ObjectId, attachments: &crate::card::AttachmentInventory) -> LastKnownObject {
     let inst = &state.objects[&id];
     let chars = state
         .get_characteristics(id)
@@ -1404,15 +1423,15 @@ fn capture_subject(state: &GameState, id: ObjectId) -> LastKnownObject {
         plus_counters: inst.plus_counters,
         minus_counters: inst.minus_counters,
         tapped: inst.tapped,
-        attachment: if inst.attached_to.is_some() || !inst.attachments.is_empty() {
-            AttachmentLki::UnverifiedLegacyLink
-        } else {
-            AttachmentLki::Unattached
+        attachment: AttachmentLki {
+            links: attachments.evidence.iter().filter(|link| link.source.id == id || link.target.id == id).cloned().collect(),
+            malformed_link: inst.attachment_link().filter(|_| state.attachment_target(ExactObjectRef {
+                id, generation: inst.zone_change_count }).is_none()),
         },
     }
 }
 
-fn capture_observers(state: &GameState) -> Vec<Observer> {
+fn capture_observers(state: &GameState, attachments: &crate::card::AttachmentInventory) -> Vec<Observer> {
     state
         .battlefield
         .iter()
@@ -1431,6 +1450,7 @@ fn capture_observers(state: &GameState) -> Vec<Observer> {
                             | TriggerCondition::ACreatureDies
                             | TriggerCondition::ACreatureYouControlDies
                             | TriggerCondition::APermanentLeaves
+                            | TriggerCondition::EquippedCreatureDies
                     )
                 })
                 .map(|(index, ability)| (index, ability.clone()))
@@ -1447,7 +1467,7 @@ fn capture_observers(state: &GameState) -> Vec<Observer> {
                     id,
                     generation: inst.zone_change_count,
                 },
-                before: capture_subject(state, id),
+                before: capture_subject(state, id, attachments),
                 controller: chars.controller,
                 abilities,
             })
@@ -1472,6 +1492,10 @@ fn collect_occurrences(
                         subject.creature_died() && subject.before.controller == observer.controller
                     }
                     TriggerCondition::APermanentLeaves => subject.left_battlefield(),
+                    TriggerCondition::EquippedCreatureDies => subject.creature_died()
+                        && observer.before.attachment.links.iter().any(|link|
+                            link.kind == crate::card::AttachmentKind::Equipment
+                            && link.source == observer.source && link.target == subject.before.object),
                     _ => false,
                 };
                 if matches {
@@ -1606,8 +1630,6 @@ pub fn return_death_keyword(
     inst.minus_counters = initial_minus;
     inst.loyalty_counters = starting_loyalty;
     inst.loyalty_activated_this_turn = false;
-    inst.attached_to = None;
-    inst.attachments.clear();
     inst.exiled_by = None;
     state.apply_etb_replacements(id);
     state.refresh_continuous_effects();
@@ -1646,18 +1668,19 @@ fn commit_batch_with_causes(
     let group_id = state.next_zone_event_group_id;
     // Shared preflight has already checked this counter before mutation.
     let next_group_id = group_id + 1;
+    let attachments = state.capture_attachment_inventory();
     let subjects: Vec<_> = requests
         .iter()
-        .map(|r| capture_subject(state, r.object.id))
+        .map(|r| capture_subject(state, r.object.id, &attachments))
         .collect();
-    let observers = capture_observers(state);
+    let observers = capture_observers(state, &attachments);
     let destinations: Vec<_> = requests
         .iter()
         .map(|r| actual_destination(state, r.object.id, r.to))
         .collect();
 
     for (request, destination) in requests.iter().zip(&destinations) {
-        state.move_object_for_transition(request.object.id, request.from, *destination);
+        state.move_object_for_transition(request.object.id, request.from, *destination, &attachments);
     }
     state.refresh_continuous_effects();
     state.refresh_replacement_effects();

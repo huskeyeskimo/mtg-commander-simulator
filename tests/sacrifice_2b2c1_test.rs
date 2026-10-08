@@ -441,8 +441,8 @@ fn successive_batches_do_not_reuse_departed_watchers() {
         9
     );
     assert_ne!(
-        InformationSet::normalize_retained_view(&state.visible_state(0)).encoding,
-        InformationSet::normalize_retained_view(&simultaneous.visible_state(0)).encoding
+        InformationSet::normalize_retained_view(&state.visible_state(0)).unwrap().encoding.clone(),
+        InformationSet::normalize_retained_view(&simultaneous.visible_state(0)).unwrap().encoding.clone()
     );
 }
 #[test]
@@ -527,9 +527,9 @@ fn finish(state: &mut GameState) {
                 .into_iter()
                 .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }));
             if let Some(choice) = choice {
-                let key = canonicalize(&choice, state);
-                let reconstructed = resolve(&key, state, state.priority_player).unwrap();
-                assert_eq!(canonicalize(&reconstructed, state), key);
+                let key = canonicalize(&choice, state).unwrap();
+                let reconstructed = resolve(&key, state, state.priority_player).unwrap().unwrap();
+                assert_eq!(canonicalize(&reconstructed, state).unwrap(), key);
                 apply_action(state, &reconstructed);
                 continue;
             }
@@ -543,7 +543,7 @@ fn finish(state: &mut GameState) {
 }
 fn restores(state: &GameState) -> Vec<GameState> {
     let mut restored = state.clone();
-    restored.restore(state.snapshot());
+    restored.restore(state.snapshot()).unwrap();
     let mut variants = vec![
         state.clone(),
         restored,
@@ -567,7 +567,7 @@ fn pending_and_stacked_final_continuations_preserve_purged_stolen_history() {
     assert!(!state.battlefield.contains(&watcher));
     assert_eq!(state.pending_triggers.len(), 8);
     let expected_info =
-        InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value();
+        InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap().hash_value();
     let initial_life = state.players[0].life;
     let mut expected = state.clone();
     finish(&mut expected);
@@ -575,7 +575,7 @@ fn pending_and_stacked_final_continuations_preserve_purged_stolen_history() {
     assert_eq!(expected.priority_player, expected.active_player);
     for mut game in restores(&state) {
         assert_eq!(
-            InformationSet::from_view(&game.visible_state(0), game.card_db()).hash_value(),
+            InformationSet::from_view(&game.visible_state(0), game.card_db()).unwrap().hash_value(),
             expected_info
         );
         finish(&mut game);
@@ -680,10 +680,10 @@ fn thirteen_occurrence_state_invariance_and_own_fifo_roundtrips() {
                 assert_eq!(relations.iter().filter(|r| r.0 == 1).count(), 2);
                 assert_eq!(relations.iter().filter(|r| r.0 == 2).count(), 2);
                 let information =
-                    InformationSet::from_view(&state.visible_state(0), state.card_db())
+                    InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap()
                         .hash_value();
                 let encoding =
-                    InformationSet::normalize_retained_view(&state.visible_state(0)).encoding;
+                    InformationSet::normalize_retained_view(&state.visible_state(0)).unwrap().encoding.clone();
                 let observed = (information, encoding, relations);
                 if let Some(ref expected) = expected {
                     assert_eq!(&observed, expected);
@@ -705,10 +705,10 @@ fn thirteen_occurrence_state_invariance_and_own_fifo_roundtrips() {
                     1
                 );
                 for action in &actions {
-                    let key = canonicalize(action, &state);
-                    let reconstructed = resolve(&key, &state, state.priority_player).unwrap();
+                    let key = canonicalize(action, &state).unwrap();
+                    let reconstructed = resolve(&key, &state, state.priority_player).unwrap().unwrap();
                     assert!(actions.contains(&reconstructed));
-                    assert_eq!(canonicalize(&reconstructed, &state), key);
+                    assert_eq!(canonicalize(&reconstructed, &state).unwrap(), key);
                 }
             }
         }
@@ -753,23 +753,23 @@ fn six_occurrence_cross_state_actions_reconstruct_and_finish_equivalently() {
                 }
                 let reference = baseline.as_ref().unwrap();
                 assert_eq!(
-                    InformationSet::from_view(&state.visible_state(0), state.card_db())
+                    InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap()
                         .hash_value(),
-                    InformationSet::from_view(&reference.visible_state(0), reference.card_db())
+                    InformationSet::from_view(&reference.visible_state(0), reference.card_db()).unwrap()
                         .hash_value()
                 );
                 assert_eq!(
-                    InformationSet::normalize_retained_view(&state.visible_state(0)).encoding,
-                    InformationSet::normalize_retained_view(&reference.visible_state(0)).encoding
+                    InformationSet::normalize_retained_view(&state.visible_state(0)).unwrap().encoding.clone(),
+                    InformationSet::normalize_retained_view(&reference.visible_state(0)).unwrap().encoding.clone()
                 );
                 let actions = legal_actions(&state);
                 let mut actual_keys: Vec<_> =
-                    actions.iter().map(|a| canonicalize(a, &state)).collect();
+                    actions.iter().map(|a| canonicalize(a, &state).unwrap()).collect();
                 actual_keys.sort_by_key(|a| format!("{a:?}"));
                 let reference_actions = legal_actions(reference);
                 let mut expected_keys: Vec<_> = reference_actions
                     .iter()
-                    .map(|a| canonicalize(a, reference))
+                    .map(|a| canonicalize(a, reference).unwrap())
                     .collect();
                 expected_keys.sort_by_key(|a| format!("{a:?}"));
                 assert_eq!(actual_keys, expected_keys);
@@ -779,20 +779,20 @@ fn six_occurrence_cross_state_actions_reconstruct_and_finish_equivalently() {
                     .iter()
                     .filter(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
                 {
-                    let key = canonicalize(action, reference);
-                    let reconstructed = resolve(&key, &state, state.priority_player).unwrap();
+                    let key = canonicalize(action, reference).unwrap();
+                    let reconstructed = resolve(&key, &state, state.priority_player).unwrap().unwrap();
                     assert!(actions.contains(&reconstructed));
-                    assert_eq!(canonicalize(&reconstructed, &state), key);
+                    assert_eq!(canonicalize(&reconstructed, &state).unwrap(), key);
                 }
                 // A common key also produces equivalent final represented play.
                 let ordering = reference_actions
                     .iter()
                     .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
                     .unwrap();
-                let key = canonicalize(ordering, reference);
+                let key = canonicalize(ordering, reference).unwrap();
                 let mut a = reference.clone();
                 let mut b = state.clone();
-                let choice = resolve(&key, &b, b.priority_player).unwrap();
+                let choice = resolve(&key, &b, b.priority_player).unwrap().unwrap();
                 apply_action(&mut a, ordering);
                 apply_action(&mut b, &choice);
                 finish(&mut a);
@@ -806,8 +806,8 @@ fn six_occurrence_cross_state_actions_reconstruct_and_finish_equivalently() {
                 assert!(a.pending_triggers.is_empty() && b.pending_triggers.is_empty());
                 assert!(a.stack.is_empty() && b.stack.is_empty());
                 assert_eq!(
-                    InformationSet::from_view(&a.visible_state(0), a.card_db()).hash_value(),
-                    InformationSet::from_view(&b.visible_state(0), b.card_db()).hash_value()
+                    InformationSet::from_view(&a.visible_state(0), a.card_db()).unwrap().hash_value(),
+                    InformationSet::from_view(&b.visible_state(0), b.card_db()).unwrap().hash_value()
                 );
             }
         }
@@ -897,8 +897,8 @@ fn two_resolved_instructions_are_distinct_from_one_two_victim_instruction() {
     assert_eq!(one.pending_triggers.len(), 4);
     assert_eq!(two.pending_triggers.len(), 4);
     assert_ne!(
-        InformationSet::normalize_retained_view(&one.visible_state(0)).encoding,
-        InformationSet::normalize_retained_view(&two.visible_state(0)).encoding
+        InformationSet::normalize_retained_view(&one.visible_state(0)).unwrap().encoding.clone(),
+        InformationSet::normalize_retained_view(&two.visible_state(0)).unwrap().encoding.clone()
     );
 }
 #[test]

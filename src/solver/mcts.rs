@@ -269,9 +269,12 @@ pub(crate) fn mcts_search(
     state: &GameState,
     config: &MctsConfig,
     root: &mut MctsNode,
-) -> Option<Action> {
-    try_mcts_search(state, config, root)
-        .unwrap_or_else(|reason| panic!("INVALID reason={}", reason.code()))
+) -> Result<Option<Action>, TerminationReason> {
+    match try_mcts_search(state, config, root) {
+        Err(TerminationReason::StateEncoding) => Err(TerminationReason::StateEncoding),
+        Err(reason) => panic!("INVALID reason={}", reason.code()),
+        Ok(action) => Ok(action),
+    }
 }
 
 fn try_mcts_search(
@@ -283,6 +286,7 @@ fn try_mcts_search(
         return Err(reason);
     }
     if state.gameplay_stopped() { return Ok(None); }
+    crate::public_projection::JointPublicNormalization::for_state(state, state.priority_player)?;
     let actions = legal_actions(state);
     if actions.is_empty() {
         return Ok(Some(Action::PassPriority));
@@ -488,6 +492,7 @@ fn tree_walk(
             return rollout(state, rollout_strategy, goldfish_strategy, config);
         }
 
+        crate::public_projection::JointPublicNormalization::for_state(state, state.priority_player)?;
         let player = state.priority_player;
         let actions = legal_actions(state);
 
@@ -501,7 +506,7 @@ fn tree_walk(
 
         // Goldfish (player 1) — deterministic, no branching
         if player != 0 {
-            let action = goldfish_strategy.choose_action(state, player);
+            let action = goldfish_strategy.choose_action(state, player)?;
             rules::apply_action(state, &action);
             continue;
         }
@@ -513,7 +518,7 @@ fn tree_walk(
         // corrupt the mulligan state machine. The GreedyStrategy heuristic
         // handles mulligans well, so we skip tree search for this phase.
         if state.phase == Phase::Mulligan {
-            let action = rollout_strategy.choose_action(state, player);
+            let action = rollout_strategy.choose_action(state, player)?;
             rules::apply_action(state, &action);
             continue;
         }
@@ -595,6 +600,7 @@ fn rollout(
         && state.turn_number <= GOLDFISH_MAX_TURNS
         && actions_taken < config.max_rollout_actions
     {
+        crate::public_projection::JointPublicNormalization::for_state(state, state.priority_player)?;
         let player = state.priority_player;
         let actions = legal_actions(state);
 
@@ -611,7 +617,7 @@ fn rollout(
         } else {
             goldfish_strategy
         };
-        let action = strategy.choose_action(state, player);
+        let action = strategy.choose_action(state, player)?;
         rules::apply_action(state, &action);
         actions_taken += 1;
 
@@ -667,9 +673,13 @@ impl MctsStrategy {
 }
 
 impl Strategy for MctsStrategy {
-    fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Action {
-        if let Some(reason) = state.invalid_gameplay_reason() { panic!("INVALID reason={}", reason.code()); }
+    fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Result<Action, TerminationReason> {
+        if let Some(reason) = state.invalid_gameplay_reason() {
+            if reason == TerminationReason::StateEncoding { return Err(reason); }
+            panic!("INVALID reason={}", reason.code());
+        }
         assert!(!state.gameplay_stopped(), "MCTS action requested for stopped gameplay");
+        crate::public_projection::JointPublicNormalization::for_state(state, player)?;
         // MCTS only makes sense for the pilot (player 0)
         if player != 0 {
             return GoldfishStrategy.choose_action(state, player);
@@ -684,14 +694,14 @@ impl Strategy for MctsStrategy {
 
         let actions = legal_actions(state);
         if actions.is_empty() {
-            return Action::PassPriority;
+            return Ok(Action::PassPriority);
         }
         if actions.len() == 1 {
-            return actions[0].clone();
+            return Ok(actions[0].clone());
         }
 
         let mut root = MctsNode::new();
-        mcts_search(state, &self.config, &mut root).unwrap_or(Action::PassPriority)
+        Ok(mcts_search(state, &self.config, &mut root)?.unwrap_or(Action::PassPriority))
     }
 
     fn name(&self) -> &str {
@@ -824,6 +834,9 @@ pub fn run_mcts_goldfish_game(
                 crate::simulation::TerminationReason::IncompleteCleanup));
             break;
         }
+        if let Err(reason) = crate::public_projection::JointPublicNormalization::for_state(state, state.priority_player) {
+            interrupted = Some(crate::simulation::GameOutcome::Invalid(reason)); break;
+        }
         let player = state.priority_player;
         let actions = legal_actions(state);
 
@@ -844,7 +857,10 @@ pub fn run_mcts_goldfish_game(
 
         if player != 0 {
             // Goldfish — deterministic, no search needed
-            let action = goldfish.choose_action(state, player);
+            let action = match goldfish.choose_action(state, player) {
+                Ok(action) => action,
+                Err(reason) => { interrupted = Some(crate::simulation::GameOutcome::Invalid(reason)); break; }
+            };
             match apply_mcts_game_action(state, &action, &actions,
                 &mut actions_taken, &mut rejected_in_row) {
                 Ok(_) => {}
@@ -859,7 +875,10 @@ pub fn run_mcts_goldfish_game(
         // tree nodes to be visited with different hands across iterations.
         if state.phase == Phase::Mulligan {
             let greedy = GreedyStrategy;
-            let action = greedy.choose_action(state, player);
+            let action = match greedy.choose_action(state, player) {
+                Ok(action) => action,
+                Err(reason) => { interrupted = Some(crate::simulation::GameOutcome::Invalid(reason)); break; }
+            };
             if verbose {
                 let hand = format_hand(state, 0);
                 trace_lines.push(format!("  Hand: [{}]", hand.join(", ")));

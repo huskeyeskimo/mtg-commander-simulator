@@ -17,7 +17,7 @@ fn goldfish_mccfr_report(
     iterations: u32,
     num_games: u64,
     greedy_baseline: &GoldfishResults,
-) {
+) -> Result<(), mtg_gto::simulation::TerminationReason> {
     let num_shards = mccfr::default_num_shards();
     println!(
         "Training MCCFR for {} goldfish ({} iterations, {} threads)...",
@@ -26,9 +26,9 @@ fn goldfish_mccfr_report(
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db.clone()));
     rules::setup_game(&mut state, deck, deck);
-    let tables = mccfr::train_goldfish_parallel(&state, iterations, num_shards, config);
+    let tables = mccfr::train_goldfish_parallel(&state, iterations, num_shards, config)?;
 
-    let stats = mccfr::training_stats(&tables);
+    let stats = mccfr::training_stats(&tables)?;
     println!(
         "  Trained: {} info sets, {} visits",
         stats.total_info_sets[0], stats.total_visits[0],
@@ -45,6 +45,8 @@ fn goldfish_mccfr_report(
         mccfr_results.avg_kill_turn,
         greedy_baseline.avg_kill_turn - mccfr_results.avg_kill_turn,
     );
+
+    Ok(())
 }
 
 fn main() {
@@ -100,9 +102,15 @@ fn main() {
 
     let config = McfrConfig { max_depth: 8, max_actions: 1000, max_nodes_per_iteration: 0 };
 
-    goldfish_mccfr_report(&db, &red_deck, "Red Aggro", &config, 50, 1000, &greedy_red);
+    if let Err(reason) = goldfish_mccfr_report(&db, &red_deck, "Red Aggro", &config, 50, 1000, &greedy_red) {
+        eprintln!("INVALID reason={}", reason.code());
+        return;
+    }
 
     println!();
 
-    goldfish_mccfr_report(&db, &green_deck, "Green Stompy", &config, 50, 1000, &greedy_green);
+    if let Err(reason) = goldfish_mccfr_report(&db, &green_deck, "Green Stompy", &config, 50, 1000, &greedy_green) {
+        eprintln!("INVALID reason={}", reason.code());
+        return;
+    }
 }

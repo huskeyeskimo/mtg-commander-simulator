@@ -470,17 +470,17 @@ fn sibling_copies_canonical_info_and_display() {
             targets: vec![Target::StackEntry(target)],
         };
         assert!(actions.contains(&action));
-        let canonical = canonicalize(&action, &state);
-        assert_eq!(resolve(&canonical, &state, 0), Some(action));
+        let canonical = canonicalize(&action, &state).unwrap();
+        assert_eq!(resolve(&canonical, &state, 0).unwrap(), Some(action));
         assert_eq!(
-            resolve(&canonical, &equivalent, 0),
+            resolve(&canonical, &equivalent, 0).unwrap(),
             Some(Action::CastSpell {
                 object_id: counter,
                 targets: vec![Target::StackEntry(equivalent.stack[index].id)]
             })
         );
     }
-    let info = InformationSet::from_view(&state.visible_state(0), state.card_db());
+    let info = InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap();
     assert!(!info.stack_entries[0].is_spell_copy);
     assert!(info.stack_entries[1].is_spell_copy && info.stack_entries[2].is_spell_copy);
     state.move_object(original, ZoneType::Stack, ZoneType::Hand);
@@ -513,7 +513,7 @@ fn copies_survive_clone_snapshot_json_and_bincode() {
         bincode::deserialize::<GameState>(&binary).unwrap(),
     ];
     state.move_object(original, ZoneType::Stack, ZoneType::Hand);
-    state.restore(saved);
+    state.restore(saved).unwrap();
     states.push(state);
     for mut restored in states {
         restored.card_db = Some(restored.card_db.clone().unwrap_or_else(|| state_db()));
@@ -784,7 +784,7 @@ fn assert_targeted_copy_roundtrips(
         serde_json::from_slice::<GameState>(&json).unwrap(),
         bincode::deserialize::<GameState>(&binary).unwrap(),
     ];
-    state.restore(snapshot);
+    state.restore(snapshot).unwrap();
     restored.push(state.clone());
     for restored in restored {
         let entry = restored
@@ -839,22 +839,22 @@ fn mixed_stack_canonicalization_counts_abilities_and_is_id_independent() {
         object_id: counter,
         targets: vec![Target::StackEntry(copy_id)],
     };
-    let canonical_original = canonicalize(&original_action, &state);
-    let canonical_copy = canonicalize(&copy_action, &state);
+    let canonical_original = canonicalize(&original_action, &state).unwrap();
+    let canonical_copy = canonicalize(&copy_action, &state).unwrap();
     assert_ne!(canonical_original, canonical_copy);
     assert_eq!(
-        resolve(&canonical_original, &state, 0),
+        resolve(&canonical_original, &state, 0).unwrap(),
         Some(original_action)
     );
-    assert_eq!(resolve(&canonical_copy, &state, 0), Some(copy_action));
+    assert_eq!(resolve(&canonical_copy, &state, 0).unwrap(), Some(copy_action));
 
     let mut equivalent = state.clone();
     for entry in &mut equivalent.stack {
         entry.id += 10_000;
     }
     equivalent.next_stack_id += 10_000;
-    let resolved_original = resolve(&canonical_original, &equivalent, 0).unwrap();
-    let resolved_copy = resolve(&canonical_copy, &equivalent, 0).unwrap();
+    let resolved_original = resolve(&canonical_original, &equivalent, 0).unwrap().unwrap();
+    let resolved_copy = resolve(&canonical_copy, &equivalent, 0).unwrap().unwrap();
     assert_eq!(
         resolved_original,
         Action::CastSpell {
@@ -869,9 +869,9 @@ fn mixed_stack_canonicalization_counts_abilities_and_is_id_independent() {
             targets: vec![Target::StackEntry(equivalent.stack[2].id)]
         }
     );
-    let info = InformationSet::from_view(&state.visible_state(0), state.card_db());
+    let info = InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap();
     let equivalent_info =
-        InformationSet::from_view(&equivalent.visible_state(0), equivalent.card_db());
+        InformationSet::from_view(&equivalent.visible_state(0), equivalent.card_db()).unwrap();
     assert_eq!(info.hash_value(), equivalent_info.hash_value());
     assert!(!info.stack_entries[0].is_spell_copy);
     assert!(!info.stack_entries[1].is_spell_copy);

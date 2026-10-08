@@ -1,4 +1,5 @@
 pub mod mana;
+pub mod public_projection;
 pub mod card;
 pub mod combo;
 pub mod combo_discovery;

@@ -145,9 +145,9 @@ pub enum CanonicalAction {
     /// Equip an equipment to a target creature.
     Equip {
         equipment_card_id: CardId,
-        equipment_instance_index: usize,
+        equipment_coordinate: crate::public_projection::SemanticCoordinate,
         target_card_id: CardId,
-        target_instance_index: usize,
+        target_coordinate: crate::public_projection::SemanticCoordinate,
     },
 
     /// Cast a spell from the graveyard (Flashback, Escape).
@@ -189,25 +189,25 @@ pub enum CanonicalAction {
 /// battlefield for ActivateAbility/DeclareAttackers/etc.). Calling this after
 /// the action has already moved objects to different zones will produce
 /// incorrect instance indices or panic on missing ObjectIds.
-pub fn canonicalize(action: &Action, state: &GameState) -> CanonicalAction {
-    let normalized = matches!(action, Action::OrderTriggerOccurrences { .. })
-        .then(|| normalize_player_retained(state, state.priority_player));
-    canonicalize_with_normalization(action, state, normalized.as_ref())
+pub fn canonicalize(action: &Action, state: &GameState) -> Result<CanonicalAction, crate::simulation::TerminationReason> {
+    let normalized = normalize_player_retained(state, state.priority_player)?;
+    canonicalize_with_normalization(action, state, &normalized)
 }
 
 /// Reuse one immutable decision result, preserving every action and its order.
 pub fn canonicalize_actions(
     actions: &[Action], state: &GameState,
-    normalized: &crate::rules::transitions::RetainedNormalization,
-) -> Vec<CanonicalAction> {
-    actions.iter().map(|action| canonicalize_with_normalization(action, state, Some(normalized))).collect()
+    normalized: &crate::public_projection::JointPublicNormalization,
+) -> Result<Vec<CanonicalAction>, crate::simulation::TerminationReason> {
+    actions.iter().map(|action| canonicalize_with_normalization(action, state, normalized)).collect()
 }
 
 fn canonicalize_with_normalization(
     action: &Action, state: &GameState,
-    normalized: Option<&crate::rules::transitions::RetainedNormalization>,
-) -> CanonicalAction {
-    match action {
+    normalized: &crate::public_projection::JointPublicNormalization,
+) -> Result<CanonicalAction, crate::simulation::TerminationReason> {
+    validate_action_references(action, state, normalized)?;
+    Ok(match action {
         Action::ChooseNextCopy { item_index } => CanonicalAction::ChooseNextCopy { item_index: *item_index },
         Action::PassPriority => CanonicalAction::PassPriority,
         Action::Concede => CanonicalAction::Concede,
@@ -215,17 +215,17 @@ fn canonicalize_with_normalization(
         Action::PlayLand { object_id } => {
             let inst = &state.objects[object_id];
             let card_id = inst.card_def_id;
-            let hand_index = hand_instance_index(state, inst.owner, *object_id);
+            let hand_index = hand_instance_index(state, inst.owner, *object_id, normalized);
             CanonicalAction::PlayLand { card_id, hand_index }
         }
 
         Action::CastSpell { object_id, targets } => {
             let inst = &state.objects[object_id];
             let card_id = inst.card_def_id;
-            let hand_index = hand_instance_index(state, inst.owner, *object_id);
+            let hand_index = hand_instance_index(state, inst.owner, *object_id, normalized);
             let canonical_targets: Vec<CanonicalTarget> = targets
                 .iter()
-                .map(|t| canonicalize_target(t, state))
+                .map(|t| canonicalize_target(t, state, normalized))
                 .collect();
             CanonicalAction::CastSpell {
                 card_id,
@@ -240,7 +240,7 @@ fn canonicalize_with_normalization(
         } => {
             let inst = &state.objects[object_id];
             let card_id = inst.card_def_id;
-            let instance_index = battlefield_instance_index(state, *object_id);
+            let instance_index = battlefield_instance_index(state, *object_id, normalized);
             CanonicalAction::ActivateManaAbility {
                 source_card_id: card_id,
                 source_instance_index: instance_index,
@@ -255,10 +255,10 @@ fn canonicalize_with_normalization(
         } => {
             let inst = &state.objects[object_id];
             let card_id = inst.card_def_id;
-            let instance_index = battlefield_instance_index(state, *object_id);
+            let instance_index = battlefield_instance_index(state, *object_id, normalized);
             let canonical_targets: Vec<CanonicalTarget> = targets
                 .iter()
-                .map(|t| canonicalize_target(t, state))
+                .map(|t| canonicalize_target(t, state, normalized))
                 .collect();
             CanonicalAction::ActivateAbility {
                 source_card_id: card_id,
@@ -273,7 +273,7 @@ fn canonicalize_with_normalization(
                 .iter()
                 .map(|&obj_id| {
                     let card_id = state.objects[&obj_id].card_def_id;
-                    let idx = battlefield_instance_index(state, obj_id);
+                    let idx = battlefield_instance_index(state, obj_id, normalized);
                     (card_id, idx)
                 })
                 .collect();
@@ -288,9 +288,9 @@ fn canonicalize_with_normalization(
                 .iter()
                 .map(|&(blocker_id, attacker_id)| {
                     let b_card = state.objects[&blocker_id].card_def_id;
-                    let b_idx = battlefield_instance_index(state, blocker_id);
+                    let b_idx = battlefield_instance_index(state, blocker_id, normalized);
                     let a_card = state.objects[&attacker_id].card_def_id;
-                    let a_idx = battlefield_instance_index(state, attacker_id);
+                    let a_idx = battlefield_instance_index(state, attacker_id, normalized);
                     (b_card, b_idx, a_card, a_idx)
                 })
                 .collect();
@@ -301,7 +301,7 @@ fn canonicalize_with_normalization(
         Action::Discard { object_id } => {
             let inst = &state.objects[object_id];
             let card_id = inst.card_def_id;
-            let hand_index = hand_instance_index(state, inst.owner, *object_id);
+            let hand_index = hand_instance_index(state, inst.owner, *object_id, normalized);
             CanonicalAction::Discard { card_id, hand_index }
         }
 
@@ -311,21 +311,21 @@ fn canonicalize_with_normalization(
                 .map(|&(source_id, ability_index)| {
                     let trigger = state.pending_triggers.iter()
                         .find(|t| t.source_id == source_id && t.ability_index == ability_index)
-                        .expect("ordered trigger must still be pending");
+                        .ok_or(crate::simulation::TerminationReason::StateEncoding)?;
                     let card_id = trigger.context.source_card_id;
-                    let instance_index = pending_source_index(state, source_id, card_id);
-                    (card_id, instance_index, ability_index)
+                    let instance_index = pending_source_index(state, source_id, card_id, normalized);
+                    Ok((card_id, instance_index, ability_index))
                 })
-                .collect();
+                .collect::<Result<Vec<_>, crate::simulation::TerminationReason>>()?;
             CanonicalAction::OrderTriggers { source_card_ids }
         }
 
         Action::OrderTriggerOccurrences { ordering } => {
-            let normalized = normalized.expect("occurrence ordering requires one coherent witness");
+            let retained = &normalized.retained;
             let occurrences = ordering.iter().map(|&slot| {
-                canonical_pending_occurrence(state, slot, normalized)
-                    .expect("ordered occurrence must still be pending")
-            }).collect();
+                canonical_pending_occurrence(state, slot, retained)
+                    .ok_or(crate::simulation::TerminationReason::StateEncoding)
+            }).collect::<Result<Vec<_>, _>>()?;
             CanonicalAction::OrderTriggerOccurrences { occurrences }
         }
 
@@ -334,12 +334,12 @@ fn canonicalize_with_normalization(
             assignment,
         } => {
             let a_card = state.objects[attacker].card_def_id;
-            let a_idx = battlefield_instance_index(state, *attacker);
+            let a_idx = battlefield_instance_index(state, *attacker, normalized);
             let canonical_assignment: Vec<(CardId, usize, u32)> = assignment
                 .iter()
                 .map(|&(blocker_id, damage)| {
                     let b_card = state.objects[&blocker_id].card_def_id;
-                    let b_idx = battlefield_instance_index(state, blocker_id);
+                    let b_idx = battlefield_instance_index(state, blocker_id, normalized);
                     (b_card, b_idx, damage)
                 })
                 .collect();
@@ -355,7 +355,7 @@ fn canonicalize_with_normalization(
             let card_id = inst.card_def_id;
             let canonical_targets: Vec<CanonicalTarget> = targets
                 .iter()
-                .map(|t| canonicalize_target(t, state))
+                .map(|t| canonicalize_target(t, state, normalized))
                 .collect();
             CanonicalAction::CastCommander {
                 card_id,
@@ -368,7 +368,7 @@ fn canonicalize_with_normalization(
                 .iter()
                 .map(|&(source_id, effect_index)| {
                     let card_id = state.objects[&source_id].card_def_id;
-                    let instance_index = battlefield_instance_index(state, source_id);
+                    let instance_index = battlefield_instance_index(state, source_id, normalized);
                     (card_id, instance_index, effect_index)
                 })
                 .collect();
@@ -389,7 +389,7 @@ fn canonicalize_with_normalization(
         Action::ActivateLoyalty { object_id, ability_index } => {
             let inst = &state.objects[object_id];
             let card_id = inst.card_def_id;
-            let instance_index = battlefield_instance_index(state, *object_id);
+            let instance_index = battlefield_instance_index(state, *object_id, normalized);
             CanonicalAction::ActivateLoyalty {
                 source_card_id: card_id,
                 source_instance_index: instance_index,
@@ -400,25 +400,25 @@ fn canonicalize_with_normalization(
         Action::Equip { equipment_id, target_id } => {
             let eq_inst = &state.objects[equipment_id];
             let eq_card_id = eq_inst.card_def_id;
-            let eq_idx = battlefield_instance_index(state, *equipment_id);
+            let equipment_coordinate = coordinate(state, normalized, *equipment_id)?;
             let tgt_inst = &state.objects[target_id];
             let tgt_card_id = tgt_inst.card_def_id;
-            let tgt_idx = battlefield_instance_index(state, *target_id);
+            let target_coordinate = coordinate(state, normalized, *target_id)?;
             CanonicalAction::Equip {
                 equipment_card_id: eq_card_id,
-                equipment_instance_index: eq_idx,
+                equipment_coordinate,
                 target_card_id: tgt_card_id,
-                target_instance_index: tgt_idx,
+                target_coordinate,
             }
         }
 
         Action::CastFromGraveyard { object_id, targets } => {
             let inst = &state.objects[object_id];
             let card_id = inst.card_def_id;
-            let graveyard_index = graveyard_instance_index(state, inst.owner, *object_id);
+            let graveyard_index = graveyard_instance_index(state, inst.owner, *object_id, normalized);
             let canonical_targets: Vec<CanonicalTarget> = targets
                 .iter()
-                .map(|t| canonicalize_target(t, state))
+                .map(|t| canonicalize_target(t, state, normalized))
                 .collect();
             CanonicalAction::CastFromGraveyard {
                 card_id,
@@ -436,13 +436,13 @@ fn canonicalize_with_normalization(
         Action::PlayLandFromGraveyard { object_id } => {
             let inst = &state.objects[object_id];
             let card_id = inst.card_def_id;
-            let graveyard_index = graveyard_instance_index(state, inst.owner, *object_id);
+            let graveyard_index = graveyard_instance_index(state, inst.owner, *object_id, normalized);
             CanonicalAction::PlayLandFromGraveyard {
                 card_id,
                 graveyard_index,
             }
         }
-    }
+    })
 }
 
 /// Convert a `CanonicalAction` back into a concrete `Action` given the
@@ -458,7 +458,18 @@ pub fn resolve(
     canonical: &CanonicalAction,
     state: &GameState,
     player: PlayerIndex,
-) -> Option<Action> {
+) -> Result<Option<Action>, crate::simulation::TerminationReason> {
+    let normalized = normalize_player_retained(state, player)?;
+    resolve_with_normalization(canonical, state, player, &normalized)
+}
+
+pub fn resolve_with_normalization(
+    canonical: &CanonicalAction,
+    state: &GameState,
+    player: PlayerIndex,
+    normalized: &crate::public_projection::JointPublicNormalization,
+) -> Result<Option<Action>, crate::simulation::TerminationReason> {
+    Ok((|| -> Option<Action> {
     match canonical {
         CanonicalAction::ChooseNextCopy { item_index } => {
             let pending = state.pending_copy_order.as_ref()?;
@@ -470,15 +481,15 @@ pub fn resolve(
         CanonicalAction::Concede => Some(Action::Concede),
 
         CanonicalAction::PlayLand { card_id, hand_index } => {
-            let obj_id = find_in_hand_by_index(state, player, *card_id, *hand_index)?;
+            let obj_id = find_in_hand_by_index(state, player, *card_id, *hand_index, normalized)?;
             Some(Action::PlayLand { object_id: obj_id })
         }
 
         CanonicalAction::CastSpell { card_id, hand_index, targets } => {
-            let obj_id = find_in_hand_by_index(state, player, *card_id, *hand_index)?;
+            let obj_id = find_in_hand_by_index(state, player, *card_id, *hand_index, normalized)?;
             let concrete_targets: Vec<Target> = targets
                 .iter()
-                .filter_map(|t| resolve_target(t, state))
+                .filter_map(|t| resolve_target(t, state, normalized))
                 .collect();
             if concrete_targets.len() != targets.len() {
                 return None;
@@ -495,7 +506,7 @@ pub fn resolve(
             ability_index,
         } => {
             let obj_id =
-                find_on_battlefield_by_index(state, *source_card_id, *source_instance_index)?;
+                find_on_battlefield_by_index(state, *source_card_id, *source_instance_index, normalized)?;
             Some(Action::ActivateManaAbility {
                 object_id: obj_id,
                 ability_index: *ability_index,
@@ -509,10 +520,10 @@ pub fn resolve(
             targets,
         } => {
             let obj_id =
-                find_on_battlefield_by_index(state, *source_card_id, *source_instance_index)?;
+                find_on_battlefield_by_index(state, *source_card_id, *source_instance_index, normalized)?;
             let concrete_targets: Vec<Target> = targets
                 .iter()
-                .filter_map(|t| resolve_target(t, state))
+                .filter_map(|t| resolve_target(t, state, normalized))
                 .collect();
             if concrete_targets.len() != targets.len() {
                 return None;
@@ -527,7 +538,7 @@ pub fn resolve(
         CanonicalAction::DeclareAttackers { attacker_card_ids } => {
             let mut attackers = Vec::with_capacity(attacker_card_ids.len());
             for &(card_id, idx) in attacker_card_ids {
-                let obj_id = find_on_battlefield_by_index(state, card_id, idx)?;
+                let obj_id = find_on_battlefield_by_index(state, card_id, idx, normalized)?;
                 attackers.push(obj_id);
             }
             Some(Action::DeclareAttackers { attackers })
@@ -536,15 +547,15 @@ pub fn resolve(
         CanonicalAction::DeclareBlockers { assignments } => {
             let mut blocks = Vec::with_capacity(assignments.len());
             for &(b_card, b_idx, a_card, a_idx) in assignments {
-                let blocker = find_on_battlefield_by_index(state, b_card, b_idx)?;
-                let attacker = find_on_battlefield_by_index(state, a_card, a_idx)?;
+                let blocker = find_on_battlefield_by_index(state, b_card, b_idx, normalized)?;
+                let attacker = find_on_battlefield_by_index(state, a_card, a_idx, normalized)?;
                 blocks.push((blocker, attacker));
             }
             Some(Action::DeclareBlockers { blocks })
         }
 
         CanonicalAction::Discard { card_id, hand_index } => {
-            let obj_id = find_in_hand_by_index(state, player, *card_id, *hand_index)?;
+            let obj_id = find_in_hand_by_index(state, player, *card_id, *hand_index, normalized)?;
             Some(Action::Discard { object_id: obj_id })
         }
 
@@ -562,7 +573,7 @@ pub fn resolve(
             let mut used: Vec<bool> = vec![false; player_triggers.len()];
 
             for &(card_id, instance_index, ability_index) in source_card_ids {
-                let target_obj_id = find_pending_source_by_index(state, card_id, instance_index);
+                let target_obj_id = find_pending_source_by_index(state, card_id, instance_index, normalized);
                 let mut found = false;
                 for (i, &(src_id, ab_idx)) in player_triggers.iter().enumerate() {
                     if !used[i]
@@ -583,13 +594,13 @@ pub fn resolve(
         }
 
         CanonicalAction::OrderTriggerOccurrences { occurrences } => {
-            let normalized = normalize_player_retained(state, player);
+            let retained = &normalized.retained;
             let mut ordering = Vec::with_capacity(occurrences.len());
             let mut used = vec![false; state.pending_triggers.len()];
             for wanted in occurrences {
                 let slot = state.pending_triggers.iter().enumerate()
                     .find(|(slot, trigger)| !used[*slot] && trigger.controller == player
-                        && canonical_pending_occurrence(state, *slot, &normalized).as_ref() == Some(wanted))
+                        && canonical_pending_occurrence(state, *slot, retained).as_ref() == Some(wanted))
                     .map(|(slot, _)| slot)?;
                 used[slot] = true;
                 ordering.push(slot);
@@ -603,10 +614,10 @@ pub fn resolve(
             assignment,
         } => {
             let attacker =
-                find_on_battlefield_by_index(state, *attacker_card_id, *attacker_instance_index)?;
+                find_on_battlefield_by_index(state, *attacker_card_id, *attacker_instance_index, normalized)?;
             let mut concrete: Vec<(ObjectId, u32)> = Vec::with_capacity(assignment.len());
             for &(b_card, b_idx, damage) in assignment {
-                let blocker = find_on_battlefield_by_index(state, b_card, b_idx)?;
+                let blocker = find_on_battlefield_by_index(state, b_card, b_idx, normalized)?;
                 concrete.push((blocker, damage));
             }
             Some(Action::OrderDamageAssignment {
@@ -620,7 +631,7 @@ pub fn resolve(
             let obj_id = find_in_command_zone(state, player, *card_id)?;
             let concrete_targets: Vec<Target> = targets
                 .iter()
-                .filter_map(|t| resolve_target(t, state))
+                .filter_map(|t| resolve_target(t, state, normalized))
                 .collect();
             if concrete_targets.len() != targets.len() {
                 return None;
@@ -634,7 +645,7 @@ pub fn resolve(
         CanonicalAction::ChooseReplacementOrder { source_card_ids } => {
             let mut ordering = Vec::with_capacity(source_card_ids.len());
             for &(card_id, instance_index, effect_index) in source_card_ids {
-                let obj_id = find_on_battlefield_by_index(state, card_id, instance_index)?;
+                let obj_id = find_on_battlefield_by_index(state, card_id, instance_index, normalized)?;
                 ordering.push((obj_id, effect_index));
             }
             Some(Action::ChooseReplacementOrder { ordering })
@@ -648,7 +659,7 @@ pub fn resolve(
         CanonicalAction::MulliganMulligan => Some(Action::MulliganMulligan),
         CanonicalAction::MulliganBottomCard { card_id } => {
             // Match first instance — strategically equivalent for duplicates
-            let obj_id = find_in_hand_by_index(state, player, *card_id, 0)?;
+            let obj_id = find_in_hand_by_index(state, player, *card_id, 0, normalized)?;
             Some(Action::MulliganBottomCard { object_id: obj_id })
         }
 
@@ -658,7 +669,7 @@ pub fn resolve(
             ability_index,
         } => {
             let obj_id =
-                find_on_battlefield_by_index(state, *source_card_id, *source_instance_index)?;
+                find_on_battlefield_by_index(state, *source_card_id, *source_instance_index, normalized)?;
             Some(Action::ActivateLoyalty {
                 object_id: obj_id,
                 ability_index: *ability_index,
@@ -667,12 +678,12 @@ pub fn resolve(
 
         CanonicalAction::Equip {
             equipment_card_id,
-            equipment_instance_index,
+            equipment_coordinate,
             target_card_id,
-            target_instance_index,
+            target_coordinate,
         } => {
-            let equipment_id = find_on_battlefield_by_index(state, *equipment_card_id, *equipment_instance_index)?;
-            let target_id = find_on_battlefield_by_index(state, *target_card_id, *target_instance_index)?;
+            let equipment_id = resolve_coordinate(state, normalized, *equipment_card_id, *equipment_coordinate)?;
+            let target_id = resolve_coordinate(state, normalized, *target_card_id, *target_coordinate)?;
             Some(Action::Equip { equipment_id, target_id })
         }
 
@@ -681,10 +692,10 @@ pub fn resolve(
             graveyard_index,
             targets,
         } => {
-            let obj_id = find_in_graveyard_by_index(state, player, *card_id, *graveyard_index)?;
+            let obj_id = find_in_graveyard_by_index(state, player, *card_id, *graveyard_index, normalized)?;
             let concrete_targets: Vec<Target> = targets
                 .iter()
-                .filter_map(|ct| resolve_target(ct, state))
+                .filter_map(|ct| resolve_target(ct, state, normalized))
                 .collect();
             if concrete_targets.len() != targets.len() {
                 return None;
@@ -705,53 +716,52 @@ pub fn resolve(
             card_id,
             graveyard_index,
         } => {
-            let obj_id = find_in_graveyard_by_index(state, player, *card_id, *graveyard_index)?;
+            let obj_id = find_in_graveyard_by_index(state, player, *card_id, *graveyard_index, normalized)?;
             Some(Action::PlayLandFromGraveyard { object_id: obj_id })
         }
     }
+
+    })())
 }
 
 /// Pending abilities retain their source identity after the source leaves.
 /// Use occurrence among pending sources rather than battlefield position.
-fn pending_sources_with_card(state: &GameState, card_id: CardId) -> Vec<ObjectId> {
+fn pending_sources_with_card(state: &GameState, card_id: CardId, normalized: &crate::public_projection::JointPublicNormalization) -> Vec<ObjectId> {
     let mut sources = Vec::new();
     for trigger in &state.pending_triggers {
         if trigger.context.source_card_id == card_id && !sources.contains(&trigger.source_id) {
             sources.push(trigger.source_id);
         }
     }
+    // Preserve the accepted >6 own-state FIFO boundary. Bounded ordering
+    // decisions use the source identity from this same immutable witness.
+    if state.pending_triggers.len() <= 6 {
+        sources.sort_by_key(|id| state.pending_triggers.iter().find(|trigger| trigger.source_id == *id && trigger.context.source_card_id == card_id)
+            .and_then(|trigger| normalized.exact_to_coordinate.get(&crate::card::ExactObjectRef { id: *id, generation: trigger.context.source_generation })).copied());
+    }
     sources
 }
 
-fn pending_source_index(state: &GameState, source_id: ObjectId, card_id: CardId) -> usize {
-    pending_sources_with_card(state, card_id).iter().position(|&id| id == source_id).unwrap_or(0)
+fn pending_source_index(state: &GameState, source_id: ObjectId, card_id: CardId, normalized: &crate::public_projection::JointPublicNormalization) -> usize {
+    pending_sources_with_card(state, card_id, normalized).iter().position(|&id| id == source_id).unwrap_or(0)
 }
 
-fn find_pending_source_by_index(state: &GameState, card_id: CardId, index: usize) -> Option<ObjectId> {
-    pending_sources_with_card(state, card_id).get(index).copied()
+fn find_pending_source_by_index(state: &GameState, card_id: CardId, index: usize, normalized: &crate::public_projection::JointPublicNormalization) -> Option<ObjectId> {
+    pending_sources_with_card(state, card_id, normalized).get(index).copied()
 }
 
 fn canonical_pending_occurrence(
     state: &GameState, slot: usize,
     normalized: &crate::rules::transitions::RetainedNormalization,
 ) -> Option<crate::rules::transitions::ZoneOccurrenceInfo> {
-    let trigger = state.pending_triggers.get(slot)?;
-    if trigger.context.zone_transition.is_some() {
-        return normalized.pending_occurrences.get(slot)?.clone();
-    }
-    Some(crate::rules::transitions::public_occurrence_info(
-        &trigger.context, trigger.ability_index, trigger.controller, None,
-        None, None, None, None,
-        Some(pending_source_index(state, trigger.source_id, trigger.context.source_card_id)),
-    ))
+    let _ = state.pending_triggers.get(slot)?;
+    normalized.pending_occurrences.get(slot)?.clone()
 }
 
 /// Public action keys use the same player-relative projection as information
 /// sets. Raw object lookups are used only after these coordinates are fixed.
-pub fn normalize_player_retained(
-    state: &GameState, player: PlayerIndex,
-) -> crate::rules::transitions::RetainedNormalization {
-    crate::info_set::InformationSet::normalize_retained_view(&state.visible_state(player))
+pub fn normalize_player_retained<'a>(state: &'a GameState, player: PlayerIndex) -> Result<crate::public_projection::JointPublicNormalization<'a>, crate::simulation::TerminationReason> {
+    crate::public_projection::JointPublicNormalization::for_state(state, player)
 }
 
 // ---------------------------------------------------------------------------
@@ -759,7 +769,7 @@ pub fn normalize_player_retained(
 // ---------------------------------------------------------------------------
 
 /// Canonicalize a concrete `Target` to a `CanonicalTarget`.
-fn canonicalize_target(target: &Target, state: &GameState) -> CanonicalTarget {
+fn canonicalize_target(target: &Target, state: &GameState, normalized: &crate::public_projection::JointPublicNormalization) -> CanonicalTarget {
     match target {
         Target::StackEntry(id) => CanonicalTarget::StackEntry {
             stack_index: state.stack.iter().position(|entry| entry.id == *id && entry.source.is_spell()),
@@ -769,7 +779,11 @@ fn canonicalize_target(target: &Target, state: &GameState) -> CanonicalTarget {
             let inst = &state.objects[obj_id];
             let card_id = inst.card_def_id;
             let controller = inst.controller;
-            let instance_index = battlefield_instance_index(state, *obj_id);
+            let mut siblings: Vec<_> = state.battlefield.iter().copied().filter(|id| {
+                let object = &state.objects[id]; object.card_def_id == card_id && object.controller == controller
+            }).collect();
+            siblings.sort_by_key(|id| state.exact_object(*id).and_then(|exact| normalized.exact_to_coordinate.get(&exact)).copied());
+            let instance_index = siblings.iter().position(|id| id == obj_id).unwrap_or(0);
             CanonicalTarget::Object {
                 card_id,
                 controller,
@@ -780,7 +794,7 @@ fn canonicalize_target(target: &Target, state: &GameState) -> CanonicalTarget {
 }
 
 /// Resolve a `CanonicalTarget` back to a concrete `Target`.
-fn resolve_target(target: &CanonicalTarget, state: &GameState) -> Option<Target> {
+fn resolve_target(target: &CanonicalTarget, state: &GameState, normalized: &crate::public_projection::JointPublicNormalization) -> Option<Target> {
     match target {
         CanonicalTarget::StackEntry { stack_index } => {
             let entry = state.stack.get((*stack_index)?)?;
@@ -797,15 +811,15 @@ fn resolve_target(target: &CanonicalTarget, state: &GameState) -> Option<Target>
                 *card_id,
                 *controller,
                 *instance_index,
-            )?;
+                normalized)?;
             Some(Target::Object(obj_id))
         }
     }
 }
 
 /// Compute the instance index of `obj_id` among all battlefield permanents
-/// sharing the same `card_def_id`. Ordered by ObjectId for determinism.
-fn battlefield_instance_index(state: &GameState, obj_id: ObjectId) -> usize {
+/// sharing the same `card_def_id`. Ordered by the immutable public decision witness.
+fn battlefield_instance_index(state: &GameState, obj_id: ObjectId, normalized: &crate::public_projection::JointPublicNormalization) -> usize {
     let card_id = state.objects[&obj_id].card_def_id;
     let mut siblings: Vec<ObjectId> = state
         .battlefield
@@ -813,13 +827,13 @@ fn battlefield_instance_index(state: &GameState, obj_id: ObjectId) -> usize {
         .copied()
         .filter(|&id| state.objects[&id].card_def_id == card_id)
         .collect();
-    siblings.sort();
+    siblings.sort_by_key(|id| state.exact_object(*id).and_then(|exact| normalized.exact_to_coordinate.get(&exact)).copied());
     siblings.iter().position(|&id| id == obj_id).unwrap_or(0)
 }
 
 /// Compute the instance index of `obj_id` among cards in the player's hand
-/// sharing the same `card_def_id`. Ordered by ObjectId for determinism.
-fn hand_instance_index(state: &GameState, player: PlayerIndex, obj_id: ObjectId) -> usize {
+/// sharing the same `card_def_id`. Ordered by the immutable public decision witness.
+fn hand_instance_index(state: &GameState, player: PlayerIndex, obj_id: ObjectId, normalized: &crate::public_projection::JointPublicNormalization) -> usize {
     let card_id = state.objects[&obj_id].card_def_id;
     let mut siblings: Vec<ObjectId> = state.players[player]
         .hand
@@ -827,46 +841,45 @@ fn hand_instance_index(state: &GameState, player: PlayerIndex, obj_id: ObjectId)
         .copied()
         .filter(|&id| state.is_card(id) && state.objects[&id].card_def_id == card_id)
         .collect();
-    siblings.sort();
+    siblings.sort_by_key(|id| state.exact_object(*id).and_then(|exact| normalized.exact_to_coordinate.get(&exact)).copied());
     siblings.iter().position(|&id| id == obj_id).unwrap_or(0)
 }
 
-/// Find the N-th instance (by ObjectId order) of `card_id` in a player's hand.
+/// Find the N-th instance (by witness order) of `card_id` in a player's hand.
 fn find_in_hand_by_index(
     state: &GameState,
     player: PlayerIndex,
     card_id: CardId,
-    instance_index: usize,
-) -> Option<ObjectId> {
+    instance_index: usize, normalized: &crate::public_projection::JointPublicNormalization) -> Option<ObjectId> {
     let mut matches: Vec<ObjectId> = state.players[player]
         .hand
         .iter()
         .copied()
         .filter(|&id| state.is_card(id) && state.objects[&id].card_def_id == card_id)
         .collect();
-    matches.sort();
+    matches.sort_by_key(|id| state.exact_object(*id).and_then(|exact| normalized.exact_to_coordinate.get(&exact)).copied());
     matches.get(instance_index).copied()
 }
 
-/// Find the N-th instance (by ObjectId order) of `card_id` on the battlefield.
+/// Find the N-th instance (by witness order) of `card_id` on the battlefield.
 fn find_on_battlefield_by_index(
     state: &GameState,
     card_id: CardId,
     instance_index: usize,
-) -> Option<ObjectId> {
+    normalized: &crate::public_projection::JointPublicNormalization) -> Option<ObjectId> {
     let mut matches: Vec<ObjectId> = state
         .battlefield
         .iter()
         .copied()
         .filter(|&id| state.objects[&id].card_def_id == card_id)
         .collect();
-    matches.sort();
+    matches.sort_by_key(|id| state.exact_object(*id).and_then(|exact| normalized.exact_to_coordinate.get(&exact)).copied());
     matches.get(instance_index).copied()
 }
 
 /// Compute the instance index of `obj_id` among cards in the player's graveyard
-/// sharing the same `card_def_id`. Ordered by ObjectId for determinism.
-fn graveyard_instance_index(state: &GameState, player: PlayerIndex, obj_id: ObjectId) -> usize {
+/// sharing the same `card_def_id`. Ordered by the immutable public decision witness.
+fn graveyard_instance_index(state: &GameState, player: PlayerIndex, obj_id: ObjectId, normalized: &crate::public_projection::JointPublicNormalization) -> usize {
     let card_id = state.objects[&obj_id].card_def_id;
     let mut siblings: Vec<ObjectId> = state.players[player]
         .graveyard
@@ -874,7 +887,7 @@ fn graveyard_instance_index(state: &GameState, player: PlayerIndex, obj_id: Obje
         .copied()
         .filter(|&id| state.is_card(id) && state.objects[&id].card_def_id == card_id)
         .collect();
-    siblings.sort();
+    siblings.sort_by_key(|id| state.exact_object(*id).and_then(|exact| normalized.exact_to_coordinate.get(&exact)).copied());
     siblings.iter().position(|&id| id == obj_id).unwrap_or(0)
 }
 
@@ -883,15 +896,14 @@ fn find_in_graveyard_by_index(
     state: &GameState,
     player: PlayerIndex,
     card_id: CardId,
-    instance_index: usize,
-) -> Option<ObjectId> {
+    instance_index: usize, normalized: &crate::public_projection::JointPublicNormalization) -> Option<ObjectId> {
     let mut matches: Vec<ObjectId> = state.players[player]
         .graveyard
         .iter()
         .copied()
         .filter(|&id| state.is_card(id) && state.objects[&id].card_def_id == card_id)
         .collect();
-    matches.sort();
+    matches.sort_by_key(|id| state.exact_object(*id).and_then(|exact| normalized.exact_to_coordinate.get(&exact)).copied());
     matches.get(instance_index).copied()
 }
 
@@ -914,7 +926,7 @@ fn find_on_battlefield_by_controller(
     card_id: CardId,
     controller: PlayerIndex,
     instance_index: usize,
-) -> Option<ObjectId> {
+    normalized: &crate::public_projection::JointPublicNormalization) -> Option<ObjectId> {
     let mut matches: Vec<ObjectId> = state
         .battlefield
         .iter()
@@ -924,7 +936,7 @@ fn find_on_battlefield_by_controller(
             inst.card_def_id == card_id && inst.controller == controller
         })
         .collect();
-    matches.sort();
+    matches.sort_by_key(|id| state.exact_object(*id).and_then(|exact| normalized.exact_to_coordinate.get(&exact)).copied());
     matches.get(instance_index).copied()
 }
 
@@ -956,10 +968,10 @@ mod tests {
     fn test_canonicalize_pass_priority() {
         let state = setup_test_state();
         let action = Action::PassPriority;
-        let canonical = canonicalize(&action, &state);
+        let canonical = canonicalize(&action, &state).unwrap();
         assert_eq!(canonical, CanonicalAction::PassPriority);
 
-        let resolved = resolve(&canonical, &state, 0).unwrap();
+        let resolved = resolve(&canonical, &state, 0).unwrap().unwrap();
         assert_eq!(resolved, action);
     }
 
@@ -967,10 +979,10 @@ mod tests {
     fn test_canonicalize_concede() {
         let state = setup_test_state();
         let action = Action::Concede;
-        let canonical = canonicalize(&action, &state);
+        let canonical = canonicalize(&action, &state).unwrap();
         assert_eq!(canonical, CanonicalAction::Concede);
 
-        let resolved = resolve(&canonical, &state, 0).unwrap();
+        let resolved = resolve(&canonical, &state, 0).unwrap().unwrap();
         assert_eq!(resolved, action);
     }
 
@@ -985,8 +997,8 @@ mod tests {
         state.phase = Phase::PreCombatMain;
 
         let action = Action::PlayLand { object_id: land_id };
-        let canonical = canonicalize(&action, &state);
-        let resolved = resolve(&canonical, &state, 0).unwrap();
+        let canonical = canonicalize(&action, &state).unwrap();
+        let resolved = resolve(&canonical, &state, 0).unwrap().unwrap();
         assert_eq!(resolved, action);
     }
 
@@ -1012,8 +1024,8 @@ mod tests {
             object_id: bolt_id,
             targets: vec![Target::Object(bear_id)],
         };
-        let canonical = canonicalize(&action, &state);
-        let resolved = resolve(&canonical, &state, 0).unwrap();
+        let canonical = canonicalize(&action, &state).unwrap();
+        let resolved = resolve(&canonical, &state, 0).unwrap().unwrap();
         assert_eq!(resolved, action);
     }
 
@@ -1033,8 +1045,8 @@ mod tests {
             object_id: bolt_id,
             targets: vec![Target::Player(1)],
         };
-        let canonical = canonicalize(&action, &state);
-        let resolved = resolve(&canonical, &state, 0).unwrap();
+        let canonical = canonicalize(&action, &state).unwrap();
+        let resolved = resolve(&canonical, &state, 0).unwrap().unwrap();
         assert_eq!(resolved, action);
     }
 
@@ -1051,8 +1063,8 @@ mod tests {
         let action = Action::Discard {
             object_id: card_id,
         };
-        let canonical = canonicalize(&action, &state);
-        let resolved = resolve(&canonical, &state, 0).unwrap();
+        let canonical = canonicalize(&action, &state).unwrap();
+        let resolved = resolve(&canonical, &state, 0).unwrap().unwrap();
         assert_eq!(resolved, action);
     }
 
@@ -1078,8 +1090,8 @@ mod tests {
         let action = Action::DeclareAttackers {
             attackers: vec![bear1, bear2],
         };
-        let canonical = canonicalize(&action, &state);
-        let resolved = resolve(&canonical, &state, 0).unwrap();
+        let canonical = canonicalize(&action, &state).unwrap();
+        let resolved = resolve(&canonical, &state, 0).unwrap().unwrap();
         // Attackers may be reordered due to sorting in canonical form,
         // but the sets should be equal
         if let Action::DeclareAttackers { attackers: resolved_attackers } = &resolved {
@@ -1130,8 +1142,8 @@ mod tests {
         assert!(!actions.is_empty(), "Should have legal actions");
 
         for action in &actions {
-            let canonical = canonicalize(action, &state);
-            let resolved = resolve(&canonical, &state, 0);
+            let canonical = canonicalize(action, &state).unwrap();
+            let resolved = resolve(&canonical, &state, 0).unwrap();
             assert!(
                 resolved.is_some(),
                 "Failed to resolve canonical action {:?} (from {:?})",
@@ -1195,9 +1207,9 @@ mod retained_normalization_reuse_tests {
         assert_eq!(actions.len(), 720);
         let view = state.visible_state(0);
         NORMALIZATION_CALLS.with(|calls| calls.set(0));
-        let normalized = InformationSet::normalize_retained_view(&view);
-        let keys = canonicalize_actions(&actions, &state, &normalized);
-        let info = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
+        let normalized = InformationSet::normalize_retained_view(&view).unwrap();
+        let keys = canonicalize_actions(&actions, &state, &normalized).unwrap();
+        let info = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized).unwrap();
         NORMALIZATION_CALLS.with(|calls| assert_eq!(calls.get(), 1));
         assert_eq!(keys.len(), 720);
         assert_eq!(keys.iter().collect::<std::collections::HashSet<_>>().len(), 720);
@@ -1207,4 +1219,44 @@ mod retained_normalization_reuse_tests {
             normalized.stats.tied_cell_sizes, normalized.stats.component_sizes,
             normalized.encoding.len(), normalized.stats.elapsed_nanos);
     }
+}
+
+fn coordinate(state: &GameState, normalized: &crate::public_projection::JointPublicNormalization, id: ObjectId)
+    -> Result<crate::public_projection::SemanticCoordinate, crate::simulation::TerminationReason> {
+    let exact = state.exact_object(id).ok_or(crate::simulation::TerminationReason::StateEncoding)?;
+    normalized.exact_to_coordinate.get(&exact).copied().ok_or(crate::simulation::TerminationReason::StateEncoding)
+}
+fn resolve_coordinate(state: &GameState, normalized: &crate::public_projection::JointPublicNormalization,
+    definition: CardId, coordinate: crate::public_projection::SemanticCoordinate) -> Option<ObjectId> {
+    let exact = normalized.coordinate_to_exact.get(&coordinate)?;
+    let object = state.objects.get(&exact.id)?;
+    (state.battlefield.contains(&exact.id) && object.zone_change_count == exact.generation
+        && object.card_def_id == definition).then_some(exact.id)
+}
+fn validate_action_references(action: &Action, state: &GameState, normalized: &crate::public_projection::JointPublicNormalization) -> Result<(), crate::simulation::TerminationReason> {
+    // Serialize only this finite action enum to inventory its explicit runtime references.
+    // Each branch is handled below; no arbitrary GameState traversal occurs.
+    let objects: Vec<ObjectId> = match action {
+        Action::PlayLand { object_id } | Action::Discard { object_id } |
+        Action::MulliganBottomCard { object_id } | Action::PlayLandFromGraveyard { object_id } => vec![*object_id],
+        Action::CastSpell { object_id, .. } | Action::CastCommander { object_id, .. } |
+        Action::ActivateAbility { object_id, .. } | Action::ActivateManaAbility { object_id, .. } |
+        Action::ActivateLoyalty { object_id, .. } | Action::CastFromGraveyard { object_id, .. } => vec![*object_id],
+        Action::Equip { equipment_id, target_id } => vec![*equipment_id, *target_id],
+        Action::DeclareAttackers { attackers } => attackers.clone(),
+        Action::DeclareBlockers { blocks } => blocks.iter().flat_map(|&(a,b)| [a,b]).collect(),
+        Action::OrderDamageAssignment { attacker, assignment } => std::iter::once(*attacker).chain(assignment.iter().map(|(id,_)| *id)).collect(),
+        Action::ChooseReplacementOrder { ordering } => ordering.iter().map(|(id,_)| *id).collect(),
+        _ => vec![],
+    };
+    let targets = match action {
+        Action::CastSpell { targets, .. } | Action::CastCommander { targets, .. } | Action::ActivateAbility { targets, .. } | Action::CastFromGraveyard { targets, .. } => targets.as_slice(), _ => &[],
+    };
+    if objects.iter().chain(targets.iter().filter_map(|target| if let Target::Object(id) = target { Some(id) } else { None })).any(|id| !normalized.current_ids.contains(id)) {
+        return Err(crate::simulation::TerminationReason::StateEncoding);
+    }
+    if let Action::Equip { equipment_id, target_id } = action {
+        if !state.battlefield.contains(equipment_id) || !state.battlefield.contains(target_id) { return Err(crate::simulation::TerminationReason::StateEncoding); }
+    }
+    Ok(())
 }

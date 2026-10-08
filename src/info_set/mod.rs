@@ -148,25 +148,23 @@ impl InformationSet {
     /// Construct an `InformationSet` from a `PlayerView`.
     ///
     /// This is the sole entry point — MCCFR never reads raw `GameState`.
-    pub fn from_view(view: &PlayerView, _card_db: &CardDatabase) -> Self {
-        let normalized = Self::normalize_retained_view(view);
+    pub fn from_view(view: &PlayerView, _card_db: &CardDatabase) -> Result<Self, crate::simulation::TerminationReason> {
+        let normalized = Self::normalize_retained_view(view)?;
         Self::from_view_with_normalization(view, _card_db, &normalized)
     }
 
-    pub fn normalize_retained_view(view: &PlayerView) -> crate::rules::transitions::RetainedNormalization {
-        crate::rules::transitions::normalize_retained(view.pending_triggers, view.stack,
-            |context| view_source_info(view, context),
-            |id| view.visible_current_generation(id))
+    pub fn normalize_retained_view<'a>(view: &PlayerView<'a>) -> Result<crate::public_projection::JointPublicNormalization<'a>, crate::simulation::TerminationReason> {
+        crate::public_projection::JointPublicNormalization::from_view(view)
     }
 
     /// Observations and action coordinates share one immutable witness.
     pub fn from_view_with_normalization(
         view: &PlayerView, _card_db: &CardDatabase,
-        normalized: &crate::rules::transitions::RetainedNormalization,
-    ) -> Self {
+        joint: &crate::public_projection::JointPublicNormalization,
+    ) -> Result<Self, crate::simulation::TerminationReason> {
+        let normalized = &joint.retained;
+        Ok((|| -> Self {
         let phase = phase_to_u8(view.phase);
-        let group_ranks = &normalized.group_ranks;
-        let source_ranks = &normalized.source_ranks;
 
         // Hand: sorted CardIds for canonical representation
         let mut my_hand: Vec<u64> = view
@@ -199,14 +197,14 @@ impl InformationSet {
             .stack
             .iter()
             .enumerate()
-            .map(|(position, entry)| stack_entry_to_info(entry, view, &group_ranks, &source_ranks,
+            .map(|(position, entry)| stack_entry_to_info(entry, view,
                 normalized.stack_occurrences[position].clone()))
             .collect();
         let pending_cast_spells = view.pending_triggers.iter()
             .map(|trigger| trigger.context.cast_spell.as_ref()
                 .map(|spell| cast_spell_to_info(spell, &view.objects, view.stack)))
             .collect();
-        let mut pending_zone_triggers: Vec<_> = normalized.pending_occurrences.iter().flatten().cloned().collect();
+        let mut pending_zone_triggers: Vec<_> = normalized.pending_occurrences.iter().zip(view.pending_triggers).filter(|(_, trigger)| trigger.context.zone_transition.is_some()).filter_map(|(occurrence, _)| occurrence.clone()).collect();
         pending_zone_triggers.sort_by_cached_key(crate::rules::transitions::typed_bytes);
         let pending_copy_order = view.pending_copy_order.map(|pending| PendingCopyInfo {
             controller: pending.controller(),
@@ -217,7 +215,7 @@ impl InformationSet {
             }).collect(),
             selected_order: pending.selected_order().to_vec(),
             resolving_entry: pending.resolving_entry()
-                .map(|entry| stack_entry_to_info(entry, view, &group_ranks, &source_ranks, None)),
+                .map(|entry| stack_entry_to_info(entry, view, joint.resolving_occurrence.clone())),
         });
 
         // Graveyards: sorted CardIds
@@ -291,7 +289,7 @@ impl InformationSet {
             stack_entries,
             pending_cast_spells,
             pending_zone_triggers,
-            zone_normalization: normalized.encoding.clone(),
+            zone_normalization: joint.encoding.clone(),
             trigger_order_resume: view.trigger_order_resume,
             cleanup_needs_repeat: view.cleanup_needs_repeat,
             cleanup_discard_in_progress: view.cleanup_discard_in_progress,
@@ -309,7 +307,9 @@ impl InformationSet {
             my_commander_tax: view.my_commander_tax,
             my_mulligan_count: view.my_mulligan_count,
         }
-    }
+
+        })())
+}
 
     /// Compute a stable hash for this information set.
     ///
@@ -377,26 +377,9 @@ fn phase_to_u8(phase: crate::game::Phase) -> u8 {
 }
 
 /// Convert a `StackEntry` into observable `StackInfo`.
-fn view_source_info(
-    view: &PlayerView,
-    context: &crate::game::TriggerContext,
-) -> crate::rules::transitions::ZoneSourceInfo {
-    let zone = context.zone_transition.as_ref().expect("zone occurrence");
-    let exact = zone.source_before.object;
-    let live = (context.source_generation == exact.generation
-        && view.battlefield.contains(&exact.id)
-        && view.objects.get(&exact.id).is_some_and(|inst|
-            inst.zone_change_count == exact.generation))
-        .then(|| view.zone_live_sources.get(&exact.id))
-        .flatten();
-    zone.source_public_info(live)
-}
-
 fn stack_entry_to_info(
     entry: &StackEntry,
     view: &PlayerView,
-    group_ranks: &std::collections::HashMap<u64, usize>,
-    source_ranks: &std::collections::HashMap<crate::rules::transitions::ExactObjectRef, usize>,
     captured_zone: Option<crate::rules::transitions::ZoneOccurrenceInfo>,
 ) -> StackInfo {
     let objects = &view.objects;
@@ -420,21 +403,7 @@ fn stack_entry_to_info(
             .map(|spell| cast_spell_to_info(spell, objects, stack)),
         _ => None,
     };
-    let zone_occurrence = captured_zone.or_else(|| match &entry.source {
-        StackSource::TriggeredAbility { ability_index, context, .. }
-            if context.zone_transition.is_some() => {
-                let transition = context.zone_transition.as_ref().unwrap();
-                Some(crate::rules::transitions::public_occurrence_info(
-                    context, *ability_index, entry.controller,
-                    Some(view_source_info(view, context)),
-                    view.visible_current_generation(transition.subject.after.id),
-                    group_ranks.get(&transition.group_id).copied(),
-                    source_ranks.get(&transition.source_before.object).copied(),
-                    source_ranks.get(&transition.subject.before.object).copied(), None,
-                ))
-            }
-        _ => None,
-    });
+    let zone_occurrence = captured_zone;
 
     StackInfo {
         controller: entry.controller,
@@ -873,8 +842,8 @@ mod tests {
         let state = setup_test_state();
         let mut pending = state.clone();
         pending.loss_boundary.pending_failed_draws.push(0);
-        let plain = InformationSet::from_view(&state.visible_state(0), state.card_db());
-        let failed = InformationSet::from_view(&pending.visible_state(0), pending.card_db());
+        let plain = InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap();
+        let failed = InformationSet::from_view(&pending.visible_state(0), pending.card_db()).unwrap();
         assert_eq!(plain.zone_normalization, failed.zone_normalization);
         assert_ne!(IdentityAbstraction.abstract_info_set(&plain), IdentityAbstraction.abstract_info_set(&failed));
         assert_ne!(BucketedAbstraction.abstract_info_set(&plain), BucketedAbstraction.abstract_info_set(&failed));
@@ -892,7 +861,7 @@ mod tests {
         state.phase = Phase::PreCombatMain;
 
         let view = state.visible_state(0);
-        let info_set = InformationSet::from_view(&view, state.card_db());
+        let info_set = InformationSet::from_view(&view, state.card_db()).unwrap();
 
         assert_eq!(info_set.phase, 3); // PreCombatMain
         assert_eq!(info_set.active_player, 0);
@@ -913,10 +882,10 @@ mod tests {
         state.phase = Phase::PreCombatMain;
 
         let view1 = state.visible_state(0);
-        let info1 = InformationSet::from_view(&view1, state.card_db());
+        let info1 = InformationSet::from_view(&view1, state.card_db()).unwrap();
 
         let view2 = state.visible_state(0);
-        let info2 = InformationSet::from_view(&view2, state.card_db());
+        let info2 = InformationSet::from_view(&view2, state.card_db()).unwrap();
 
         assert_eq!(info1.hash_value(), info2.hash_value());
     }
@@ -936,10 +905,10 @@ mod tests {
         state2.phase = Phase::PreCombatMain;
 
         let view1 = state1.visible_state(0);
-        let info1 = InformationSet::from_view(&view1, state1.card_db());
+        let info1 = InformationSet::from_view(&view1, state1.card_db()).unwrap();
 
         let view2 = state2.visible_state(0);
-        let info2 = InformationSet::from_view(&view2, state2.card_db());
+        let info2 = InformationSet::from_view(&view2, state2.card_db()).unwrap();
 
         assert_ne!(info1.hash_value(), info2.hash_value());
     }
@@ -968,10 +937,10 @@ mod tests {
         state2.phase = Phase::PreCombatMain;
 
         let view1 = state1.visible_state(0);
-        let info1 = InformationSet::from_view(&view1, state1.card_db());
+        let info1 = InformationSet::from_view(&view1, state1.card_db()).unwrap();
 
         let view2 = state2.visible_state(0);
-        let info2 = InformationSet::from_view(&view2, state2.card_db());
+        let info2 = InformationSet::from_view(&view2, state2.card_db()).unwrap();
 
         // Same observable state, same hash (opponent hand contents hidden)
         assert_eq!(info1.hash_value(), info2.hash_value());
@@ -990,7 +959,7 @@ mod tests {
         state.phase = Phase::PreCombatMain;
 
         let view = state.visible_state(0);
-        let info_set = InformationSet::from_view(&view, state.card_db());
+        let info_set = InformationSet::from_view(&view, state.card_db()).unwrap();
 
         let identity = IdentityAbstraction;
         assert_eq!(
@@ -1017,10 +986,10 @@ mod tests {
         state2.players[0].life = 18;
 
         let view1 = state1.visible_state(0);
-        let info1 = InformationSet::from_view(&view1, state1.card_db());
+        let info1 = InformationSet::from_view(&view1, state1.card_db()).unwrap();
 
         let view2 = state2.visible_state(0);
-        let info2 = InformationSet::from_view(&view2, state2.card_db());
+        let info2 = InformationSet::from_view(&view2, state2.card_db()).unwrap();
 
         let bucketed = BucketedAbstraction;
         assert_eq!(
@@ -1049,10 +1018,10 @@ mod tests {
         state2.players[0].life = 15;
 
         let view1 = state1.visible_state(0);
-        let info1 = InformationSet::from_view(&view1, state1.card_db());
+        let info1 = InformationSet::from_view(&view1, state1.card_db()).unwrap();
 
         let view2 = state2.visible_state(0);
-        let info2 = InformationSet::from_view(&view2, state2.card_db());
+        let info2 = InformationSet::from_view(&view2, state2.card_db()).unwrap();
 
         let bucketed = BucketedAbstraction;
         assert_ne!(
@@ -1078,10 +1047,10 @@ mod tests {
         state2.turn_number = 3;
 
         let view1 = state1.visible_state(0);
-        let info1 = InformationSet::from_view(&view1, state1.card_db());
+        let info1 = InformationSet::from_view(&view1, state1.card_db()).unwrap();
 
         let view2 = state2.visible_state(0);
-        let info2 = InformationSet::from_view(&view2, state2.card_db());
+        let info2 = InformationSet::from_view(&view2, state2.card_db()).unwrap();
 
         let bucketed = BucketedAbstraction;
         assert_eq!(
@@ -1111,7 +1080,7 @@ mod tests {
                 state.turn_number = turn;
 
                 let view = state.visible_state(0);
-                let info_set = InformationSet::from_view(&view, state.card_db());
+                let info_set = InformationSet::from_view(&view, state.card_db()).unwrap();
 
                 identity_hashes.insert(identity.abstract_info_set(&info_set));
                 bucketed_hashes.insert(bucketed.abstract_info_set(&info_set));
@@ -1138,7 +1107,7 @@ mod tests {
         state.phase = Phase::PreCombatMain;
 
         let view = state.visible_state(0);
-        let info_set = InformationSet::from_view(&view, state.card_db());
+        let info_set = InformationSet::from_view(&view, state.card_db()).unwrap();
 
         let card_aware = CardAwareBucketedAbstraction { card_db: &db };
         let hash = card_aware.abstract_info_set(&info_set);

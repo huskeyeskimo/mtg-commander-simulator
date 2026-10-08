@@ -133,12 +133,12 @@ fn benchmark_mccfr_training_throughput() {
 
     let num_iterations = 20;
     let start = Instant::now();
-    let tables = train_extended(&state, num_iterations, &train_cfg);
+    let tables = train_extended(&state, num_iterations, &train_cfg).unwrap();
     let elapsed = start.elapsed();
 
-    let stats = training_stats(&tables);
+    let stats = training_stats(&tables).unwrap();
     let iters_per_sec = num_iterations as f64 / elapsed.as_secs_f64();
-    let exploitability = approximate_exploitability(&tables);
+    let exploitability = approximate_exploitability(&tables).unwrap();
 
     println!("\n=== MCCFR Training Throughput Benchmark ===");
     println!("Iterations:     {}", num_iterations);
@@ -178,14 +178,14 @@ fn benchmark_warm_start_vs_cold_start() {
 
     // Cold start
     let start = Instant::now();
-    let cold_tables = train_extended(&state, 10, &train_cfg);
+    let cold_tables = train_extended(&state, 10, &train_cfg).unwrap();
     let cold_elapsed = start.elapsed();
-    let cold_exploit = approximate_exploitability(&cold_tables);
+    let cold_exploit = approximate_exploitability(&cold_tables).unwrap();
 
     // Warm start (5 warmup games + 10 iterations)
     let start = Instant::now();
     let warm_tables = {
-        let mut tables = warm_start_from_greedy(&state, 5, &abstraction, 1.0);
+        let mut tables = warm_start_from_greedy(&state, 5, &abstraction, 1.0).unwrap();
         for _ in 0..10 {
             mtg_gto::solver::mccfr::run_iteration_with_abstraction(
                 &state,
@@ -194,12 +194,12 @@ fn benchmark_warm_start_vs_cold_start() {
                 train_cfg.abstraction,
                 &train_cfg.rollout_mode,
                 train_cfg.rollout_strategies,
-            );
+            ).unwrap();
         }
         tables
     };
     let warm_elapsed = start.elapsed();
-    let warm_exploit = approximate_exploitability(&warm_tables);
+    let warm_exploit = approximate_exploitability(&warm_tables).unwrap();
 
     println!("\n=== Warm Start vs Cold Start ===");
     println!("Cold start: {:.2}s  exploitability={:.4}", cold_elapsed.as_secs_f64(), cold_exploit);

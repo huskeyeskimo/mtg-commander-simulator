@@ -138,7 +138,7 @@ fn main() {
     };
 
     let progress_for_callback = progress_counter.clone();
-    let tables = mccfr::train_goldfish_parallel_with_progress(
+    let attempted_tables = mccfr::train_goldfish_parallel_with_progress(
         &state,
         iterations,
         num_shards,
@@ -153,6 +153,14 @@ fn main() {
     );
     training_done.store(true, Ordering::Relaxed);
     let train_time = t0.elapsed();
+    let tables = match attempted_tables {
+        Ok(tables) => tables,
+        Err(reason) => {
+            let _ = printer_handle.join();
+            eprintln!("INVALID reason={}", reason.code());
+            return;
+        }
+    };
     // Print final progress line
     eprintln!(
         "  iter {}/{} | {:.1}s elapsed",
@@ -160,8 +168,14 @@ fn main() {
     );
     let _ = printer_handle.join();
 
-    let stats = mccfr::training_stats(&tables);
-    let exploit = mccfr::approximate_exploitability(&tables);
+    let stats = match mccfr::training_stats(&tables) {
+        Ok(value) => value,
+        Err(reason) => { eprintln!("INVALID reason={}", reason.code()); return; }
+    };
+    let exploit = match mccfr::approximate_exploitability(&tables) {
+        Ok(value) => value,
+        Err(reason) => { eprintln!("INVALID reason={}", reason.code()); return; }
+    };
 
     println!("Training complete in {:.1}s", train_time.as_secs_f64());
     println!("  Info sets:      {}", stats.total_info_sets[0]);
@@ -229,7 +243,10 @@ fn main() {
     replay_state.card_db = Some(Arc::new(db.clone()));
     rules::setup_commander_game(&mut replay_state, &deck, &deck, commander, commander);
 
-    let snapshots = collect_policy_snapshots(&replay_state, &tables, &abstraction, 60);
+    let snapshots = match collect_policy_snapshots(&replay_state, &tables, &abstraction, 60) {
+        Ok(value) => value,
+        Err(reason) => { eprintln!("INVALID reason={}", reason.code()); return; }
+    };
 
     let mut shown = 0;
     for snap in &snapshots {

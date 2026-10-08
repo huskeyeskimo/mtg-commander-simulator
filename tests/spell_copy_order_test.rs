@@ -202,7 +202,7 @@ fn pending_state_survives_clone_snapshot_json_bincode() {
     let bin = bincode::serialize(&state).unwrap();
     let mut restored = vec![state.clone(), serde_json::from_slice::<GameState>(&json).unwrap(),
         bincode::deserialize::<GameState>(&bin).unwrap()];
-    state.restore(snap);
+    state.restore(snap).unwrap();
     restored.push(state);
     for mut candidate in restored {
         if candidate.card_db.is_none() { candidate.card_db = game().card_db; }
@@ -235,19 +235,19 @@ fn canonical_and_information_set_ignore_runtime_ids_but_track_choices_and_target
     }
     let mut state = targeted_state(0, false);
     let action = Action::ChooseNextCopy { item_index: 1 };
-    let canonical = canonicalize(&action, &state);
-    assert_eq!(resolve(&canonical, &state, 0), Some(action.clone()));
+    let canonical = canonicalize(&action, &state).unwrap();
+    assert_eq!(resolve(&canonical, &state, 0).unwrap(), Some(action.clone()));
     let equivalent = targeted_state(5, false);
-    let info = InformationSet::from_view(&state.visible_state(0), state.card_db());
-    let equivalent_info = InformationSet::from_view(&equivalent.visible_state(0), state.card_db());
+    let info = InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap();
+    let equivalent_info = InformationSet::from_view(&equivalent.visible_state(0), state.card_db()).unwrap();
     assert_eq!(info.pending_copy_order, equivalent_info.pending_copy_order);
     assert_eq!(info.hash_value(), equivalent_info.hash_value());
-    assert_eq!(resolve(&canonical, &equivalent, 0), Some(action));
+    assert_eq!(resolve(&canonical, &equivalent, 0).unwrap(), Some(action));
     let different = targeted_state(0, true);
-    let different_info = InformationSet::from_view(&different.visible_state(0), different.card_db());
+    let different_info = InformationSet::from_view(&different.visible_state(0), different.card_db()).unwrap();
     assert_ne!(info.pending_copy_order, different_info.pending_copy_order);
     rules::apply_action(&mut state, &Action::ChooseNextCopy { item_index: 0 });
-    let prefix_info = InformationSet::from_view(&state.visible_state(0), state.card_db());
+    let prefix_info = InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap();
     assert_ne!(info.pending_copy_order, prefix_info.pending_copy_order);
 }
 
@@ -261,7 +261,7 @@ fn large_batch_is_linear_and_automated_strategy_completes_it() {
     assert_eq!(legal_actions(&state).len(), 12);
     let strategy = GreedyStrategy;
     while state.pending_copy_order.is_some() {
-        let action = strategy.choose_action(&state, 0);
+        let action = strategy.choose_action(&state, 0).unwrap();
         assert!(matches!(action, Action::ChooseNextCopy { .. }));
         rules::apply_action(&mut state, &action);
     }
@@ -271,7 +271,7 @@ fn large_batch_is_linear_and_automated_strategy_completes_it() {
     let id = source(&mut goldfish, DRAW, vec![]);
     let item = prepared(&goldfish, id, 0, CopyTargetPolicy::Preserve);
     begin(&mut goldfish, vec![item.clone(), item]);
-    let action = GoldfishStrategy.choose_action(&goldfish, 0);
+    let action = GoldfishStrategy.choose_action(&goldfish, 0).unwrap();
     assert_eq!(action, Action::ChooseNextCopy { item_index: 0 });
     rules::apply_action(&mut goldfish, &action);
     assert!(goldfish.pending_copy_order.is_none());
@@ -387,7 +387,7 @@ fn nonactive_caster_retains_priority_after_ordering_cast_triggers_and_restore() 
     let binary = bincode::serialize(&state).unwrap();
     let mut restored = vec![state.clone(), serde_json::from_slice::<GameState>(&json).unwrap(),
         bincode::deserialize::<GameState>(&binary).unwrap()];
-    state.restore(snapshot);
+    state.restore(snapshot).unwrap();
     restored.push(state);
     for mut candidate in restored {
         if candidate.card_db.is_none() { candidate.card_db = game().card_db; }
@@ -589,7 +589,7 @@ fn pending_target_state(extra_ids: usize, reverse_battlefield: bool,
 }
 
 fn pending_info(state: &GameState) -> InformationSet {
-    InformationSet::from_view(&state.visible_state(0), state.card_db())
+    InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap()
 }
 
 #[test]

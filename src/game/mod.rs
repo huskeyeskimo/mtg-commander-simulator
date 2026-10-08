@@ -864,6 +864,14 @@ pub struct PlayerView<'a> {
     /// reference grants no additional access to a current hidden instance.
     /// Owned trigger contexts retain historical source information separately.
     pub objects: HashMap<ObjectId, &'a CardInstance>,
+    /// Finite admitted public inventories for the joint decision projection.
+    pub state_encoding_failed: bool,
+    pub visible_locations: Vec<(ObjectId, ZoneType, PlayerIndex)>,
+    pub represented_characteristics: HashMap<ObjectId, crate::layers::ComputedCharacteristics>,
+    pub commander_objects: HashSet<ObjectId>,
+    pub commander_roles: HashMap<ObjectId, (usize, u8, u32)>,
+    pub continuous_effects: &'a [crate::layers::ContinuousEffect],
+    pub replacement_effects: &'a [crate::replacement::ReplacementEffect],
     /// Observable nonbattlefield token residents: (zone tag, seat, definition).
     /// No ObjectIds, generations or hidden-zone identity are disclosed.
     pub visible_zone_tokens: Vec<(u8, usize, CardId)>,
@@ -880,15 +888,8 @@ impl PlayerView<'_> {
     /// player's own hand. Use authoritative current zone membership rather
     /// than a historical ability reference to confirm that incarnation.
     pub(crate) fn visible_current_generation(&self, id: ObjectId) -> Option<u32> {
-        let in_visible_zone = self.public_zones.iter().any(|zone| zone.contains(&id))
-            || self.my_hand.contains(&id)
-            || self.stack.iter().any(|entry|
-                matches!(entry.source, StackSource::Spell(source_id) if source_id == id))
-            || self.pending_copy_order
-                .and_then(PendingCopyOrder::resolving_entry)
-                .is_some_and(|entry|
-                    matches!(entry.source, StackSource::Spell(source_id) if source_id == id));
-        in_visible_zone.then(|| self.objects.get(&id).map(|inst| inst.zone_change_count)).flatten()
+        (self.public_zones.iter().any(|zone| zone.contains(&id)) || self.visible_locations.iter().any(|&(object, _, _)| object == id))
+            .then(|| self.objects.get(&id).map(|inst| inst.zone_change_count)).flatten()
     }
 }
 
@@ -927,6 +928,7 @@ impl GameState {
                 StackSource::SpellCopy { .. } => None,
             };
             if let Some(source_id) = source_id {
+                if self.players.iter().any(|seat| seat.hand.contains(&source_id) || seat.library.contains(&source_id)) { continue; }
                 if let Some(inst) = self.objects.get(&source_id) {
                     visible.insert(source_id, inst);
                 }
@@ -934,7 +936,9 @@ impl GameState {
         }
         if let Some(entry) = self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry) {
             if let StackSource::Spell(source_id) = &entry.source {
-                if let Some(inst) = self.objects.get(source_id) { visible.insert(*source_id, inst); }
+                if !self.players.iter().any(|seat| seat.hand.contains(source_id) || seat.library.contains(source_id)) {
+                    if let Some(inst) = self.objects.get(source_id) { visible.insert(*source_id, inst); }
+                }
             }
         }
         // All graveyards — public
@@ -981,17 +985,19 @@ impl GameState {
             .chain(self.stack.iter().filter_map(|entry| match &entry.source {
                 StackSource::TriggeredAbility { context, .. } => Some(context.as_ref()),
                 _ => None,
+            })).chain(self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry).and_then(|entry| match &entry.source {
+                StackSource::TriggeredAbility { context, .. } => Some(context.as_ref()), _ => None,
             })) {
             if let Some(zone) = &context.zone_transition {
                 let exact = zone.source_before.object;
                 if context.source_generation == exact.generation
-                    && self.objects.get(&exact.id).is_some_and(|inst| inst.zone_change_count == exact.generation) {
+                    && visible.get(&exact.id).is_some_and(|inst| inst.zone_change_count == exact.generation) {
                     retained_live_ids.insert(exact.id);
                 }
             }
         }
         let zone_live_sources = retained_live_ids.into_iter().filter_map(|id|
-            crate::rules::transitions::capture_live_source(self, id).map(|info| (id, info))).collect();
+            self.card_db.as_ref().and_then(|_| crate::rules::transitions::capture_live_source(self, id)).map(|info| (id, info))).collect();
 
         let mut visible_zone_tokens = Vec::new();
         for (seat, zones) in self.players.iter().enumerate() {
@@ -1007,12 +1013,41 @@ impl GameState {
         }
         for entry in &self.stack {
             if let StackSource::Spell(id) = entry.source {
-                if let Some(inst) = self.objects.get(&id).filter(|inst| inst.is_token) {
+                if let Some(inst) = visible.get(&id).filter(|inst| inst.is_token) {
                     visible_zone_tokens.push((4, inst.owner, inst.card_def_id));
                 }
             }
         }
         visible_zone_tokens.sort_unstable();
+        let mut visible_locations: Vec<_> = self.battlefield.iter().map(|&id| (id, ZoneType::Battlefield, 0)).collect();
+        for (seat, zones) in self.players.iter().enumerate() {
+            for (zone, ids) in [(ZoneType::Graveyard, &zones.graveyard), (ZoneType::Exile, &zones.exile),
+                (ZoneType::Command, &zones.command_zone)] {
+                visible_locations.extend(ids.iter().map(|&id| (id, zone, seat)));
+            }
+        }
+        visible_locations.extend(self.players[player].hand.iter().map(|&id| (id, ZoneType::Hand, player)));
+        for entry in &self.stack {
+            if let StackSource::Spell(id) = entry.source { visible_locations.push((id, ZoneType::Stack, entry.controller)); }
+        }
+        if let Some(entry) = self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry) {
+            if let StackSource::Spell(id) = entry.source {
+                if visible.contains_key(&id) && !visible_locations.iter().any(|&(current, _, _)| current == id) {
+                    visible_locations.push((id, ZoneType::Stack, entry.controller));
+                }
+            }
+        }
+        let represented_characteristics = visible.keys().filter_map(|&id|
+            self.card_db.as_ref().and_then(|_| self.get_characteristics(id)).map(|chars| (id, chars))).collect();
+        let commander_objects = self.players.iter().flat_map(|seat|
+            [seat.commander_object_id, seat.partner_commander_object_id].into_iter().flatten())
+            .filter(|id| visible.contains_key(id)).collect();
+        let mut commander_roles = HashMap::new();
+        for (player, seat) in self.players.iter().enumerate() {
+            for (id, role, tax) in [(seat.commander_object_id, 0u8, seat.commander_tax), (seat.partner_commander_object_id, 1u8, seat.partner_commander_tax)] {
+                if let Some(id) = id.filter(|id| visible.contains_key(id)) { commander_roles.insert(id, (player, role, tax)); }
+            }
+        }
         PlayerView {
             phase: self.phase,
             active_player: self.active_player,
@@ -1053,10 +1088,22 @@ impl GameState {
             pending_tutor: self.pending_tutor.clone(),
 
             objects: visible,
+            state_encoding_failed: matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)),
+            visible_locations,
+            represented_characteristics,
+            commander_objects,
+            commander_roles,
+            continuous_effects: &self.continuous_effects,
+            replacement_effects: &self.replacement_effects,
             public_zones,
             visible_zone_tokens,
             zone_live_sources,
-            card_db: self.card_db(),
+            // An observation with no current objects requires no definition
+            // lookup. Any visible undefined object still fails projection.
+            card_db: self.card_db.as_deref().unwrap_or_else(|| {
+                static EMPTY: std::sync::OnceLock<CardDatabase> = std::sync::OnceLock::new();
+                EMPTY.get_or_init(CardDatabase::new)
+            }),
         }
     }
 }
@@ -1167,6 +1214,8 @@ impl GameState {
     pub fn invalid_gameplay_reason(&self) -> Option<crate::simulation::TerminationReason> {
         if self.unsupported_continuing_elimination() {
             Some(crate::simulation::TerminationReason::UnsupportedContinuingElimination)
+        } else if matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)) {
+            Some(crate::simulation::TerminationReason::StateEncoding)
         } else if self.sba_failure.is_some() {
             Some(crate::simulation::TerminationReason::PreparedSbaFailure)
         } else { None }
@@ -1236,7 +1285,7 @@ impl GameState {
 
     /// Restore game state from a snapshot, keeping the current card_db.
     /// Invalidates all caches.
-    pub fn restore(&mut self, snap: GameStateSnapshot) {
+    pub fn restore(&mut self, snap: GameStateSnapshot)  -> Result<(), crate::card::AttachmentError> {
         self.format = snap.format;
         self.objects = snap.objects;
         self.battlefield = snap.battlefield;
@@ -1272,6 +1321,8 @@ impl GameState {
         self.loss_action_in_progress = false;
         self.pending_events.clear();
         self.invalidate_characteristics_cache();
+
+        self.validate_attachment_state(true)
     }
 
     /// Allocate a new unique ObjectId.
@@ -1334,14 +1385,14 @@ impl GameState {
         from: ZoneType,
         to: ZoneType,
     ) {
-        self.move_object_with_policy(obj_id, from, to, true, true);
+        self.move_object_with_policy(obj_id, from, to, true, true, None);
     }
 
     /// Storage adapter for the validated transition kernel. The caller owns
     /// committed notifications and trigger collection; the token remains in
     /// its destination until a following state-based cessation pass.
-    pub(crate) fn move_object_for_transition(&mut self, obj_id: ObjectId, from: ZoneType, to: ZoneType) {
-        self.move_object_with_policy(obj_id, from, to, false, false);
+    pub(crate) fn move_object_for_transition(&mut self, obj_id: ObjectId, from: ZoneType, to: ZoneType, attachments: &crate::card::AttachmentInventory) {
+        self.move_object_with_policy(obj_id, from, to, false, false, Some(attachments));
     }
 
     /// CR 111.8: a token outside the battlefield cannot change zones again.
@@ -1367,6 +1418,7 @@ impl GameState {
     fn move_object_with_policy(
         &mut self, obj_id: ObjectId, from: ZoneType, to: ZoneType,
         emit_primary_event: bool, run_linked_followup: bool,
+        attachment_inventory: Option<&crate::card::AttachmentInventory>,
     ) {
         if self.token_movement_prohibited(obj_id, from) { return; }
         // Commander redirect: graveyard/exile -> command zone (see doc above)
@@ -1379,6 +1431,12 @@ impl GameState {
             to
         };
 
+        let departed = if from == ZoneType::Battlefield && actual_to != ZoneType::Battlefield
+            && self.battlefield.contains(&obj_id) { self.exact_object(obj_id) } else { None };
+        let owned_attachments = if departed.is_some() && attachment_inventory.is_none() {
+            Some(self.capture_attachment_inventory())
+        } else { None };
+        let attachments = attachment_inventory.or(owned_attachments.as_ref());
         self.invalidate_characteristics_cache();
 
         // Emit zone change event
@@ -1450,6 +1508,10 @@ impl GameState {
             ZoneType::Exile => self.players[owner].exile.push(obj_id),
             ZoneType::Stack => {} // handled by cast_spell
             ZoneType::Command => self.players[owner].command_zone.push(obj_id),
+        }
+        if let (Some(departed), Some(attachments)) = (departed, attachments) {
+            self.cleanup_attachment_departure(departed, attachments);
+            if emit_primary_event { self.refresh_continuous_effects(); }
         }
     }
 

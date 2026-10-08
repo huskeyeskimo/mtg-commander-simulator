@@ -147,9 +147,9 @@ fn finish(state: &mut GameState) {
                 .into_iter()
                 .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }));
             if let Some(choice) = choice {
-                let key = canonicalize(&choice, state);
-                let reconstructed = resolve(&key, state, state.priority_player).unwrap();
-                assert_eq!(canonicalize(&reconstructed, state), key);
+                let key = canonicalize(&choice, state).unwrap();
+                let reconstructed = resolve(&key, state, state.priority_player).unwrap().unwrap();
+                assert_eq!(canonicalize(&reconstructed, state).unwrap(), key);
                 apply_action(state, &reconstructed);
                 continue;
             }
@@ -163,7 +163,7 @@ fn finish(state: &mut GameState) {
 }
 fn restores(state: &GameState) -> Vec<GameState> {
     let mut restored = state.clone();
-    restored.restore(state.snapshot());
+    restored.restore(state.snapshot()).unwrap();
     let mut variants = vec![
         state.clone(),
         restored,
@@ -655,25 +655,25 @@ fn each_multiplayer_persistence_every_continuation_checkpoint() {
     for _ in 0..160 {
         let keys: Vec<_> = legal_actions(&state)
             .iter()
-            .map(|a| canonicalize(a, &state))
+            .map(|a| canonicalize(a, &state).unwrap())
             .collect();
         for mut restored in restores(&state) {
             for p in 0..4 {
                 assert_eq!(
-                    InformationSet::from_view(&restored.visible_state(p), restored.card_db())
+                    InformationSet::from_view(&restored.visible_state(p), restored.card_db()).unwrap()
                         .hash_value(),
-                    InformationSet::from_view(&state.visible_state(p), state.card_db())
+                    InformationSet::from_view(&state.visible_state(p), state.card_db()).unwrap()
                         .hash_value()
                 );
                 assert_eq!(
-                    InformationSet::normalize_retained_view(&restored.visible_state(p)).encoding,
-                    InformationSet::normalize_retained_view(&state.visible_state(p)).encoding
+                    InformationSet::normalize_retained_view(&restored.visible_state(p)).unwrap().encoding.clone(),
+                    InformationSet::normalize_retained_view(&state.visible_state(p)).unwrap().encoding.clone()
                 );
             }
             assert_eq!(
                 legal_actions(&restored)
                     .iter()
-                    .map(|a| canonicalize(a, &restored))
+                    .map(|a| canonicalize(a, &restored).unwrap())
                     .collect::<Vec<_>>(),
                 keys
             );
@@ -748,28 +748,28 @@ fn each_raw_allocation_pending_and_member_order_canonical_invariance() {
                     let reference = baseline.as_ref().unwrap();
                     for p in 0..4 {
                         assert_eq!(
-                            InformationSet::from_view(&state.visible_state(p), state.card_db())
+                            InformationSet::from_view(&state.visible_state(p), state.card_db()).unwrap()
                                 .hash_value(),
                             InformationSet::from_view(
                                 &reference.visible_state(p),
                                 reference.card_db()
-                            )
+                            ).unwrap()
                             .hash_value()
                         );
                         assert_eq!(
-                            InformationSet::normalize_retained_view(&state.visible_state(p))
+                            InformationSet::normalize_retained_view(&state.visible_state(p)).unwrap()
                                 .encoding,
-                            InformationSet::normalize_retained_view(&reference.visible_state(p))
+                            InformationSet::normalize_retained_view(&reference.visible_state(p)).unwrap()
                                 .encoding
                         );
                     }
                     let actual = legal_actions(&state);
                     let expected = legal_actions(reference);
                     let mut actual_keys: Vec<_> =
-                        actual.iter().map(|a| canonicalize(a, &state)).collect();
+                        actual.iter().map(|a| canonicalize(a, &state).unwrap()).collect();
                     let mut expected_keys: Vec<_> = expected
                         .iter()
-                        .map(|a| canonicalize(a, reference))
+                        .map(|a| canonicalize(a, reference).unwrap())
                         .collect();
                     actual_keys.sort_by_key(|k| format!("{k:?}"));
                     expected_keys.sort_by_key(|k| format!("{k:?}"));
@@ -778,17 +778,17 @@ fn each_raw_allocation_pending_and_member_order_canonical_invariance() {
                     if !rich {
                         assert_eq!(actual_keys, expected_keys);
                         for a in expected {
-                            let key = canonicalize(&a, reference);
-                            let rebuilt = resolve(&key, &state, state.priority_player).unwrap();
+                            let key = canonicalize(&a, reference).unwrap();
+                            let rebuilt = resolve(&key, &state, state.priority_player).unwrap().unwrap();
                             assert!(actual.contains(&rebuilt));
-                            assert_eq!(canonicalize(&rebuilt, &state), key);
+                            assert_eq!(canonicalize(&rebuilt, &state).unwrap(), key);
                         }
                     } else {
                         for a in &actual {
-                            let key = canonicalize(a, &state);
-                            let rebuilt = resolve(&key, &state, state.priority_player).unwrap();
+                            let key = canonicalize(a, &state).unwrap();
+                            let rebuilt = resolve(&key, &state, state.priority_player).unwrap().unwrap();
                             assert!(actual.contains(&rebuilt));
-                            assert_eq!(canonicalize(&rebuilt, &state), key);
+                            assert_eq!(canonicalize(&rebuilt, &state).unwrap(), key);
                         }
                     }
                     let mut finished = state.clone();
@@ -834,21 +834,21 @@ fn each_production_raw_id_visibility_and_large_fifo_own_state_invariance() {
             let reference = baseline.as_ref().unwrap();
             for p in 0..3 {
                 assert_eq!(
-                    InformationSet::from_view(&state.visible_state(p), state.card_db())
+                    InformationSet::from_view(&state.visible_state(p), state.card_db()).unwrap()
                         .hash_value(),
-                    InformationSet::from_view(&reference.visible_state(p), reference.card_db())
+                    InformationSet::from_view(&reference.visible_state(p), reference.card_db()).unwrap()
                         .hash_value()
                 );
                 assert_eq!(
-                    InformationSet::normalize_retained_view(&state.visible_state(p)).encoding,
-                    InformationSet::normalize_retained_view(&reference.visible_state(p)).encoding
+                    InformationSet::normalize_retained_view(&state.visible_state(p)).unwrap().encoding.clone(),
+                    InformationSet::normalize_retained_view(&reference.visible_state(p)).unwrap().encoding.clone()
                 );
             }
             for a in legal_actions(&state) {
-                let key = canonicalize(&a, &state);
-                let restored = resolve(&key, &state, state.priority_player).unwrap();
+                let key = canonicalize(&a, &state).unwrap();
+                let restored = resolve(&key, &state, state.priority_player).unwrap().unwrap();
                 assert_eq!(a, restored);
-                assert_eq!(canonicalize(&restored, &state), key);
+                assert_eq!(canonicalize(&restored, &state).unwrap(), key);
             }
         }
     }
@@ -985,26 +985,26 @@ fn each_six_occurrences_production_cross_state_every_ordering_window() {
                 assert_eq!(state.priority_player, reference.priority_player);
                 let actual = legal_actions(&state);
                 let expected = legal_actions(&reference);
-                let mut akeys: Vec<_> = actual.iter().map(|a| canonicalize(a, &state)).collect();
+                let mut akeys: Vec<_> = actual.iter().map(|a| canonicalize(a, &state).unwrap()).collect();
                 let mut ekeys: Vec<_> = expected
                     .iter()
-                    .map(|a| canonicalize(a, &reference))
+                    .map(|a| canonicalize(a, &reference).unwrap())
                     .collect();
                 akeys.sort_by_key(|k| format!("{k:?}"));
                 ekeys.sort_by_key(|k| format!("{k:?}"));
                 assert_eq!(akeys, ekeys);
                 for a in &expected {
-                    let key = canonicalize(a, &reference);
-                    let rebuilt = resolve(&key, &state, state.priority_player).unwrap();
+                    let key = canonicalize(a, &reference).unwrap();
+                    let rebuilt = resolve(&key, &state, state.priority_player).unwrap().unwrap();
                     assert!(actual.contains(&rebuilt));
-                    assert_eq!(canonicalize(&rebuilt, &state), key);
+                    assert_eq!(canonicalize(&rebuilt, &state).unwrap(), key);
                 }
                 let order = expected
                     .iter()
                     .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
                     .unwrap();
-                let key = canonicalize(order, &reference);
-                let reconstructed = resolve(&key, &state, state.priority_player).unwrap();
+                let key = canonicalize(order, &reference).unwrap();
+                let reconstructed = resolve(&key, &state, state.priority_player).unwrap().unwrap();
                 apply_action(&mut reference, order);
                 apply_action(&mut state, &reconstructed);
             }
@@ -1013,9 +1013,9 @@ fn each_six_occurrences_production_cross_state_every_ordering_window() {
             for p in 0..4 {
                 assert_eq!(state.players[p].life, reference.players[p].life);
                 assert_eq!(
-                    InformationSet::from_view(&state.visible_state(p), state.card_db())
+                    InformationSet::from_view(&state.visible_state(p), state.card_db()).unwrap()
                         .hash_value(),
-                    InformationSet::from_view(&reference.visible_state(p), reference.card_db())
+                    InformationSet::from_view(&reference.visible_state(p), reference.card_db()).unwrap()
                         .hash_value()
                 );
             }

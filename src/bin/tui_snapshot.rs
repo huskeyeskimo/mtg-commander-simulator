@@ -37,7 +37,10 @@ fn main() {
     println!("  Output: {}/", output_dir);
     println!();
 
-    let snapshots = tui::generate_snapshots(&preset, cols, rows);
+    let snapshots = match tui::generate_snapshots(&preset, cols, rows) {
+        Ok(snapshots) => snapshots,
+        Err(reason) => { eprintln!("INVALID reason={}", reason.code()); return; }
+    };
 
     let mut manifest = String::new();
     manifest.push_str("# TUI Snapshots\n\n");

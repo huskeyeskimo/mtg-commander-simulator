@@ -210,8 +210,8 @@ fn observable_permanent_key(state: &GameState, id: crate::card::ObjectId) -> Opt
         summoning_sick: inst.summoning_sick, plus_counters: inst.plus_counters,
         minus_counters: inst.minus_counters, loyalty_counters: inst.loyalty_counters,
         loyalty_activated_this_turn: inst.loyalty_activated_this_turn,
-        is_token: inst.is_token, attached: inst.attached_to.is_some(),
-        attachment_count: inst.attachments.len(),
+        is_token: inst.is_token, attached: state.attachment_target(crate::card::ExactObjectRef { id, generation: inst.zone_change_count }).is_some(),
+        attachment_count: state.attachments_of(crate::card::ExactObjectRef { id, generation: inst.zone_change_count }).len(),
     })
 }
 
@@ -440,7 +440,7 @@ mod terminal_position_tests {
         let mut restored = vec![state.clone(),
             serde_json::from_slice::<GameState>(&json).unwrap(),
             bincode::deserialize::<GameState>(&binary).unwrap()];
-        state.restore(saved);
+        state.restore(saved).unwrap();
         restored.push(state);
         for mut state in restored {
             if state.card_db.is_none() {

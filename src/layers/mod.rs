@@ -512,12 +512,12 @@ fn effect_applies_to(
             inst.controller == *player && battlefield.contains(&obj_id)
         }
         AffectedObjects::AttachedTo => {
-            // The effect applies to whatever the source is attached to
-            objects
-                .get(&effect.source_id)
-                .and_then(|src| src.attached_to)
-                .map(|attached_id| obj_id == attached_id)
-                .unwrap_or(false)
+            objects.get(&effect.source_id).is_some_and(|source| {
+                source.attachment_link().is_some_and(|link|
+                    link.source_generation == source.zone_change_count
+                    && battlefield.contains(&source.object_id) && battlefield.contains(&obj_id)
+                    && link.target.id == obj_id && link.target.generation == inst.zone_change_count)
+            })
         }
     }
 }

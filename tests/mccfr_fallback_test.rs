@@ -27,14 +27,14 @@ fn unseen_state_uses_greedy_useful_play_across_card_types() {
         let (state, land) = land_choice(card_id);
         let expected = Action::PlayLand { object_id: land };
         assert!(legal_actions(&state).len() > 1);
-        assert_eq!(GreedyStrategy.choose_action(&state, 0), expected);
+        assert_eq!(GreedyStrategy.choose_action(&state, 0).unwrap(), expected);
         let strategy = McfrStrategy::new(RegretTable::new());
         for _ in 0..32 {
-            let chosen = strategy.choose_action(&state, 0);
+            let chosen = strategy.choose_action(&state, 0).unwrap();
             assert_eq!(chosen, expected);
             assert!(legal_actions(&state).contains(&chosen));
             assert!(legal_actions_abstracted(&state).contains(&chosen));
-            assert_eq!(resolve(&canonicalize(&chosen, &state), &state, 0), Some(chosen));
+            assert_eq!(resolve(&canonicalize(&chosen, &state).unwrap(), &state, 0).unwrap(), Some(chosen));
         }
     }
 }
@@ -51,24 +51,24 @@ fn unseen_state_casts_affordable_spell_as_current_concrete_action() {
     }
     let expected = Action::CastSpell { object_id: spell, targets: vec![] };
     assert!(legal_actions(&state).contains(&expected));
-    assert_eq!(GreedyStrategy.choose_action(&state, 0), expected);
-    let chosen = McfrStrategy::new(RegretTable::new()).choose_action(&state, 0);
+    assert_eq!(GreedyStrategy.choose_action(&state, 0).unwrap(), expected);
+    let chosen = McfrStrategy::new(RegretTable::new()).choose_action(&state, 0).unwrap();
     assert_eq!(chosen, expected);
     assert!(legal_actions(&state).contains(&chosen));
-    assert_eq!(resolve(&canonicalize(&chosen, &state), &state, 0), Some(chosen));
+    assert_eq!(resolve(&canonicalize(&chosen, &state).unwrap(), &state, 0).unwrap(), Some(chosen));
 }
 
 #[test]
 fn trained_entry_uses_stored_average_strategy_instead_of_greedy() {
     let (state, _) = land_choice(sample::ids::MOUNTAIN);
-    assert!(matches!(GreedyStrategy.choose_action(&state, 0), Action::PlayLand { .. }));
-    let info_hash = InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value();
+    assert!(matches!(GreedyStrategy.choose_action(&state, 0).unwrap(), Action::PlayLand { .. }));
+    let info_hash = InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap().hash_value();
     let mut table = RegretTable::new();
-    let pass = canonicalize(&Action::PassPriority, &state);
-    table.get_or_create(info_hash).get_or_create_action(&pass).cumulative_strategy = 1.0;
+    let pass = canonicalize(&Action::PassPriority, &state).unwrap();
+    table.get_or_create(info_hash).unwrap().get_or_create_action(&pass).cumulative_strategy = 1.0;
     let strategy = McfrStrategy::new(table);
     for _ in 0..32 {
-        assert_eq!(strategy.choose_action(&state, 0), Action::PassPriority);
+        assert_eq!(strategy.choose_action(&state, 0).unwrap(), Action::PassPriority);
     }
 }
 
@@ -92,9 +92,9 @@ fn unseen_pending_copy_order_returns_only_mandatory_legal_choice() {
     assert_eq!(legal, vec![Action::ChooseNextCopy { item_index: 0 },
         Action::ChooseNextCopy { item_index: 1 }]);
     let strategy = McfrStrategy::new(RegretTable::new());
-    let chosen = strategy.choose_action(&state, 0);
+    let chosen = strategy.choose_action(&state, 0).unwrap();
     assert!(legal.contains(&chosen));
-    assert_eq!(resolve(&canonicalize(&chosen, &state), &state, 0), Some(chosen.clone()));
+    assert_eq!(resolve(&canonicalize(&chosen, &state).unwrap(), &state, 0).unwrap(), Some(chosen.clone()));
     rules::apply_action(&mut state, &chosen);
     assert!(state.pending_copy_order.is_none());
 }

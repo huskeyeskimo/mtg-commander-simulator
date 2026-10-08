@@ -165,27 +165,27 @@ fn three_player_wrath_token_occurrences_continue_identically_after_restores() {
     let cloned = state.clone();
     let mut restored = state.clone();
     restored.pending_triggers.clear();
-    restored.restore(snapshot);
+    restored.restore(snapshot).unwrap();
     let mut variants = vec![state, cloned, restored,
         serde_json::from_slice::<GameState>(&json).unwrap(),
         bincode::deserialize::<GameState>(&binary).unwrap()];
     let expected_information = InformationSet::from_view(
-        &variants[0].visible_state(0), variants[0].card_db()).hash_value();
+        &variants[0].visible_state(0), variants[0].card_db()).unwrap().hash_value();
     let initial_life: Vec<_> = variants[0].players.iter().map(|player| player.life).collect();
     let mut expected = None;
     for game in &mut variants {
         game.card_db = Some(db.clone());
         assert_eq!(game.pending_triggers.len(), 6);
-        assert_eq!(InformationSet::from_view(&game.visible_state(0), game.card_db()).hash_value(),
+        assert_eq!(InformationSet::from_view(&game.visible_state(0), game.card_db()).unwrap().hash_value(),
             expected_information);
         for controller in 0..3 {
             assert_eq!(game.priority_player, controller);
             let choice = legal_actions(game).into_iter()
                 .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
                 .expect("mandatory owned occurrence ordering");
-            let key = canonicalize(&choice, game);
-            let reconstructed = resolve(&key, game, controller).unwrap();
-            assert_eq!(canonicalize(&reconstructed, game), key);
+            let key = canonicalize(&choice, game).unwrap();
+            let reconstructed = resolve(&key, game, controller).unwrap().unwrap();
+            assert_eq!(canonicalize(&reconstructed, game).unwrap(), key);
             apply_action(game, &reconstructed);
         }
         assert!(game.pending_triggers.is_empty());

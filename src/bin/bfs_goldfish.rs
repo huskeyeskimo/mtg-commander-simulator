@@ -102,7 +102,7 @@ enum SearchOutcome {
 }
 
 fn classify_search(win_turn: Option<u32>, stats: &SearchStats) -> SearchOutcome {
-    if stats.invalid && matches!(stats.invalid_reason, "unsupported_continuing_elimination" | "prepared_sba_failure") {
+    if stats.invalid && matches!(stats.invalid_reason, "unsupported_continuing_elimination" | "prepared_sba_failure" | "state_encoding") {
         return SearchOutcome::Invalid(stats.invalid_reason);
     }
     if let Some(turn) = win_turn {
@@ -284,7 +284,8 @@ fn prune_actions(
     state: &GameState,
     actions: &[Action],
     config: &DeckConfig,
-) -> Vec<Action> {
+) -> Result<Vec<Action>, TerminationReason> {
+    mtg_gto::public_projection::JointPublicNormalization::for_state(state, state.priority_player)?;
     // 0. Phase-based auto-pass: during non-strategic phases on our turn, just pass.
     // For combo decks: only Upkeep + PreCombatMain matter.
     // For combat decks: also need DeclareAttackers + combat phases.
@@ -317,18 +318,18 @@ fn prune_actions(
         };
         if dominated_phase {
             if let Some(win) = find_instant_win(state, actions) {
-                return vec![win];
+                return Ok(vec![win]);
             }
             if actions.iter().any(|a| matches!(a, Action::EndTurn)) {
-                return vec![Action::EndTurn];
+                return Ok(vec![Action::EndTurn]);
             }
-            return vec![Action::PassPriority];
+            return Ok(vec![Action::PassPriority]);
         }
     }
 
     // 1. Instant win — always take it.
     if let Some(win) = find_instant_win(state, actions) {
-        return vec![win];
+        return Ok(vec![win]);
     }
 
     // 2. Forced ordering — no strategic value in goldfish.
@@ -338,7 +339,7 @@ fn prune_actions(
             Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }
                 | Action::ChooseReplacementOrder { .. }
         ) {
-            return vec![action.clone()];
+            return Ok(vec![action.clone()]);
         }
     }
 
@@ -354,8 +355,8 @@ fn prune_actions(
         .any(|a| matches!(a, Action::MulliganBottomCard { .. }));
     if has_mulligan || all_discard || has_bottom {
         let greedy = GreedyStrategy;
-        let choice = greedy.choose_action(state, state.priority_player);
-        return vec![choice];
+        let choice = greedy.choose_action(state, state.priority_player)?;
+        return Ok(vec![choice]);
     }
 
     // 4. Tutor restriction.
@@ -372,19 +373,19 @@ fn prune_actions(
             // Fetch land — just pick first target (lands are mostly equivalent).
             for a in actions {
                 if matches!(a, Action::ChooseTutorTarget { .. }) {
-                    return vec![a.clone()];
+                    return Ok(vec![a.clone()]);
                 }
             }
-            return vec![Action::PassPriority];
+            return Ok(vec![Action::PassPriority]);
         }
         // Regular tutor — only worthy targets.
         if config.tutor_worthy.is_empty() {
             // No tutor restriction — allow all targets.
-            return actions
+            return Ok(actions
                 .iter()
                 .filter(|a| matches!(a, Action::ChooseTutorTarget { .. }))
                 .cloned()
-                .collect();
+                .collect());
         }
         let worthy: Vec<Action> = actions
             .iter()
@@ -392,9 +393,9 @@ fn prune_actions(
             .cloned()
             .collect();
         if worthy.is_empty() {
-            return vec![Action::PassPriority];
+            return Ok(vec![Action::PassPriority]);
         }
-        return worthy;
+        return Ok(worthy);
     }
 
     // 5. Combat handling.
@@ -404,9 +405,9 @@ fn prune_actions(
     {
         if config.skip_combat {
             // Combo-only deck — skip combat entirely.
-            return vec![Action::DeclareAttackers {
+            return Ok(vec![Action::DeclareAttackers {
                 attackers: vec![],
-            }];
+            }]);
         }
         // Combat deck — attack with everything (goldfish has no blockers)
         // and also offer attacking with nothing (to skip combat).
@@ -423,14 +424,14 @@ fn prune_actions(
                 }
             }
         }
-        return vec![best];
+        return Ok(vec![best]);
     }
     if actions
         .iter()
         .any(|a| matches!(a, Action::DeclareBlockers { .. }))
     {
         // Goldfish opponent never blocks.
-        return vec![Action::DeclareBlockers { blocks: vec![] }];
+        return Ok(vec![Action::DeclareBlockers { blocks: vec![] }]);
     }
 
     // 6. Filter dead cards, mana abilities, and redundant activated abilities.
@@ -467,7 +468,7 @@ fn prune_actions(
             if let Action::ActivateAbility { object_id, .. } = a {
                 if let Some(inst) = state.objects.get(object_id) {
                     if config.fetch_lands.contains(&inst.card_def_id) {
-                        return vec![a.clone()];
+                        return Ok(vec![a.clone()]);
                     }
                 }
             }
@@ -491,9 +492,9 @@ fn prune_actions(
     });
     if !has_castable {
         if result.iter().any(|a| matches!(a, Action::EndTurn)) {
-            return vec![Action::EndTurn];
+            return Ok(vec![Action::EndTurn]);
         }
-        return vec![Action::PassPriority];
+        return Ok(vec![Action::PassPriority]);
     }
 
     // 10. Remove EndTurn when there are spells to cast or lands to play.
@@ -514,7 +515,7 @@ fn prune_actions(
         _ => 5,
     });
 
-    result
+    Ok(result)
 }
 
 /// Compute a state fingerprint for deduplication.
@@ -594,7 +595,7 @@ fn dfs_search(
     let mut linear_depth: usize = 0; // track linear actions pushed
 
     loop {
-        if stats.invalid && matches!(stats.invalid_reason, "unsupported_continuing_elimination" | "prepared_sba_failure") { break; }
+        if stats.invalid && matches!(stats.invalid_reason, "unsupported_continuing_elimination" | "prepared_sba_failure" | "state_encoding") { break; }
         if let Some(reason) = work.invalid_gameplay_reason() {
             stats.invalid = true;
             stats.invalid_branches += 1;
@@ -607,6 +608,13 @@ fn dfs_search(
                 *best_win_turn = work.turn_number;
                 *best_sequence = current_sequence.clone();
             }
+            break;
+        }
+
+        if let Err(reason) = mtg_gto::public_projection::JointPublicNormalization::for_state(&work, work.priority_player) {
+            stats.invalid = true;
+            stats.invalid_branches += 1;
+            stats.invalid_reason = reason.code();
             break;
         }
 
@@ -733,7 +741,15 @@ fn dfs_search(
             stats.stalled_branches += 1;
             break;
         }
-        let pruned = prune_actions(&work, &actions, config);
+        let pruned = match prune_actions(&work, &actions, config) {
+            Ok(actions) => actions,
+            Err(reason) => {
+                stats.invalid = true;
+                stats.invalid_branches += 1;
+                stats.invalid_reason = reason.code();
+                break;
+            }
+        };
         if pruned.is_empty() {
             stats.stalled = true;
             stats.stalled_branches += 1;
@@ -773,7 +789,7 @@ fn dfs_search(
         // Multiple actions — branch via recursion on clones.
         for action in &pruned {
             if stats.timed_out || stats.hit_state_cap
-                || (stats.invalid && matches!(stats.invalid_reason, "unsupported_continuing_elimination" | "prepared_sba_failure")) {
+                || (stats.invalid && matches!(stats.invalid_reason, "unsupported_continuing_elimination" | "prepared_sba_failure" | "state_encoding")) {
                 break;
             }
             let desc = format_action_name(&work, action);
@@ -1109,6 +1125,22 @@ mod outcome_tests {
         stats.stalled = true;
         assert_eq!(classify_search(Some(2), &stats),
             SearchOutcome::FoundWinIncomplete(2, "stalled_branch"));
+    }
+
+    #[test]
+    fn encoding_failure_precedes_empty_actions_pruning_and_known_win_classification() {
+        let mut state = GameState::new(2);
+        state.battlefield.push(999);
+        let before = bincode::serialize(&state).unwrap();
+        let mut best_turn = 2; let mut best = Vec::new(); let mut current = Vec::new();
+        let mut stats = SearchStats::new(); let mut visited = HashMap::new();
+        let limits = SearchLimits { deadline: Instant::now() + std::time::Duration::from_secs(1),
+            max_states: 10, max_visited: 10, max_depth: 10, trace: false };
+        dfs_search(&mut state, &mut best_turn, &mut best, &mut current, &kinnan_config(), &mut stats, &mut visited, &limits);
+        assert_eq!(stats.invalid_reason, "state_encoding"); assert_eq!(stats.invalid_branches, 1);
+        assert!(!stats.stalled); assert!(visited.is_empty()); assert!(current.is_empty());
+        assert_eq!(classify_search(Some(1), &stats), SearchOutcome::Invalid("state_encoding"));
+        assert_eq!(before, bincode::serialize(&state).unwrap()); assert!(!state.game_over);
     }
 
     #[test]

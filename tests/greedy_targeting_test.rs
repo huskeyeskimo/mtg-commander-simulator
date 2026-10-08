@@ -51,9 +51,9 @@ fn game(effect: Effect, player: usize) -> (GameState, u64) {
 fn assert_greedy_cast(state: &GameState, spell: u64, player: usize, target: Target) {
     let expected = Action::CastSpell { object_id: spell, targets: vec![target] };
     assert!(legal_actions(state).contains(&expected));
-    let chosen = GreedyStrategy.choose_action(state, player);
+    let chosen = GreedyStrategy.choose_action(state, player).unwrap();
     assert_eq!(chosen, expected);
-    assert_eq!(resolve(&canonicalize(&chosen, state), state, player), Some(chosen));
+    assert_eq!(resolve(&canonicalize(&chosen, state).unwrap(), state, player).unwrap(), Some(chosen));
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn damage_targets_opponent_from_either_seat_and_fallback_agrees() {
             object_id: spell, targets: vec![Target::Player(opponent)],
         };
         assert_greedy_cast(&state, spell, player, Target::Player(opponent));
-        assert_eq!(McfrStrategy::new(RegretTable::new()).choose_action(&state, player), expected);
+        assert_eq!(McfrStrategy::new(RegretTable::new()).choose_action(&state, player).unwrap(), expected);
     }
 }
 
@@ -134,8 +134,8 @@ fn ambiguous_targeted_effect_remains_legal_and_canonical() {
     ]), 1);
     state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
     state.create_card_in_zone(OTHER_CREATURE, 1, ZoneType::Battlefield);
-    let chosen = GreedyStrategy.choose_action(&state, 1);
+    let chosen = GreedyStrategy.choose_action(&state, 1).unwrap();
     assert!(matches!(chosen, Action::CastSpell { .. }));
     assert!(legal_actions(&state).contains(&chosen));
-    assert_eq!(resolve(&canonicalize(&chosen, &state), &state, 1), Some(chosen));
+    assert_eq!(resolve(&canonicalize(&chosen, &state).unwrap(), &state, 1).unwrap(), Some(chosen));
 }

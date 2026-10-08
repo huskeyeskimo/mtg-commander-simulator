@@ -263,12 +263,12 @@ fn mass_bounce_uses_common_view_owner_hands_one_group_and_all_controllers() {
 
 fn coordinates(state: &GameState, viewer: usize) -> (Vec<u8>, u64, Vec<Vec<u8>>) {
     let view = state.visible_state(viewer);
-    let normalized = InformationSet::normalize_retained_view(&view);
-    let information = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
+    let normalized = InformationSet::normalize_retained_view(&view).unwrap();
+    let information = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized).unwrap();
     let mut keys: Vec<_> = legal_actions(state).iter()
-        .map(|action| bincode::serialize(&canonicalize(action, state)).unwrap()).collect();
+        .map(|action| bincode::serialize(&canonicalize(action, state).unwrap()).unwrap()).collect();
     keys.sort();
-    (normalized.encoding, information.hash_value(), keys)
+    (normalized.encoding.clone(), information.hash_value(), keys)
 }
 
 #[test]
@@ -280,9 +280,9 @@ fn mass_member_pending_and_allocation_permutations_preserve_information_and_acti
             assert_eq!(coordinates(&base, viewer), coordinates(&renamed, viewer));
         }
         for action in legal_actions(&base) {
-            let key = canonicalize(&action, &base);
-            let reconstructed = resolve(&key, &renamed, renamed.priority_player).unwrap();
-            assert_eq!(canonicalize(&reconstructed, &renamed), key);
+            let key = canonicalize(&action, &base).unwrap();
+            let reconstructed = resolve(&key, &renamed, renamed.priority_player).unwrap().unwrap();
+            assert_eq!(canonicalize(&reconstructed, &renamed).unwrap(), key);
         }
     }
 }
@@ -300,7 +300,7 @@ fn hidden_hand_and_library_current_identity_is_player_relative() {
             move_subject(&mut state, source, subject);
             for viewer in 0..players {
                 let view = state.visible_state(viewer);
-                let normalized = InformationSet::normalize_retained_view(&view);
+                let normalized = InformationSet::normalize_retained_view(&view).unwrap();
                 for occurrence in normalized.pending_occurrences.iter().flatten() {
                     let current = occurrence.subject.as_ref().unwrap();
                     assert_eq!(current.same_incarnation_now, index == 0 && viewer == owner);
@@ -334,7 +334,7 @@ fn assert_continuations(state: GameState) {
     let cloned = state.clone();
     let mut restored = state.clone();
     restored.pending_triggers.clear();
-    restored.restore(snapshot);
+    restored.restore(snapshot).unwrap();
     let expected_views: Vec<_> = (0..state.players.len()).map(|viewer| coordinates(&state, viewer)).collect();
     let mut variants = vec![state, cloned, restored,
         serde_json::from_slice::<GameState>(&json).unwrap(),
@@ -347,9 +347,9 @@ fn assert_continuations(state: GameState) {
         }
         while let Some(choice) = legal_actions(game).into_iter()
             .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. })) {
-            let key = canonicalize(&choice, game);
-            let action = resolve(&key, game, game.priority_player).unwrap();
-            assert_eq!(canonicalize(&action, game), key);
+            let key = canonicalize(&choice, game).unwrap();
+            let action = resolve(&key, game, game.priority_player).unwrap().unwrap();
+            assert_eq!(canonicalize(&action, game).unwrap(), key);
             apply_action(game, &action);
         }
         assert!(game.pending_triggers.is_empty());
@@ -538,7 +538,7 @@ fn migrated_departure_then_common_sba_death_has_separate_contexts_and_endpoints(
 fn mass_bounce_relationship_graph_diagnostics_remain_exact() {
     let (state, _, _) = mass_state(4, 4_000_040, false);
     let view = state.visible_state(0);
-    let normalized = InformationSet::normalize_retained_view(&view);
+    let normalized = InformationSet::normalize_retained_view(&view).unwrap();
     println!("2B.2b four-player mass bounce: occurrences={}, components={:?}, ties={:?}, search_nodes={}, candidates={}, elapsed_ns={}",
         state.pending_triggers.len(), normalized.stats.component_sizes,
         normalized.stats.tied_cell_sizes, normalized.stats.search_nodes,
@@ -558,7 +558,7 @@ fn later_opponent_public_exile_and_death_controls_confirm_current_incarnation() 
         move_subject(&mut state, source, subject);
         for viewer in 0..3 {
             let view = state.visible_state(viewer);
-            let normalized = InformationSet::normalize_retained_view(&view);
+            let normalized = InformationSet::normalize_retained_view(&view).unwrap();
             assert!(!normalized.pending_occurrences.is_empty());
             for occurrence in normalized.pending_occurrences.iter().flatten() {
                 assert!(occurrence.subject.as_ref().unwrap().same_incarnation_now);
@@ -664,8 +664,8 @@ fn every_private_departure_family_preserves_coordinates_after_id_and_history_cha
             let renamed = setup(true);
             for viewer in 0..players { assert_eq!(coordinates(&base, viewer), coordinates(&renamed, viewer)); }
             for action in legal_actions(&base) {
-                let key = canonicalize(&action, &base);
-                assert_eq!(canonicalize(&resolve(&key, &renamed, 0).unwrap(), &renamed), key);
+                let key = canonicalize(&action, &base).unwrap();
+                assert_eq!(canonicalize(&resolve(&key, &renamed, 0).unwrap().unwrap(), &renamed).unwrap(), key);
             }
         }
     }
@@ -741,7 +741,7 @@ fn assert_source_projection(state: &GameState, source: u64, viewer: usize, visib
         assert!(zone.source_before.tapped);
         assert!(zone.source_was_subject);
     }
-    let normalized = InformationSet::normalize_retained_view(&view);
+    let normalized = InformationSet::normalize_retained_view(&view).unwrap();
     let occurrences: Vec<_> = normalized.pending_occurrences.iter()
         .chain(&normalized.stack_occurrences).flatten()
         .filter(|occurrence| occurrence.source_card_id == CREATURE).collect();
@@ -758,8 +758,8 @@ fn place_owned_sources(state: &mut GameState) {
     let _ = mtg_gto::rules::fire_triggers(state, TriggerCondition::BeginningOfUpkeep, None);
     while let Some(choice) = legal_actions(state).into_iter()
         .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. })) {
-        let key = canonicalize(&choice, state);
-        let action = resolve(&key, state, state.priority_player).unwrap();
+        let key = canonicalize(&choice, state).unwrap();
+        let action = resolve(&key, state, state.priority_player).unwrap().unwrap();
         apply_action(state, &action);
     }
     assert!(state.pending_triggers.is_empty());
@@ -869,9 +869,9 @@ fn hidden_current_source_mutations_ids_history_and_storage_preserve_visible_sema
                 // opposite stack orders after reversing the pending storage.
                 let choice = legal_actions(&a).into_iter()
                     .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. })).unwrap();
-                let key = canonicalize(&choice, &a);
+                let key = canonicalize(&choice, &a).unwrap();
                 for game in [&mut a, &mut b] {
-                    let action = resolve(&key, game, game.priority_player).unwrap();
+                    let action = resolve(&key, game, game.priority_player).unwrap().unwrap();
                     apply_action(game, &action);
                     assert!(game.pending_triggers.is_empty());
                 }
@@ -883,8 +883,8 @@ fn hidden_current_source_mutations_ids_history_and_storage_preserve_visible_sema
                 assert_eq!(coordinates(&a, viewer), coordinates(&b, viewer));
             }
             for action in legal_actions(&a) {
-                let key = canonicalize(&action, &a);
-                assert_eq!(canonicalize(&resolve(&key, &b, b.priority_player).unwrap(), &b), key);
+                let key = canonicalize(&action, &a).unwrap();
+                assert_eq!(canonicalize(&resolve(&key, &b, b.priority_player).unwrap().unwrap(), &b).unwrap(), key);
             }
         }
     }
@@ -917,7 +917,7 @@ fn restored_hidden_source_stays_hidden_and_owned_card_identity_resolves_to_final
         let json = serde_json::to_vec(&base).unwrap();
         let binary = bincode::serialize(&base).unwrap();
         let cloned = base.clone();
-        let mut restored = base.clone(); restored.pending_triggers.clear(); restored.restore(snapshot);
+        let mut restored = base.clone(); restored.pending_triggers.clear(); restored.restore(snapshot).unwrap();
         let mut variants = vec![base, cloned, restored, serde_json::from_slice::<GameState>(&json).unwrap(),
             bincode::deserialize::<GameState>(&binary).unwrap()];
         let finish = |game: &mut GameState| {
@@ -943,7 +943,7 @@ fn restored_hidden_source_stays_hidden_and_owned_card_identity_resolves_to_final
             let stacked_json = serde_json::to_vec(&*game).unwrap();
             let stacked_binary = bincode::serialize(&*game).unwrap();
             let stacked_snapshot = game.snapshot();
-            let mut snapshot_restore = game.clone(); snapshot_restore.stack.clear(); snapshot_restore.restore(stacked_snapshot);
+            let mut snapshot_restore = game.clone(); snapshot_restore.stack.clear(); snapshot_restore.restore(stacked_snapshot).unwrap();
             let mut expected_stack_final = None;
             for mut stacked_restore in [game.clone(), snapshot_restore, serde_json::from_slice::<GameState>(&stacked_json).unwrap(),
                 bincode::deserialize::<GameState>(&stacked_binary).unwrap()] {

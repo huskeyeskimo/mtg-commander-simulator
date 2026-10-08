@@ -435,16 +435,16 @@ fn zada_ordering_is_canonical_and_information_set_is_id_independent() {
     for distinguish in [false, true] {
         let mut left = equivalent_pending(0, false, distinguish);
         let right = equivalent_pending(9, true, distinguish);
-        let left_info = InformationSet::from_view(&left.visible_state(0), left.card_db());
-        let right_info = InformationSet::from_view(&right.visible_state(0), right.card_db());
+        let left_info = InformationSet::from_view(&left.visible_state(0), left.card_db()).unwrap();
+        let right_info = InformationSet::from_view(&right.visible_state(0), right.card_db()).unwrap();
         assert_eq!(left_info.pending_copy_order, right_info.pending_copy_order);
         assert_eq!(left_info.hash_value(), right_info.hash_value());
-        let left_actions: Vec<_> = legal_actions(&left).iter().map(|action| canonicalize(action, &left)).collect();
-        let right_actions: Vec<_> = legal_actions(&right).iter().map(|action| canonicalize(action, &right)).collect();
+        let left_actions: Vec<_> = legal_actions(&left).iter().map(|action| canonicalize(action, &left).unwrap()).collect();
+        let right_actions: Vec<_> = legal_actions(&right).iter().map(|action| canonicalize(action, &right).unwrap()).collect();
         assert_eq!(left_actions, right_actions);
         for action in &left_actions {
-            assert!(resolve(action, &left, 0).is_some());
-            assert!(resolve(action, &right, 0).is_some());
+            assert!(resolve(action, &left, 0).unwrap().is_some());
+            assert!(resolve(action, &right, 0).unwrap().is_some());
         }
         rules::apply_action(&mut left, &Action::ChooseNextCopy { item_index: 0 });
         assert_eq!(copy_targets(&left).len(), 2);
@@ -477,7 +477,7 @@ fn zada_cast_context_survives_clone_snapshot_json_and_bincode() {
     let binary = bincode::serialize(&state).unwrap();
     let mut restored = vec![state.clone(), serde_json::from_slice::<GameState>(&json).unwrap(),
         bincode::deserialize::<GameState>(&binary).unwrap()];
-    state.restore(snapshot);
+    state.restore(snapshot).unwrap();
     restored.push(state);
     for mut candidate in restored {
         candidate.card_db = database.clone();

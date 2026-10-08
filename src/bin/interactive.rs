@@ -110,6 +110,10 @@ fn main() {
     let mut reader = stdin.lock();
 
     while !state.gameplay_stopped() && state.turn_number <= MAX_TURNS && actions_taken < MAX_ACTIONS {
+        if let Err(reason) = mtg_gto::public_projection::JointPublicNormalization::for_state(&state, state.priority_player) {
+            eprintln!("INVALID reason={}", reason.code());
+            return;
+        }
         // Fast-forward the goldfish's entire turn without prompting
         if state.active_player != 0 && !human_mandatory_choice_pending(&state) {
             let ff_actions = rules::fast_forward_goldfish_turn_until_copy_choice(&mut state, 0);

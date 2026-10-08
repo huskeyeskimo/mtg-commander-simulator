@@ -64,13 +64,19 @@ use crate::action::{legal_actions, legal_actions_abstracted, Action};
 use crate::game::{GameState, PlayerIndex};
 use crate::info_set::{IdentityAbstraction, InfoSetAbstraction, InformationSet};
 use crate::rules;
+use crate::public_projection::PreparedPublicNormalization;
 use crate::solver::{sample_from_distribution, RegretTable};
 use crate::strategy::Strategy;
+use crate::simulation::TerminationReason;
 
 /// Numeric-only legacy training APIs cannot represent invalid games. Abort the
 /// attempt explicitly before evaluating or publishing unsupported continuations.
-fn require_supported_gameplay(state: &GameState) {
-    if let Some(reason) = state.invalid_gameplay_reason() { panic!("INVALID reason={}", reason.code()); }
+fn require_supported_gameplay(state: &GameState)  -> Result<(), TerminationReason> {
+    match state.invalid_gameplay_reason() {
+        Some(TerminationReason::StateEncoding) => Err(TerminationReason::StateEncoding),
+        Some(reason) => panic!("INVALID reason={}", reason.code()),
+        None => Ok(()),
+    }
 }
 
 /// Configuration for MCCFR training.
@@ -162,8 +168,7 @@ pub fn run_iteration(
     initial_state: &GameState,
     regret_tables: &mut [RegretTable; 2],
     config: &McfrConfig,
-) {
-    require_supported_gameplay(initial_state);
+) -> Result<(), TerminationReason> {
     run_iteration_with_abstraction(initial_state, regret_tables, config, &IdentityAbstraction, &RolloutMode::Heuristic, None)
 }
 
@@ -175,8 +180,13 @@ pub fn run_iteration_with_abstraction(
     abstraction: &dyn InfoSetAbstraction,
     rollout_mode: &RolloutMode,
     rollout_strategies: Option<(&dyn Strategy, &dyn Strategy)>,
-) {
-    require_supported_gameplay(initial_state);
+) -> Result<(), TerminationReason> {
+    let result = (|| -> Result<(), TerminationReason> {
+        for table in regret_tables.iter() { table.ensure_usable()?; }
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     for traverser in 0..2 {
         let state = initial_state.clone();
         let mut rng = rand::thread_rng();
@@ -191,8 +201,15 @@ pub fn run_iteration_with_abstraction(
             0,
             0,
             &mut rng,
-        );
+        )?;
     }
+
+        Ok(())
+    })();
+    if matches!(result, Err(TerminationReason::StateEncoding)) {
+        for table in regret_tables.iter_mut() { table.discard_failed_attempt(); }
+    }
+    result
 }
 
 /// Recursive MCCFR traversal.
@@ -209,17 +226,21 @@ fn traverse(
     mut depth: u32,
     mut actions_taken: u32,
     rng: &mut impl Rng,
-) -> f64 {
+) -> Result<f64, TerminationReason> {
     loop {
-        require_supported_gameplay(&state);
+        require_supported_gameplay(&state)?;
         // Terminal check: game over
         if state.game_over {
-            return terminal_utility(&state, traverser);
+            return Ok(terminal_utility(&state, traverser)?);
         }
+
+        let view = state.visible_state(state.priority_player);
+        let prepared = PreparedPublicNormalization::from_view(&view)?;
 
         // Action limit: use heuristic evaluation
         if actions_taken >= config.max_actions {
-            return heuristic_utility(&state, traverser);
+            drop(prepared);
+            return Ok(heuristic_utility(&state, traverser)?);
         }
 
         let player = state.priority_player;
@@ -228,6 +249,7 @@ fn traverse(
         // No actions available — pass priority (not a decision node)
         // Loop instead of recursing to avoid stack overflow at high depth.
         if actions.is_empty() {
+            drop(prepared);
             rules::apply_action(&mut state, &Action::PassPriority);
             actions_taken += 1;
             continue;
@@ -235,6 +257,7 @@ fn traverse(
 
         // Only one legal action — no decision to make, skip CFR node
         if actions.len() == 1 {
+            drop(prepared);
             rules::apply_action(&mut state, &actions[0]);
             actions_taken += 1;
             continue;
@@ -242,19 +265,19 @@ fn traverse(
 
         // Depth limit at multi-action decision nodes
         if config.max_depth > 0 && depth >= config.max_depth {
+            drop(prepared);
             return evaluate_at_depth_limit(&state, traverser, rollout_mode, rollout_strategies);
         }
 
         // Canonicalize all legal actions for stable regret table keying
-        let view = state.visible_state(player);
-        let normalized = InformationSet::normalize_retained_view(&view);
-        let canonical_actions = canonicalize_actions(&actions, &state, &normalized);
-        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
+        let normalized = prepared.finish()?;
+        let canonical_actions = canonicalize_actions(&actions, &state, &normalized)?;
+        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized)?;
         let info_hash = abstraction.abstract_info_set(&info_set);
 
         // Get or create regret table entry and compute current strategy
         let strategy = {
-            let entry = regret_tables[player].get_or_create(info_hash);
+            let entry = regret_tables[player].get_or_create(info_hash)?;
             entry.current_strategy(&canonical_actions)
         };
 
@@ -277,7 +300,7 @@ fn traverse(
                     depth + 1,
                     actions_taken + 1,
                     rng,
-                );
+                )?;
             }
 
             // Expected utility under current strategy
@@ -288,7 +311,7 @@ fn traverse(
                 .sum();
 
             // Update cumulative regret and strategy for each action via canonical key
-            let entry = regret_tables[player].get_or_create(info_hash);
+            let entry = regret_tables[player].get_or_create(info_hash)?;
             for (i, ca) in canonical_actions.iter().enumerate() {
                 let action_entry = entry.get_or_create_action(ca);
                 action_entry.cumulative_regret += action_utilities[i] - node_utility;
@@ -296,13 +319,13 @@ fn traverse(
             }
             entry.visit_count += 1;
 
-            return node_utility;
+            return Ok(node_utility);
         } else {
             // Opponent node: sample ONE action from their current strategy
             let action_idx = sample_from_distribution(&strategy, rng);
 
             // Update opponent's cumulative strategy via canonical keys
-            let entry = regret_tables[player].get_or_create(info_hash);
+            let entry = regret_tables[player].get_or_create(info_hash)?;
             for (i, ca) in canonical_actions.iter().enumerate() {
                 entry.get_or_create_action(ca).cumulative_strategy += strategy[i];
             }
@@ -322,9 +345,9 @@ fn evaluate_at_depth_limit(
     traverser: PlayerIndex,
     rollout_mode: &RolloutMode,
     rollout_strategies: Option<(&dyn Strategy, &dyn Strategy)>,
-) -> f64 {
+) -> Result<f64, TerminationReason> {
     match rollout_mode {
-        RolloutMode::Heuristic => heuristic_utility(state, traverser),
+        RolloutMode::Heuristic => Ok(heuristic_utility(state, traverser)?),
         RolloutMode::Strategy { max_rollout_actions } => {
             rollout_utility(state, traverser, rollout_strategies, *max_rollout_actions)
         }
@@ -342,18 +365,19 @@ fn rollout_utility(
     traverser: PlayerIndex,
     rollout_strategies: Option<(&dyn Strategy, &dyn Strategy)>,
     max_actions: u32,
-) -> f64 {
-    require_supported_gameplay(state);
+) -> Result<f64, TerminationReason> {
+    require_supported_gameplay(state)?;
     let (strat0, strat1) = match rollout_strategies {
         Some((s0, s1)) => (s0, s1),
-        None => return heuristic_utility(state, traverser),
+        None => return Ok(heuristic_utility(state, traverser)?),
     };
 
     let mut rollout_state = state.clone();
     let mut actions_taken: u32 = 0;
 
     while !rollout_state.gameplay_stopped() && actions_taken < max_actions {
-        require_supported_gameplay(&rollout_state);
+        require_supported_gameplay(&rollout_state)?;
+        PreparedPublicNormalization::validate_state(&rollout_state, rollout_state.priority_player)?;
         let player = rollout_state.priority_player;
         let actions = legal_actions(&rollout_state);
 
@@ -366,28 +390,32 @@ fn rollout_utility(
         }
 
         let strategy: &dyn Strategy = if player == 0 { strat0 } else { strat1 };
-        let action = strategy.choose_action(&rollout_state, player);
+        let action = strategy.choose_action(&rollout_state, player)?;
         rules::apply_action(&mut rollout_state, &action);
         actions_taken += 1;
     }
 
-    require_supported_gameplay(&rollout_state);
-    if rollout_state.game_over {
-        terminal_utility(&rollout_state, traverser)
+    require_supported_gameplay(&rollout_state)?;
+    Ok(if rollout_state.game_over {
+        terminal_utility(&rollout_state, traverser)?
     } else {
         // Rollout didn't finish — fall back to heuristic
-        heuristic_utility(&rollout_state, traverser)
-    }
+        heuristic_utility(&rollout_state, traverser)?
+    })
 }
 
 /// Terminal utility: +1 for win, -1 for loss, 0 for draw.
-fn terminal_utility(state: &GameState, player: PlayerIndex) -> f64 {
-    require_supported_gameplay(state);
+fn terminal_utility(state: &GameState, player: PlayerIndex) -> Result<f64, TerminationReason> {
+    require_supported_gameplay(state)?;
+    Ok((|| -> f64 {
+
     match state.winner {
         Some(w) if w == player => 1.0,
         Some(_) => -1.0,
         None => 0.0,
     }
+
+    })())
 }
 
 /// Heuristic evaluation when depth limit is reached.
@@ -400,8 +428,10 @@ fn terminal_utility(state: &GameState, player: PlayerIndex) -> f64 {
 /// The combo proximity bonus gives partial credit for assembling combo pieces,
 /// incentivizing the solver to collect pieces even before the full combo is
 /// available. This is the "reward shaping" component described in the design.
-fn heuristic_utility(state: &GameState, player: PlayerIndex) -> f64 {
-    require_supported_gameplay(state);
+fn heuristic_utility(state: &GameState, player: PlayerIndex) -> Result<f64, TerminationReason> {
+    require_supported_gameplay(state)?;
+    Ok((|| -> f64 {
+
     use crate::game::GameFormat;
 
     let opp = state.opponent(player);
@@ -450,6 +480,8 @@ fn heuristic_utility(state: &GameState, player: PlayerIndex) -> f64 {
     // Weighted combination with combo awareness
     let base = normalized * 0.6 + board_normalized * 0.2;
     (base + combo_bonus + mana_bonus).clamp(-1.0, 1.0)
+
+    })())
 }
 
 /// Training loop: run many MCCFR iterations and return the trained regret tables.
@@ -460,15 +492,18 @@ pub fn train(
     initial_state: &GameState,
     num_iterations: u32,
     config: &McfrConfig,
-) -> [RegretTable; 2] {
-    require_supported_gameplay(initial_state);
+) -> Result<[RegretTable; 2], TerminationReason> {
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     let mut regret_tables = [RegretTable::new(), RegretTable::new()];
 
     for _ in 0..num_iterations {
-        run_iteration(initial_state, &mut regret_tables, config);
+        run_iteration(initial_state, &mut regret_tables, config)?;
     }
 
-    regret_tables
+    Ok(regret_tables)
 }
 
 /// Extended training with info set abstraction, rollouts, and checkpointing.
@@ -478,8 +513,11 @@ pub fn train_extended(
     initial_state: &GameState,
     num_iterations: u32,
     train_config: &TrainConfig,
-) -> [RegretTable; 2] {
-    require_supported_gameplay(initial_state);
+) -> Result<[RegretTable; 2], TerminationReason> {
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     let mut regret_tables = [RegretTable::new(), RegretTable::new()];
 
     for i in 0..num_iterations {
@@ -490,7 +528,7 @@ pub fn train_extended(
             train_config.abstraction,
             &train_config.rollout_mode,
             train_config.rollout_strategies,
-        );
+        )?;
 
         // Checkpoint at configured intervals
         if train_config.checkpoint_interval > 0
@@ -502,7 +540,7 @@ pub fn train_extended(
         }
     }
 
-    regret_tables
+    Ok(regret_tables)
 }
 
 // =========================================================================
@@ -527,8 +565,11 @@ pub fn train_parallel(
     num_iterations: u32,
     num_shards: u32,
     train_config: &TrainConfig,
-) -> [RegretTable; 2] {
-    require_supported_gameplay(initial_state);
+) -> Result<[RegretTable; 2], TerminationReason> {
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     use rayon::prelude::*;
 
     let iterations_per_shard = num_iterations / num_shards;
@@ -546,7 +587,7 @@ pub fn train_parallel(
 
             // Skip zero-work shards (happens when num_shards > num_iterations)
             if iters == 0 {
-                return [RegretTable::new(), RegretTable::new()];
+                return Ok([RegretTable::new(), RegretTable::new()]);
             }
 
             let mut tables = [RegretTable::new(), RegretTable::new()];
@@ -559,7 +600,7 @@ pub fn train_parallel(
                     train_config.abstraction,
                     &train_config.rollout_mode,
                     train_config.rollout_strategies,
-                );
+                )?;
 
                 // Per-shard checkpointing — writes to {dir}/shard_{idx}/.
                 // Note: these per-shard checkpoints are not automatically cleaned
@@ -575,9 +616,9 @@ pub fn train_parallel(
                 }
             }
 
-            tables
+            Ok(tables)
         })
-        .collect();
+        .collect::<Result<Vec<_>, TerminationReason>>()?;
 
     // Merge all shard results into a single pair of regret tables
     merge_regret_tables(&shard_results)
@@ -587,13 +628,13 @@ pub fn train_parallel(
 ///
 /// CFR regret and strategy sums are linear — summing independent
 /// traversals produces a valid combined result.
-fn merge_regret_tables(shard_results: &[[RegretTable; 2]]) -> [RegretTable; 2] {
+fn merge_regret_tables(shard_results: &[[RegretTable; 2]]) -> Result<[RegretTable; 2], TerminationReason> {
     let mut merged = [RegretTable::new(), RegretTable::new()];
 
     for shard in shard_results {
         for player in 0..2 {
-            for (&info_hash, shard_data) in &shard[player].data {
-                let merged_data = merged[player].get_or_create(info_hash);
+            for (&info_hash, shard_data) in shard[player].entries()? {
+                let merged_data = merged[player].get_or_create(info_hash)?;
                 merged_data.visit_count += shard_data.visit_count;
 
                 for (action, shard_entry) in &shard_data.action_data {
@@ -605,7 +646,7 @@ fn merge_regret_tables(shard_results: &[[RegretTable; 2]]) -> [RegretTable; 2] {
         }
     }
 
-    merged
+    Ok(merged)
 }
 
 // =========================================================================
@@ -618,12 +659,13 @@ pub fn save_checkpoint(
     dir: &str,
     iteration: u32,
 ) -> Result<(), String> {
+    let encoded: Vec<_> = tables.iter().map(RegretTable::to_bytes)
+        .collect::<Result<_, _>>().map_err(|e| format!("serialize: {}", e))?;
     let path = Path::new(dir);
     std::fs::create_dir_all(path).map_err(|e| format!("mkdir: {}", e))?;
 
-    for (i, table) in tables.iter().enumerate() {
+    for (i, bytes) in encoded.iter().enumerate() {
         let filename = path.join(format!("player_{}_iter_{}.bin", i, iteration));
-        let bytes = table.to_bytes().map_err(|e| format!("serialize: {}", e))?;
         std::fs::write(&filename, bytes).map_err(|e| format!("write: {}", e))?;
     }
 
@@ -669,8 +711,11 @@ pub fn train_goldfish_parallel(
     num_iterations: u32,
     num_shards: u32,
     config: &McfrConfig,
-) -> [RegretTable; 2] {
-    require_supported_gameplay(initial_state);
+) -> Result<[RegretTable; 2], TerminationReason> {
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     train_goldfish_parallel_with_progress(
         initial_state,
         num_iterations,
@@ -701,8 +746,11 @@ pub fn train_goldfish_parallel_with_abstraction(
     config: &McfrConfig,
     abstraction: &dyn InfoSetAbstraction,
     pilot: PlayerIndex,
-) -> [RegretTable; 2] {
-    require_supported_gameplay(initial_state);
+) -> Result<[RegretTable; 2], TerminationReason> {
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     train_goldfish_parallel_with_progress(
         initial_state,
         num_iterations,
@@ -748,11 +796,14 @@ pub fn train_goldfish_parallel_with_progress<F>(
     checkpoint_interval: Option<u32>,
     checkpoint_dir: Option<&str>,
     on_progress: F,
-) -> [RegretTable; 2]
+) -> Result<[RegretTable; 2], TerminationReason>
 where
     F: Fn(u32, u32, &AtomicU32) + Send + Sync,
 {
-    require_supported_gameplay(initial_state);
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     use rayon::prelude::*;
 
     let iterations_per_shard = num_iterations / num_shards;
@@ -769,7 +820,7 @@ where
             };
 
             if iters == 0 {
-                return [RegretTable::new(), RegretTable::new()];
+                return Ok([RegretTable::new(), RegretTable::new()]);
             }
 
             let mut regret_tables = [RegretTable::new(), RegretTable::new()];
@@ -782,7 +833,7 @@ where
                 if !state.gameplay_stopped() {
                     rules::reshuffle_opening_hand(&mut state);
                 }
-                require_supported_gameplay(&state);
+                require_supported_gameplay(&state)?;
                 let mut nodes_visited = 0u32;
                 traverse_goldfish(
                     state,
@@ -794,7 +845,7 @@ where
                     0,
                     0,
                     &mut nodes_visited,
-                );
+                )?;
 
                 let completed = progress.fetch_add(1, Ordering::Relaxed) + 1;
                 on_progress(completed, num_iterations, &progress);
@@ -810,9 +861,9 @@ where
                 }
             }
 
-            regret_tables
+            Ok(regret_tables)
         })
-        .collect();
+        .collect::<Result<Vec<_>, TerminationReason>>()?;
 
     merge_regret_tables(&shard_results)
 }
@@ -838,8 +889,11 @@ pub fn train_parallel_basic(
     num_iterations: u32,
     num_shards: u32,
     config: &McfrConfig,
-) -> [RegretTable; 2] {
-    require_supported_gameplay(initial_state);
+) -> Result<[RegretTable; 2], TerminationReason> {
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     let train_config = TrainConfig {
         mccfr: config.clone(),
         ..TrainConfig::default()
@@ -865,8 +919,11 @@ pub fn warm_start_from_greedy(
     num_warmup_games: u32,
     abstraction: &dyn InfoSetAbstraction,
     _warmup_weight: f64, // kept for API compatibility, no longer used for seeding
-) -> [RegretTable; 2] {
-    require_supported_gameplay(initial_state);
+) -> Result<[RegretTable; 2], TerminationReason> {
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     use crate::strategy::GreedyStrategy;
 
     let mut tables = [RegretTable::new(), RegretTable::new()];
@@ -878,15 +935,18 @@ pub fn warm_start_from_greedy(
         if !state.gameplay_stopped() {
             rules::reshuffle_opening_hand(&mut state);
         }
-        require_supported_gameplay(&state);
+        require_supported_gameplay(&state)?;
         let mut actions_taken = 0u32;
 
         while !state.gameplay_stopped() && actions_taken < 500 {
-            require_supported_gameplay(&state);
+            require_supported_gameplay(&state)?;
             let player = state.priority_player;
+            let view = state.visible_state(player);
+            let prepared = PreparedPublicNormalization::from_view(&view)?;
             let actions = legal_actions_abstracted(&state);
 
             if actions.len() <= 1 {
+                drop(prepared);
                 let action = if actions.is_empty() {
                     Action::PassPriority
                 } else {
@@ -898,28 +958,27 @@ pub fn warm_start_from_greedy(
             }
 
             // Canonicalize actions
-            let view = state.visible_state(player);
-            let normalized = InformationSet::normalize_retained_view(&view);
-            let canonical_actions = canonicalize_actions(&actions, &state, &normalized);
-            let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
+            let normalized = prepared.finish()?;
+            let canonical_actions = canonicalize_actions(&actions, &state, &normalized)?;
+            let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized)?;
             let info_hash = abstraction.abstract_info_set(&info_set);
 
             // Pre-populate the info set entry with all legal actions.
             // Regrets and strategy values remain at zero — no bias introduced.
-            let entry = tables[player].get_or_create(info_hash);
+            let entry = tables[player].get_or_create(info_hash)?;
             for ca in &canonical_actions {
                 entry.get_or_create_action(ca);
             }
 
             // Play the greedy action to explore realistic game paths
-            let greedy_action = greedy.choose_action(&state, player);
+            let greedy_action = greedy.choose_action(&state, player)?;
             rules::apply_action(&mut state, &greedy_action);
             actions_taken += 1;
         }
-        require_supported_gameplay(&state);
+        require_supported_gameplay(&state)?;
     }
 
-    tables
+    Ok(tables)
 }
 
 /// Train with warm-starting: first seed tables from GreedyStrategy,
@@ -929,15 +988,18 @@ pub fn train_warm_started(
     num_warmup_games: u32,
     num_iterations: u32,
     train_config: &TrainConfig,
-) -> [RegretTable; 2] {
-    require_supported_gameplay(initial_state);
+) -> Result<[RegretTable; 2], TerminationReason> {
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     // Phase 1: Warm-start
     let mut regret_tables = warm_start_from_greedy(
         initial_state,
         num_warmup_games,
         train_config.abstraction,
         1.0,
-    );
+    )?;
 
     // Phase 2: Regular MCCFR training
     for i in 0..num_iterations {
@@ -948,7 +1010,7 @@ pub fn train_warm_started(
             train_config.abstraction,
             &train_config.rollout_mode,
             train_config.rollout_strategies,
-        );
+        )?;
 
         if train_config.checkpoint_interval > 0
             && (i + 1) % train_config.checkpoint_interval == 0
@@ -959,7 +1021,7 @@ pub fn train_warm_started(
         }
     }
 
-    regret_tables
+    Ok(regret_tables)
 }
 
 // =========================================================================
@@ -1095,18 +1157,25 @@ pub fn collect_policy_snapshots(
     regret_tables: &[RegretTable; 2],
     abstraction: &dyn InfoSetAbstraction,
     max_snapshots: usize,
-) -> Vec<PolicySnapshot> {
-    require_supported_gameplay(initial_state);
+) -> Result<Vec<PolicySnapshot>, TerminationReason> {
+    for table in regret_tables { table.ensure_usable()?; }
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     let mut snapshots = Vec::new();
     let mut state = initial_state.clone();
     let mut actions_taken = 0u32;
 
     while !state.gameplay_stopped() && actions_taken < 500 && snapshots.len() < max_snapshots {
-        require_supported_gameplay(&state);
+        require_supported_gameplay(&state)?;
         let player = state.priority_player;
+        let view = state.visible_state(player);
+        let prepared = PreparedPublicNormalization::from_view(&view)?;
         let actions = legal_actions_abstracted(&state);
 
         if actions.len() <= 1 {
+            drop(prepared);
             let action = if actions.is_empty() {
                 Action::PassPriority
             } else {
@@ -1117,13 +1186,12 @@ pub fn collect_policy_snapshots(
             continue;
         }
 
-        let view = state.visible_state(player);
-        let normalized = InformationSet::normalize_retained_view(&view);
-        let canonical_actions = canonicalize_actions(&actions, &state, &normalized);
-        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
+        let normalized = prepared.finish()?;
+        let canonical_actions = canonicalize_actions(&actions, &state, &normalized)?;
+        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized)?;
         let info_hash = abstraction.abstract_info_set(&info_set);
 
-        let (distribution, visit_count) = match regret_tables[player].get(info_hash) {
+        let (distribution, visit_count) = match regret_tables[player].get(info_hash)? {
             Some(data) => (data.average_strategy(&canonical_actions), data.visit_count),
             None => {
                 let n = actions.len();
@@ -1161,8 +1229,8 @@ pub fn collect_policy_snapshots(
         actions_taken += 1;
     }
 
-    require_supported_gameplay(&state);
-    snapshots
+    require_supported_gameplay(&state)?;
+    Ok(snapshots)
 }
 
 // =========================================================================
@@ -1189,8 +1257,11 @@ pub fn train_goldfish(
     initial_state: &GameState,
     num_iterations: u32,
     config: &McfrConfig,
-) -> [RegretTable; 2] {
-    require_supported_gameplay(initial_state);
+) -> Result<[RegretTable; 2], TerminationReason> {
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     train_goldfish_with_abstraction(
         initial_state,
         num_iterations,
@@ -1209,8 +1280,11 @@ pub fn train_goldfish_with_abstraction(
     config: &McfrConfig,
     abstraction: &dyn InfoSetAbstraction,
     pilot: PlayerIndex,
-) -> [RegretTable; 2] {
-    require_supported_gameplay(initial_state);
+) -> Result<[RegretTable; 2], TerminationReason> {
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     train_goldfish_with_progress(initial_state, num_iterations, config, abstraction, pilot, |_, _, _| {})
 }
 
@@ -1225,11 +1299,14 @@ pub fn train_goldfish_with_progress<F>(
     abstraction: &dyn InfoSetAbstraction,
     pilot: PlayerIndex,
     mut on_progress: F,
-) -> [RegretTable; 2]
+) -> Result<[RegretTable; 2], TerminationReason>
 where
     F: FnMut(u32, u32, &[RegretTable; 2]),
 {
-    require_supported_gameplay(initial_state);
+    require_supported_gameplay(initial_state)?;
+    if !initial_state.gameplay_stopped() {
+        PreparedPublicNormalization::validate_state(initial_state, initial_state.priority_player)?;
+    }
     let mut regret_tables = [RegretTable::new(), RegretTable::new()];
     let goldfish = crate::strategy::GoldfishStrategy;
 
@@ -1240,7 +1317,7 @@ where
         if !state.gameplay_stopped() {
             rules::reshuffle_opening_hand(&mut state);
         }
-        require_supported_gameplay(&state);
+        require_supported_gameplay(&state)?;
         let mut nodes_visited = 0u32;
         traverse_goldfish(
             state,
@@ -1252,11 +1329,11 @@ where
             0,
             0,
             &mut nodes_visited,
-        );
+        )?;
         on_progress(i + 1, num_iterations, &regret_tables);
     }
 
-    regret_tables
+    Ok(regret_tables)
 }
 
 /// Recursive goldfish MCCFR traversal for the pilot player.
@@ -1283,17 +1360,21 @@ fn traverse_goldfish(
     depth: u32,
     mut actions_taken: u32,
     nodes_visited: &mut u32,
-) -> f64 {
+) -> Result<f64, TerminationReason> {
     loop {
-        require_supported_gameplay(&state);
+        require_supported_gameplay(&state)?;
         // Terminal check
         if state.game_over {
-            return terminal_utility(&state, pilot);
+            return Ok(terminal_utility(&state, pilot)?);
         }
+
+        let view = state.visible_state(state.priority_player);
+        let prepared = PreparedPublicNormalization::from_view(&view)?;
 
         // Action limit
         if actions_taken >= config.max_actions {
-            return heuristic_utility(&state, pilot);
+            drop(prepared);
+            return Ok(heuristic_utility(&state, pilot)?);
         }
 
         // Node budget: fall back to heuristic when iteration budget is exhausted.
@@ -1302,7 +1383,8 @@ fn traverse_goldfish(
         if config.max_nodes_per_iteration > 0
             && *nodes_visited >= config.max_nodes_per_iteration
         {
-            return heuristic_utility(&state, pilot);
+            drop(prepared);
+            return Ok(heuristic_utility(&state, pilot)?);
         }
 
         let player = state.priority_player;
@@ -1310,7 +1392,8 @@ fn traverse_goldfish(
         // Opponent (goldfish): deterministic, no regret tracking.
         // Loop instead of recursing to avoid stack overflow at high depth.
         if player != pilot {
-            let action = goldfish.choose_action(&state, player);
+            drop(prepared);
+            let action = goldfish.choose_action(&state, player)?;
             rules::apply_action(&mut state, &action);
             // depth unchanged for opponent actions
             actions_taken += 1;
@@ -1322,6 +1405,7 @@ fn traverse_goldfish(
 
         // No actions — pass
         if actions.is_empty() {
+            drop(prepared);
             rules::apply_action(&mut state, &Action::PassPriority);
             actions_taken += 1;
             continue;
@@ -1329,6 +1413,7 @@ fn traverse_goldfish(
 
         // Single action — no decision to make
         if actions.len() == 1 {
+            drop(prepared);
             rules::apply_action(&mut state, &actions[0]);
             actions_taken += 1;
             continue;
@@ -1337,19 +1422,19 @@ fn traverse_goldfish(
         // Depth limit — uses heuristic_utility directly; see doc comment above
         // for rationale on omitting rollout support.
         if config.max_depth > 0 && depth >= config.max_depth {
-            return heuristic_utility(&state, pilot);
+            drop(prepared);
+            return Ok(heuristic_utility(&state, pilot)?);
         }
 
         // Canonicalize actions
-        let view = state.visible_state(pilot);
-        let normalized = InformationSet::normalize_retained_view(&view);
-        let canonical_actions = canonicalize_actions(&actions, &state, &normalized);
-        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
+        let normalized = prepared.finish()?;
+        let canonical_actions = canonicalize_actions(&actions, &state, &normalized)?;
+        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized)?;
         let info_hash = abstraction.abstract_info_set(&info_set);
 
         // Get current strategy via regret matching
         let strategy = {
-            let entry = regret_table.get_or_create(info_hash);
+            let entry = regret_table.get_or_create(info_hash)?;
             entry.current_strategy(&canonical_actions)
         };
 
@@ -1370,7 +1455,7 @@ fn traverse_goldfish(
                 depth + 1,
                 actions_taken + 1,
                 nodes_visited,
-            );
+            )?;
         }
 
         // Expected utility under current strategy
@@ -1381,7 +1466,7 @@ fn traverse_goldfish(
             .sum();
 
         // Update regrets and cumulative strategy
-        let entry = regret_table.get_or_create(info_hash);
+        let entry = regret_table.get_or_create(info_hash)?;
         for (i, ca) in canonical_actions.iter().enumerate() {
             let action_entry = entry.get_or_create_action(ca);
             action_entry.cumulative_regret += action_utilities[i] - node_utility;
@@ -1389,7 +1474,7 @@ fn traverse_goldfish(
         }
         entry.visit_count += 1;
 
-        return node_utility;
+        return Ok(node_utility);
     }
 }
 
@@ -1437,13 +1522,13 @@ impl<'a> InfoSetAbstraction for MultiPhaseAbstraction<'a> {
 /// Lower values indicate closer approximation to Nash equilibrium.
 /// This is an approximation — true exploitability requires a best-response
 /// computation, which is expensive.
-pub fn approximate_exploitability(regret_tables: &[RegretTable; 2]) -> f64 {
+pub fn approximate_exploitability(regret_tables: &[RegretTable; 2]) -> Result<f64, TerminationReason> {
     // Sum of absolute average regret across all info sets
     let mut total_regret = 0.0;
     let mut total_entries = 0;
 
     for table in regret_tables {
-        for (_, data) in &table.data {
+        for (_, data) in table.entries()? {
             if data.visit_count == 0 {
                 continue;
             }
@@ -1458,11 +1543,11 @@ pub fn approximate_exploitability(regret_tables: &[RegretTable; 2]) -> f64 {
         }
     }
 
-    if total_entries > 0 {
+    Ok(if total_entries > 0 {
         total_regret / total_entries as f64
     } else {
         f64::INFINITY
-    }
+    })
 }
 
 /// Report training statistics for diagnostics.
@@ -1474,27 +1559,27 @@ pub struct TrainingStats {
 }
 
 /// Compute training statistics from regret tables.
-pub fn training_stats(tables: &[RegretTable; 2]) -> TrainingStats {
+pub fn training_stats(tables: &[RegretTable; 2]) -> Result<TrainingStats, TerminationReason> {
     let mut stats = TrainingStats {
         total_info_sets: [0; 2],
         total_visits: [0; 2],
         memory_bytes: [0; 2],
-        exploitability: approximate_exploitability(tables),
+        exploitability: approximate_exploitability(tables)?,
     };
 
     for i in 0..2 {
-        stats.total_info_sets[i] = tables[i].num_info_sets();
-        stats.total_visits[i] = tables[i].data.values().map(|d| d.visit_count).sum();
+        stats.total_info_sets[i] = tables[i].num_info_sets()?;
+        stats.total_visits[i] = tables[i].entries()?.values().map(|d| d.visit_count).sum();
         // Rough memory estimate (lower bound). Does not account for HashMap
         // overhead (load factor, bucket metadata), so actual RSS may be 1.5-2x
         // higher. Suitable for relative comparisons, not absolute sizing.
-        let estimated = tables[i].data.iter().map(|(_, d)| {
+        let estimated = tables[i].entries()?.iter().map(|(_, d)| {
             8 + 8 + d.action_data.len() * 48
         }).sum();
         stats.memory_bytes[i] = estimated;
     }
 
-    stats
+    Ok(stats)
 }
 
 #[cfg(test)]
@@ -1506,11 +1591,11 @@ mod tests {
         let mut state = GameState::new(2);
         state.game_over = true;
         state.winner = Some(0);
-        assert_eq!(terminal_utility(&state, 0), 1.0);
-        assert_eq!(terminal_utility(&state, 1), -1.0);
+        assert_eq!(terminal_utility(&state, 0).unwrap(), 1.0);
+        assert_eq!(terminal_utility(&state, 1).unwrap(), -1.0);
 
         state.winner = None;
-        assert_eq!(terminal_utility(&state, 0), 0.0);
+        assert_eq!(terminal_utility(&state, 0).unwrap(), 0.0);
     }
 
     #[test]
@@ -1523,7 +1608,7 @@ mod tests {
         state.card_db = Some(Arc::new(db));
 
         // Equal life totals, no creatures — should be close to 0
-        let util = heuristic_utility(&state, 0);
+        let util = heuristic_utility(&state, 0).unwrap();
         assert!(util.abs() < 0.01, "Equal game should have ~0 utility, got {}", util);
     }
 
@@ -1538,7 +1623,7 @@ mod tests {
         state.players[0].life = 20;
         state.players[1].life = 10;
 
-        let util = heuristic_utility(&state, 0);
+        let util = heuristic_utility(&state, 0).unwrap();
         assert!(util > 0.0, "Player with more life should have positive utility");
     }
 
@@ -1552,7 +1637,7 @@ mod tests {
         let a = CanonicalAction::PassPriority;
         // Shard 1: player 0, info hash 42, action PassPriority with regret 5.0, strategy 3.0
         {
-            let entry = shard1[0].get_or_create(42);
+            let entry = shard1[0].get_or_create(42).unwrap();
             entry.visit_count = 10;
             let ae = entry.get_or_create_action(&a);
             ae.cumulative_regret = 5.0;
@@ -1560,16 +1645,16 @@ mod tests {
         }
         // Shard 2: player 0, info hash 42, action PassPriority with regret 7.0, strategy 2.0
         {
-            let entry = shard2[0].get_or_create(42);
+            let entry = shard2[0].get_or_create(42).unwrap();
             entry.visit_count = 15;
             let ae = entry.get_or_create_action(&a);
             ae.cumulative_regret = 7.0;
             ae.cumulative_strategy = 2.0;
         }
 
-        let merged = merge_regret_tables(&[shard1, shard2]);
+        let merged = merge_regret_tables(&[shard1, shard2]).unwrap();
 
-        let data = merged[0].get(42).unwrap();
+        let data = merged[0].get(42).unwrap().unwrap();
         assert_eq!(data.visit_count, 25);
         let ae = &data.action_data[&a];
         assert!((ae.cumulative_regret - 12.0).abs() < 1e-10);
@@ -1600,9 +1685,9 @@ mod tests {
             checkpoint_dir: None,
         };
 
-        let tables = train_extended(&state, 5, &train_cfg);
+        let tables = train_extended(&state, 5, &train_cfg).unwrap();
 
-        let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets()).sum();
+        let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
         assert!(total_info_sets > 0, "Training should create entries");
     }
 
@@ -1624,7 +1709,7 @@ mod tests {
         let random = RandomStrategy;
 
         // Rollout should produce a value in [-1, 1]
-        let util = rollout_utility(&state, 0, Some((&greedy, &random)), 500);
+        let util = rollout_utility(&state, 0, Some((&greedy, &random)), 500).unwrap();
         assert!(
             util >= -1.0 && util <= 1.0,
             "Rollout utility should be in [-1, 1], got {}", util
@@ -1645,9 +1730,9 @@ mod tests {
         rules::setup_game(&mut state, &deck0, &deck1);
 
         let config = McfrConfig { max_depth: 8, max_actions: 200, max_nodes_per_iteration: 0 };
-        let tables = train(&state, 5, &config);
+        let tables = train(&state, 5, &config).unwrap();
 
-        let stats = training_stats(&tables);
+        let stats = training_stats(&tables).unwrap();
         assert!(stats.total_info_sets[0] > 0);
         assert!(stats.total_visits[0] > 0);
         assert!(stats.memory_bytes[0] > 0);
@@ -1667,14 +1752,14 @@ mod tests {
         rules::setup_game(&mut state, &deck, &deck);
 
         let config = McfrConfig { max_depth: 8, max_actions: 1000, max_nodes_per_iteration: 0 };
-        let tables = train_goldfish_parallel(&state, 8, 4, &config);
+        let tables = train_goldfish_parallel(&state, 8, 4, &config).unwrap();
 
         // Pilot's table should have entries
-        assert!(tables[0].num_info_sets() > 0, "Parallel goldfish training should create info sets");
+        assert!(tables[0].num_info_sets().unwrap() > 0, "Parallel goldfish training should create info sets");
         let total_visits: u64 = tables[0].data.values().map(|d| d.visit_count).sum();
         assert!(total_visits > 0, "Parallel goldfish training should accumulate visits");
         // Opponent's table should remain empty (goldfish)
-        assert_eq!(tables[1].num_info_sets(), 0, "Opponent table should be empty in goldfish mode");
+        assert_eq!(tables[1].num_info_sets().unwrap(), 0, "Opponent table should be empty in goldfish mode");
     }
 
     #[test]
@@ -1691,10 +1776,10 @@ mod tests {
         rules::setup_game(&mut state, &deck0, &deck1);
 
         let config = McfrConfig { max_depth: 8, max_actions: 200, max_nodes_per_iteration: 0 };
-        let tables = train_parallel_basic(&state, 8, 4, &config);
+        let tables = train_parallel_basic(&state, 8, 4, &config).unwrap();
 
         // Both players should have info set entries
-        let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets()).sum();
+        let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
         assert!(total_info_sets > 0, "Parallel basic training should create entries");
     }
 
@@ -1712,8 +1797,8 @@ mod tests {
 
         let config = McfrConfig { max_depth: 8, max_actions: 1000, max_nodes_per_iteration: 0 };
         // 2 iterations spread across 8 shards: should not panic
-        let tables = train_goldfish_parallel(&state, 2, 8, &config);
-        assert!(tables[0].num_info_sets() > 0);
+        let tables = train_goldfish_parallel(&state, 2, 8, &config).unwrap();
+        assert!(tables[0].num_info_sets().unwrap() > 0);
     }
 }
 
@@ -1743,7 +1828,7 @@ mod loss_boundary_training_tests {
         let config = McfrConfig { max_actions: 0, max_depth: 1,
             max_nodes_per_iteration: 1 };
         assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
-            run_iteration(&state, &mut tables, &config);
+            run_iteration(&state, &mut tables, &config).unwrap();
         })));
         assert!(tables.iter().all(|table| table.data.is_empty()));
         assert_eq!(bincode::serialize(&state).unwrap(), before);
@@ -1758,7 +1843,7 @@ mod loss_boundary_training_tests {
             max_nodes_per_iteration: 1 };
         assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
             traverse_goldfish(state, &mut table, &config, &IdentityAbstraction,
-                &crate::strategy::GoldfishStrategy, 0, u32::MAX, 0, &mut nodes);
+                &crate::strategy::GoldfishStrategy, 0, u32::MAX, 0, &mut nodes).unwrap();
         })));
         assert!(table.data.is_empty());
         assert_eq!(nodes, 0);
@@ -1769,20 +1854,20 @@ mod loss_boundary_training_tests {
         let state = unsupported_resume();
         let before = bincode::serialize(&state).unwrap();
         assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
-            train(&state, 0, &McfrConfig::default());
+            train(&state, 0, &McfrConfig::default()).unwrap();
         })));
         assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
-            train_goldfish(&state, 0, &McfrConfig::default());
+            train_goldfish(&state, 0, &McfrConfig::default()).unwrap();
         })));
         assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
-            train_parallel(&state, 0, 1, &TrainConfig::default());
+            train_parallel(&state, 0, 1, &TrainConfig::default()).unwrap();
         })));
         assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
-            warm_start_from_greedy(&state, 0, &IdentityAbstraction, 1.0);
+            warm_start_from_greedy(&state, 0, &IdentityAbstraction, 1.0).unwrap();
         })));
         assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
             collect_policy_snapshots(&state, &[RegretTable::new(), RegretTable::new()],
-                &IdentityAbstraction, 0);
+                &IdentityAbstraction, 0).unwrap();
         })));
         assert_eq!(bincode::serialize(&state).unwrap(), before);
     }
@@ -1791,13 +1876,13 @@ mod loss_boundary_training_tests {
     fn unsupported_numeric_evaluators_fail_before_heuristic_or_draw_utility() {
         let state = unsupported_resume();
         assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
-            terminal_utility(&state, 0);
+            terminal_utility(&state, 0).unwrap();
         })));
         assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
-            heuristic_utility(&state, 0);
+            heuristic_utility(&state, 0).unwrap();
         })));
         assert_invalid_failure(catch_unwind(AssertUnwindSafe(|| {
-            rollout_utility(&state, 0, None, 0);
+            rollout_utility(&state, 0, None, 0).unwrap();
         })));
     }
 }
@@ -1816,7 +1901,7 @@ mod common_pass_training_tests {
             max_nodes_per_iteration: 1,
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_iteration(&state, &mut tables, &config)
+            run_iteration(&state, &mut tables, &config).unwrap()
         }));
         let error = result.expect_err("invalid preparation cannot return a training value");
         let text = error
@@ -1826,5 +1911,160 @@ mod common_pass_training_tests {
             .unwrap_or("");
         assert!(text.contains("INVALID reason=prepared_sba_failure"));
         assert!(tables.iter().all(|table| table.data.is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod encoding_attempt_disposal_tests {
+    use super::*;
+    use std::sync::{Arc, atomic::{AtomicUsize,Ordering}};
+    use crate::{card::{sample,ZoneType},game::Phase,strategy::{GreedyStrategy,McfrStrategy}};
+    struct LaterEncodingFailure { calls:AtomicUsize }
+    impl Strategy for LaterEncodingFailure {
+        fn choose_action(&self,state:&GameState,player:usize)->Result<Action,TerminationReason>{
+            if self.calls.fetch_add(1,Ordering::SeqCst)>0 {return Err(TerminationReason::StateEncoding);}
+            GreedyStrategy.choose_action(state,player)
+        }
+        fn name(&self)->&str{"Synthetic later encoding failure"}
+    }
+    fn state()->GameState {
+        let mut state=GameState::new(2);state.card_db=Some(Arc::new(sample::build_sample_db()));state.phase=Phase::PreCombatMain;
+        state.create_card_in_zone(sample::ids::MOUNTAIN,1,ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Hand);
+        for player in 0..2{for _ in 0..12{state.create_card_in_zone(sample::ids::MOUNTAIN,player,ZoneType::Library);}}
+        state
+    }
+    #[test]
+    fn later_child_encoding_failure_disposes_partially_updated_attempt_without_publication() {
+        let state=state();let mut tables=[RegretTable::new(),RegretTable::new()];let independent=tables.clone();
+        let failing=LaterEncodingFailure{calls:AtomicUsize::new(0)};
+        let config=McfrConfig{max_depth:2,max_actions:30,max_nodes_per_iteration:0};
+        let before=bincode::serialize(&state).unwrap();
+        let result=run_iteration_with_abstraction(&state,&mut tables,&config,&IdentityAbstraction,
+            &RolloutMode::Strategy{max_rollout_actions:1},Some((&failing,&failing)));
+        assert_eq!(result,Err(TerminationReason::StateEncoding));assert!(failing.calls.load(Ordering::SeqCst)>=2);
+        // Earlier descendant writes really happened. Disposal leaves their
+        // storage private and unusable; it performs no rollback or shadow copy.
+        assert!(tables.iter().flat_map(|table|table.data.values()).any(|data|data.visit_count>0));
+        assert!(tables.iter().flat_map(|table|table.data.values()).flat_map(|data|data.action_data.values()).any(|entry|entry.cumulative_strategy>0.0));
+        assert!(tables.iter().all(|table|table.entries().is_err()&&table.to_bytes().is_err()));
+        assert!(training_stats(&tables).is_err());assert!(approximate_exploitability(&tables).is_err());assert!(merge_regret_tables(&[tables.clone()]).is_err());
+        assert!(collect_policy_snapshots(&state,&tables,&IdentityAbstraction,1).is_err());
+        assert!(McfrStrategy::new(tables[0].clone()).choose_action(&state,0).is_err());
+        let folder=std::env::temp_dir().join(format!("mtg2d1-failed-attempt-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        assert!(save_checkpoint(&tables,folder.to_str().unwrap(),1).is_err());assert!(!folder.exists());
+        assert_eq!(before,bincode::serialize(&state).unwrap());assert!(!state.game_over);
+        assert!(independent.iter().all(|table|table.entries().is_ok()&&table.to_bytes().is_ok()));
+        assert_eq!(run_iteration(&state,&mut tables,&config),Err(TerminationReason::StateEncoding));
+    }
+    #[test]
+    fn invalid_projection_does_not_complete_iteration_callback_or_checkpoint() {
+        let mut state=state();
+        let source=state.create_card_in_zone(sample::ids::LIGHTNING_GREAVES,0,ZoneType::Battlefield);
+        let target=state.create_card_in_zone(sample::ids::LLANOWAR_ELVES,0,ZoneType::Battlefield);
+        state.set_malformed_attachment_fixture(source,Some(crate::card::AttachmentLink{source_generation:1,target:state.exact_object(target).unwrap(),kind:crate::card::AttachmentKind::Equipment,timestamp:0}));
+        let mut tables=[RegretTable::new(),RegretTable::new()];
+        tables[0].get_or_create(42).unwrap().visit_count=1;
+        assert_eq!(run_iteration(&state,&mut tables,&McfrConfig::default()),Err(TerminationReason::StateEncoding));
+        assert!(tables.iter().all(|table|table.entries().is_err()&&table.to_bytes().is_err()));
+        let mut calls=0;let before=bincode::serialize(&state).unwrap();
+        let result=train_goldfish_with_progress(&state,2,&McfrConfig{max_depth:2,max_actions:20,max_nodes_per_iteration:20},&IdentityAbstraction,0,|_,_,_|calls+=1);
+        assert!(matches!(result,Err(TerminationReason::StateEncoding)));assert_eq!(calls,0);assert_eq!(before,bincode::serialize(&state).unwrap());assert!(!state.game_over);
+        let folder=std::env::temp_dir().join(format!("mtg2d1-encoding-checkpoint-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let config=TrainConfig{mccfr:McfrConfig{max_depth:2,max_actions:20,max_nodes_per_iteration:20},checkpoint_interval:1,checkpoint_dir:Some(folder.to_str().unwrap().into()),..Default::default()};
+        assert!(matches!(train_extended(&state,2,&config),Err(TerminationReason::StateEncoding)));assert!(!folder.exists());
+    }
+}
+
+#[cfg(test)]
+mod two_stage_tests {
+    use super::*;
+    use crate::{card::{sample,ZoneType}, game::{Phase,PendingTrigger}};
+    fn state(main: bool) -> GameState {
+        let mut s = GameState::new(2); s.card_db = Some(std::sync::Arc::new(sample::build_sample_db()));
+        s.phase = if main { Phase::PreCombatMain } else { Phase::Upkeep };
+        for p in 0..2 { for _ in 0..8 { s.create_card_in_zone(sample::ids::MOUNTAIN,p,ZoneType::Library); } }
+        if main { s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Hand); }
+        s
+    }
+    fn evaluate(s: GameState, depth: u32, max_actions: u32) -> Result<f64,TerminationReason> {
+        traverse(s,0,&mut [RegretTable::new(),RegretTable::new()],
+            &McfrConfig { max_depth:1,max_actions,max_nodes_per_iteration:0 },
+            &IdentityAbstraction,&RolloutMode::Heuristic,None,depth,0,&mut rand::rngs::mock::StepRng::new(1,1))
+    }
+    #[test]
+    fn nonkeyed_paths_validate_without_building_witnesses() {
+        for (main,depth,limit) in [(false,0,1),(true,1,10),(true,0,0)] {
+            crate::rules::transitions::NORMALIZATION_CALLS.with(|c| c.set(0));
+            assert!(evaluate(state(main),depth,limit).is_ok());
+            assert_eq!(crate::rules::transitions::NORMALIZATION_CALLS.with(|c|c.get()),0);
+        }
+        let mut nodes=0;
+        crate::rules::transitions::NORMALIZATION_CALLS.with(|c| c.set(0));
+        assert!(traverse_goldfish(state(true),&mut RegretTable::new(),
+            &McfrConfig { max_depth:1,max_actions:10,max_nodes_per_iteration:1 },
+            &IdentityAbstraction,&crate::strategy::GoldfishStrategy,0,0,0,&mut nodes).is_ok());
+        assert_eq!(nodes,1);
+        assert_eq!(crate::rules::transitions::NORMALIZATION_CALLS.with(|c|c.get()),0);
+    }
+    #[test]
+    fn malformed_state_still_fails_before_forced_limits_keyed_and_goldfish() {
+        for (main,depth,limit) in [(false,0,1),(true,1,10),(true,0,0),(true,0,10)] {
+            let mut s=state(main); let id=s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Battlefield); s.battlefield.push(id);
+            assert_eq!(evaluate(s,depth,limit),Err(TerminationReason::StateEncoding));
+        }
+        for opponent in [false,true] {
+            let mut s=state(true); if opponent {s.priority_player=1;}
+            let id=s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Battlefield);s.battlefield.push(id);
+            let mut nodes=0;
+            assert_eq!(traverse_goldfish(s,&mut RegretTable::new(),
+                &McfrConfig {max_depth:1,max_actions:10,max_nodes_per_iteration:1},
+                &IdentityAbstraction,&crate::strategy::GoldfishStrategy,0,0,0,&mut nodes),Err(TerminationReason::StateEncoding));
+            assert_eq!(nodes,0);
+        }
+    }
+    #[test]
+    fn restored_occurrence_corruption_and_zero_work_preflights_reject() {
+        let mut s=state(true);let source=s.create_card_in_zone(sample::ids::ELVISH_VISIONARY,0,ZoneType::Battlefield);
+        let mut trigger=PendingTrigger::from_source(&s,source,0,0,vec![]).unwrap();trigger.context.source_generation+=1;s.pending_triggers.push(trigger);
+        assert!(s.validate_attachment_structure().is_ok());
+        let mut restored=s.clone();restored.restore(s.snapshot()).unwrap();
+        let db=s.card_db.clone();let mut json:GameState=serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();json.card_db=db.clone();
+        let mut binary:GameState=bincode::deserialize(&bincode::serialize(&s).unwrap()).unwrap();binary.card_db=db;
+        for s in [restored,json,binary] {
+            assert_eq!(evaluate(s.clone(),0,0),Err(TerminationReason::StateEncoding));
+            assert!(matches!(train(&s,0,&McfrConfig::default()),Err(TerminationReason::StateEncoding)));
+            assert!(matches!(warm_start_from_greedy(&s,0,&IdentityAbstraction,1.0),Err(TerminationReason::StateEncoding)));
+            assert!(matches!(collect_policy_snapshots(&s,&[RegretTable::new(),RegretTable::new()],&IdentityAbstraction,0),Err(TerminationReason::StateEncoding)));
+        }
+    }
+    #[test]
+    fn terminal_and_no_strategy_utility_boundaries_are_unchanged() {
+        let mut s=state(false);let id=s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Battlefield);s.battlefield.push(id);
+        assert!(rollout_utility(&s,0,None,0).is_ok());
+        s.game_over=true;s.winner=Some(0);s.priority_player=99;
+        assert_eq!(evaluate(s.clone(),0,0),Ok(1.0));
+        assert_eq!(run_iteration(&s,&mut [RegretTable::new(),RegretTable::new()],&McfrConfig::default()),Ok(()));
+        s.sba_failure=Some(crate::rules::sba::PreparedPassFailure::StateEncoding);
+        assert_eq!(evaluate(s,0,0),Err(TerminationReason::StateEncoding));
+    }
+    #[test]
+    fn goldfish_opponent_delegation_keeps_accounting_and_skips_completion() {
+        struct Reject;
+        impl Strategy for Reject {
+            fn choose_action(&self, _: &GameState, _: usize) -> Result<Action, TerminationReason> {
+                Err(TerminationReason::StateEncoding)
+            }
+            fn name(&self) -> &str { "Synthetic encoding failure" }
+        }
+        let mut s = state(true);
+        s.priority_player = 1;
+        let mut nodes = 0;
+        crate::rules::transitions::NORMALIZATION_CALLS.with(|c| c.set(0));
+        assert_eq!(traverse_goldfish(s, &mut RegretTable::new(),
+            &McfrConfig { max_depth: 1, max_actions: 10, max_nodes_per_iteration: 0 },
+            &IdentityAbstraction, &Reject, 0, 0, 0, &mut nodes), Err(TerminationReason::StateEncoding));
+        assert_eq!(nodes, 1);
+        assert_eq!(crate::rules::transitions::NORMALIZATION_CALLS.with(|c| c.get()), 0);
     }
 }

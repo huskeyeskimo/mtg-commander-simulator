@@ -44,7 +44,7 @@ fn setup_mini_game() -> GameState {
 fn test_info_set_from_game_state() {
     let state = setup_mini_game();
     let view = state.visible_state(0);
-    let info_set = InformationSet::from_view(&view, state.card_db());
+    let info_set = InformationSet::from_view(&view, state.card_db()).unwrap();
 
     assert_eq!(info_set.my_life, 20);
     assert_eq!(info_set.opp_life, 20);
@@ -67,10 +67,10 @@ fn test_info_set_hash_stable() {
     let state = setup_mini_game();
 
     let view1 = state.visible_state(0);
-    let hash1 = InformationSet::from_view(&view1, state.card_db()).hash_value();
+    let hash1 = InformationSet::from_view(&view1, state.card_db()).unwrap().hash_value();
 
     let view2 = state.visible_state(0);
-    let hash2 = InformationSet::from_view(&view2, state.card_db()).hash_value();
+    let hash2 = InformationSet::from_view(&view2, state.card_db()).unwrap().hash_value();
 
     assert_eq!(hash1, hash2, "Same game state should produce same hash");
 }
@@ -86,7 +86,7 @@ fn test_regret_table_roundtrip() {
         CanonicalAction::CastSpell { card_id: 100, hand_index: 0, targets: vec![] },
     ];
     {
-        let entry = table.get_or_create(12345);
+        let entry = table.get_or_create(12345).unwrap();
         for (i, a) in actions.iter().enumerate() {
             let ae = entry.get_or_create_action(a);
             ae.cumulative_regret = (i as f64 + 1.0) * 1.0;
@@ -98,7 +98,7 @@ fn test_regret_table_roundtrip() {
     let bytes = table.to_bytes().expect("serialize");
     let restored = RegretTable::from_bytes(&bytes).expect("deserialize");
 
-    let data = restored.get(12345).unwrap();
+    let data = restored.get(12345).unwrap().unwrap();
     assert_eq!(data.action_data[&CanonicalAction::PassPriority].cumulative_regret, 1.0);
     assert_eq!(data.visit_count, 42);
 }
@@ -114,10 +114,10 @@ fn test_mccfr_single_iteration_runs() {
     };
 
     let mut tables = [RegretTable::new(), RegretTable::new()];
-    mccfr::run_iteration(&state, &mut tables, &config);
+    mccfr::run_iteration(&state, &mut tables, &config).unwrap();
 
     // After one iteration, at least some info sets should have been visited
-    let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets()).sum();
+    let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
     assert!(
         total_info_sets > 0,
         "MCCFR should visit at least some info sets"
@@ -134,9 +134,9 @@ fn test_mccfr_training_loop() {
         max_nodes_per_iteration: 0,
     };
 
-    let tables = mccfr::train(&state, 10, &config);
+    let tables = mccfr::train(&state, 10, &config).unwrap();
 
-    let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets()).sum();
+    let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
     assert!(
         total_info_sets > 0,
         "Training should create info set entries"
@@ -144,7 +144,7 @@ fn test_mccfr_training_loop() {
 
     // Check that visit counts are reasonable
     for table in &tables {
-        for (_, data) in &table.data {
+        for (_, data) in table.entries().unwrap() {
             assert!(data.visit_count > 0, "Visited entries should have count > 0");
             assert!(
                 !data.action_data.is_empty(),
@@ -164,11 +164,11 @@ fn test_mccfr_exploitability_decreases() {
         max_nodes_per_iteration: 0,
     };
 
-    let tables_5 = mccfr::train(&state, 5, &config);
-    let exploit_5 = mccfr::approximate_exploitability(&tables_5);
+    let tables_5 = mccfr::train(&state, 5, &config).unwrap();
+    let exploit_5 = mccfr::approximate_exploitability(&tables_5).unwrap();
 
-    let tables_50 = mccfr::train(&state, 50, &config);
-    let exploit_50 = mccfr::approximate_exploitability(&tables_50);
+    let tables_50 = mccfr::train(&state, 50, &config).unwrap();
+    let exploit_50 = mccfr::approximate_exploitability(&tables_50).unwrap();
 
     // We don't assert strict monotonicity (MCCFR is stochastic), but the
     // 50-iteration result should be finite and non-negative.
@@ -192,7 +192,7 @@ fn test_mcfr_strategy_plays_legal_games() {
         max_nodes_per_iteration: 0,
     };
 
-    let tables = mccfr::train(&state, 20, &config);
+    let tables = mccfr::train(&state, 20, &config).unwrap();
     let mcfr_p0 = McfrStrategy::new(tables[0].clone());
     let mcfr_p1 = McfrStrategy::new(tables[1].clone());
 
@@ -222,7 +222,7 @@ fn test_mcfr_strategy_vs_random() {
         max_nodes_per_iteration: 0,
     };
 
-    let tables = mccfr::train(&state, 20, &config);
+    let tables = mccfr::train(&state, 20, &config).unwrap();
     let mcfr_strat = McfrStrategy::new(tables[0].clone());
     let random_strat = RandomStrategy;
 
@@ -263,7 +263,7 @@ fn test_mcfr_strategy_vs_greedy() {
         max_nodes_per_iteration: 0,
     };
 
-    let tables = mccfr::train(&state, 50, &config);
+    let tables = mccfr::train(&state, 50, &config).unwrap();
     let mcfr_strat = McfrStrategy::new(tables[0].clone());
     let greedy_strat = GreedyStrategy;
 
@@ -312,7 +312,7 @@ fn test_mcfr_mirror_match_convergence() {
         max_nodes_per_iteration: 0,
     };
 
-    let tables = mccfr::train(&state, 50, &config);
+    let tables = mccfr::train(&state, 50, &config).unwrap();
     let mcfr_p0 = McfrStrategy::new(tables[0].clone());
     let mcfr_p1 = McfrStrategy::new(tables[1].clone());
 
@@ -385,7 +385,7 @@ fn test_mcfr_strategy_fallback_on_unseen_info_set() {
     state.turn_number = 2;
 
     // Should not panic even with empty regret table
-    let _action = strategy.choose_action(&state, 0);
+    let _action = strategy.choose_action(&state, 0).unwrap();
     let legal = legal_actions(&state);
     // The action should be one of the legal actions
     // (McfrStrategy uses legal_actions_abstracted which may differ slightly,
@@ -435,10 +435,10 @@ fn test_info_set_per_color_mana() {
     state2.players[0].mana_pool.white = 2;
 
     let view1 = state1.visible_state(0);
-    let hash1 = InformationSet::from_view(&view1, state1.card_db()).hash_value();
+    let hash1 = InformationSet::from_view(&view1, state1.card_db()).unwrap().hash_value();
 
     let view2 = state2.visible_state(0);
-    let hash2 = InformationSet::from_view(&view2, state2.card_db()).hash_value();
+    let hash2 = InformationSet::from_view(&view2, state2.card_db()).unwrap().hash_value();
 
     assert_ne!(hash1, hash2, "Different mana colors should produce different hashes");
 }
@@ -476,8 +476,8 @@ fn test_bucketed_abstraction_reduces_info_sets() {
     let state = setup_mini_game();
     let config = McfrConfig { max_depth: 8, max_actions: 200, max_nodes_per_iteration: 0 };
 
-    let identity_tables = mccfr::train(&state, 10, &config);
-    let identity_info_sets: usize = identity_tables.iter().map(|t| t.num_info_sets()).sum();
+    let identity_tables = mccfr::train(&state, 10, &config).unwrap();
+    let identity_info_sets: usize = identity_tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
 
     let bucketed = BucketedAbstraction;
     let train_cfg = TrainConfig {
@@ -488,8 +488,8 @@ fn test_bucketed_abstraction_reduces_info_sets() {
         checkpoint_interval: 0,
         checkpoint_dir: None,
     };
-    let bucketed_tables = mccfr::train_extended(&state, 10, &train_cfg);
-    let bucketed_info_sets: usize = bucketed_tables.iter().map(|t| t.num_info_sets()).sum();
+    let bucketed_tables = mccfr::train_extended(&state, 10, &train_cfg).unwrap();
+    let bucketed_info_sets: usize = bucketed_tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
 
     eprintln!(
         "Info sets — Identity: {}, Bucketed: {} (reduction: {:.1}%)",
@@ -522,9 +522,9 @@ fn test_60card_training_with_bucketed_abstraction() {
         checkpoint_dir: None,
     };
 
-    let tables = mccfr::train_extended(&state, 10, &train_cfg);
+    let tables = mccfr::train_extended(&state, 10, &train_cfg).unwrap();
 
-    let stats = mccfr::training_stats(&tables);
+    let stats = mccfr::training_stats(&tables).unwrap();
     eprintln!(
         "60-card training (10 iters): info_sets=[{}, {}], visits=[{}, {}], mem=[{}, {}] bytes, exploit={:.4}",
         stats.total_info_sets[0], stats.total_info_sets[1],
@@ -562,9 +562,9 @@ fn test_60card_rollout_training() {
         checkpoint_dir: None,
     };
 
-    let tables = mccfr::train_extended(&state, 5, &train_cfg);
+    let tables = mccfr::train_extended(&state, 5, &train_cfg).unwrap();
 
-    let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets()).sum();
+    let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
     assert!(total_info_sets > 0, "Rollout training should create info sets");
 
     eprintln!(
@@ -588,13 +588,13 @@ fn test_parallel_training_produces_results() {
         checkpoint_dir: None,
     };
 
-    let tables = mccfr::train_parallel(&state, 20, 4, &train_cfg);
+    let tables = mccfr::train_parallel(&state, 20, 4, &train_cfg).unwrap();
 
-    let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets()).sum();
+    let total_info_sets: usize = tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
     assert!(total_info_sets > 0, "Parallel training should produce info sets");
 
     // Verify visit counts are reasonable (should be ~20 iterations * 2 traversals)
-    let total_visits: u64 = tables.iter().flat_map(|t| t.data.values()).map(|d| d.visit_count).sum();
+    let total_visits: u64 = tables.iter().flat_map(|t| t.entries().unwrap().values()).map(|d| d.visit_count).sum();
     assert!(total_visits > 0, "Should have non-zero visit counts");
 
     eprintln!(
@@ -618,9 +618,9 @@ fn test_parallel_training_60card() {
         checkpoint_dir: None,
     };
 
-    let tables = mccfr::train_parallel(&state, 8, 4, &train_cfg);
+    let tables = mccfr::train_parallel(&state, 8, 4, &train_cfg).unwrap();
 
-    let stats = mccfr::training_stats(&tables);
+    let stats = mccfr::training_stats(&tables).unwrap();
     eprintln!(
         "60-card parallel (8 iters, 4 shards): info_sets=[{}, {}], exploit={:.4}",
         stats.total_info_sets[0], stats.total_info_sets[1],
@@ -648,7 +648,7 @@ fn test_abstracted_mcfr_strategy_plays_legal_games() {
         checkpoint_dir: None,
     };
 
-    let tables = mccfr::train_extended(&state, 20, &train_cfg);
+    let tables = mccfr::train_extended(&state, 20, &train_cfg).unwrap();
 
     let strat_p0 = AbstractedMcfrStrategy::new(
         tables[0].clone(),
@@ -685,7 +685,7 @@ fn test_60card_abstracted_strategy_vs_greedy() {
         checkpoint_dir: None,
     };
 
-    let tables = mccfr::train_extended(&state, 20, &train_cfg);
+    let tables = mccfr::train_extended(&state, 20, &train_cfg).unwrap();
 
     let mcfr_strat = AbstractedMcfrStrategy::new(
         tables[0].clone(),
@@ -724,7 +724,7 @@ fn test_checkpoint_save_load() {
     // Phase 2B.2: Verify checkpoint serialization round-trip.
     let state = setup_mini_game();
     let config = McfrConfig { max_depth: 8, max_actions: 200, max_nodes_per_iteration: 0 };
-    let tables = mccfr::train(&state, 5, &config);
+    let tables = mccfr::train(&state, 5, &config).unwrap();
 
     let dir = "/tmp/mtg_mccfr_test_checkpoint";
     mccfr::save_checkpoint(&tables, dir, 5).expect("save checkpoint");
@@ -734,13 +734,13 @@ fn test_checkpoint_save_load() {
     // Verify loaded tables match original
     for player in 0..2 {
         assert_eq!(
-            tables[player].num_info_sets(),
-            loaded[player].num_info_sets(),
+            tables[player].num_info_sets().unwrap(),
+            loaded[player].num_info_sets().unwrap(),
             "Player {} info set count should match after checkpoint round-trip",
             player,
         );
-        for (&hash, data) in &tables[player].data {
-            let loaded_data = loaded[player].get(hash)
+        for (&hash, data) in tables[player].entries().unwrap() {
+            let loaded_data = loaded[player].get(hash).unwrap()
                 .expect("info set should exist after load");
             assert_eq!(data.visit_count, loaded_data.visit_count);
         }
@@ -767,7 +767,7 @@ fn test_training_with_checkpointing() {
         checkpoint_dir: Some(dir.into()),
     };
 
-    let tables = mccfr::train_extended(&state, 10, &train_cfg);
+    let tables = mccfr::train_extended(&state, 10, &train_cfg).unwrap();
 
     // Checkpoint at iteration 5 and 10 should exist
     let loaded_5 = mccfr::load_checkpoint(dir, 5);
@@ -777,9 +777,9 @@ fn test_training_with_checkpointing() {
     assert!(loaded_10.is_ok(), "Checkpoint at iteration 10 should exist");
 
     // Final tables should have more info sets than the iteration-5 checkpoint
-    let final_total: usize = tables.iter().map(|t| t.num_info_sets()).sum();
+    let final_total: usize = tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
     let cp5_tables = loaded_5.unwrap();
-    let cp5_total: usize = cp5_tables.iter().map(|t| t.num_info_sets()).sum();
+    let cp5_total: usize = cp5_tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
     assert!(
         final_total >= cp5_total,
         "Final tables should have >= info sets as iteration 5 checkpoint ({} vs {})",
@@ -807,11 +807,11 @@ fn test_parallel_vs_sequential_consistency() {
         checkpoint_dir: None,
     };
 
-    let seq_tables = mccfr::train_extended(&state, 20, &train_cfg);
-    let par_tables = mccfr::train_parallel(&state, 20, 4, &train_cfg);
+    let seq_tables = mccfr::train_extended(&state, 20, &train_cfg).unwrap();
+    let par_tables = mccfr::train_parallel(&state, 20, 4, &train_cfg).unwrap();
 
-    let seq_info: usize = seq_tables.iter().map(|t| t.num_info_sets()).sum();
-    let par_info: usize = par_tables.iter().map(|t| t.num_info_sets()).sum();
+    let seq_info: usize = seq_tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
+    let par_info: usize = par_tables.iter().map(|t| t.num_info_sets().unwrap()).sum();
 
     eprintln!(
         "Sequential vs Parallel info sets: {} vs {}",
@@ -839,10 +839,10 @@ fn test_goldfish_mccfr_training_runs() {
     rules::setup_game(&mut state, &deck, &deck);
 
     let config = McfrConfig { max_depth: 6, max_actions: 300, max_nodes_per_iteration: 0 };
-    let tables = mccfr::train_goldfish(&state, 10, &config);
+    let tables = mccfr::train_goldfish(&state, 10, &config).unwrap();
 
-    let p0_info_sets = tables[0].num_info_sets();
-    let p1_info_sets = tables[1].num_info_sets();
+    let p0_info_sets = tables[0].num_info_sets().unwrap();
+    let p1_info_sets = tables[1].num_info_sets().unwrap();
 
     eprintln!(
         "Goldfish MCCFR (10 iters): P0 info sets = {}, P1 info sets = {}",
@@ -865,7 +865,7 @@ fn test_goldfish_mccfr_strategy_plays_legal_games() {
     rules::setup_game(&mut state, &deck, &deck);
 
     let config = McfrConfig { max_depth: 6, max_actions: 300, max_nodes_per_iteration: 0 };
-    let tables = mccfr::train_goldfish(&state, 15, &config);
+    let tables = mccfr::train_goldfish(&state, 15, &config).unwrap();
 
     let mccfr_strat = McfrStrategy::new(tables[0].clone());
 
@@ -894,10 +894,10 @@ fn test_goldfish_mccfr_vs_greedy_vs_random_kill_turns() {
     rules::setup_game(&mut state, &deck, &deck);
 
     let config = McfrConfig { max_depth: 5, max_actions: 500, max_nodes_per_iteration: 0 };
-    let tables = mccfr::train_goldfish(&state, 20, &config);
+    let tables = mccfr::train_goldfish(&state, 20, &config).unwrap();
     let mccfr_strat = McfrStrategy::new(tables[0].clone());
 
-    let stats = mccfr::training_stats(&tables);
+    let stats = mccfr::training_stats(&tables).unwrap();
     eprintln!(
         "Goldfish MCCFR training: {} info sets, {} visits, exploit={:.4}",
         stats.total_info_sets[0], stats.total_visits[0], stats.exploitability,
@@ -992,7 +992,7 @@ fn test_goldfish_mccfr_with_abstraction() {
     let config = McfrConfig { max_depth: 6, max_actions: 500, max_nodes_per_iteration: 0 };
     let tables = mccfr::train_goldfish_with_abstraction(
         &state, 30, &config, &bucketed, 0,
-    );
+    ).unwrap();
 
     let strat = AbstractedMcfrStrategy::new(
         tables[0].clone(),
@@ -1023,7 +1023,7 @@ fn test_goldfish_mccfr_green_stompy() {
     rules::setup_game(&mut state, &deck, &deck);
 
     let config = McfrConfig { max_depth: 5, max_actions: 500, max_nodes_per_iteration: 0 };
-    let tables = mccfr::train_goldfish(&state, 20, &config);
+    let tables = mccfr::train_goldfish(&state, 20, &config).unwrap();
     let mccfr_strat = McfrStrategy::new(tables[0].clone());
 
     let num_games = 100;
@@ -1077,10 +1077,10 @@ fn test_commander_goldfish_mccfr_training_runs() {
     assert!(!state.players[0].command_zone.is_empty(), "Commander should be in command zone");
 
     let config = McfrConfig { max_depth: 5, max_actions: 500, max_nodes_per_iteration: 0 };
-    let tables = mccfr::train_goldfish(&state, 5, &config);
+    let tables = mccfr::train_goldfish(&state, 5, &config).unwrap();
 
-    let p0_info_sets = tables[0].num_info_sets();
-    let p1_info_sets = tables[1].num_info_sets();
+    let p0_info_sets = tables[0].num_info_sets().unwrap();
+    let p1_info_sets = tables[1].num_info_sets().unwrap();
 
     eprintln!(
         "Commander Goldfish MCCFR (5 iters, Brimaz): P0 info sets = {}, P1 info sets = {}",
@@ -1103,9 +1103,9 @@ fn test_commander_goldfish_mccfr_with_abstraction() {
     let config = McfrConfig { max_depth: 5, max_actions: 500, max_nodes_per_iteration: 0 };
     let tables = mccfr::train_goldfish_with_abstraction(
         &state, 10, &config, &bucketed, 0,
-    );
+    ).unwrap();
 
-    let stats = mccfr::training_stats(&tables);
+    let stats = mccfr::training_stats(&tables).unwrap();
     eprintln!(
         "Commander Goldfish MCCFR (abstracted, 10 iters): info_sets={}, visits={}, exploit={:.4}",
         stats.total_info_sets[0], stats.total_visits[0], stats.exploitability,
@@ -1143,13 +1143,13 @@ fn test_commander_goldfish_mccfr_vs_greedy_vs_random_kill_turns() {
     let config = McfrConfig { max_depth: 5, max_actions: 500, max_nodes_per_iteration: 0 };
     let tables = mccfr::train_goldfish_with_abstraction(
         &state, 20, &config, &bucketed, 0,
-    );
+    ).unwrap();
     let mccfr_strat = AbstractedMcfrStrategy::new(
         tables[0].clone(),
         Box::new(BucketedAbstraction),
     );
 
-    let stats = mccfr::training_stats(&tables);
+    let stats = mccfr::training_stats(&tables).unwrap();
     eprintln!(
         "Commander Goldfish MCCFR training: {} info sets, {} visits, exploit={:.4}",
         stats.total_info_sets[0], stats.total_visits[0], stats.exploitability,
@@ -1215,7 +1215,7 @@ fn test_commander_goldfish_kinnan_deck() {
     let config = McfrConfig { max_depth: 5, max_actions: 500, max_nodes_per_iteration: 0 };
     let tables = mccfr::train_goldfish_with_abstraction(
         &state, 10, &config, &bucketed, 0,
-    );
+    ).unwrap();
 
     let mccfr_strat = AbstractedMcfrStrategy::new(
         tables[0].clone(),
@@ -1263,28 +1263,28 @@ fn test_commander_goldfish_training_retains_coverage() {
                 pilot_10 = Some(tables[0].clone());
             }
         },
-    );
+    ).unwrap();
     assert_eq!(progress, (1..=30).map(|iteration| (iteration, 30)).collect::<Vec<_>>());
     let pilot_10 = pilot_10.expect("iteration 10 callback missing");
-    assert!(!pilot_10.data.is_empty(), "pilot checkpoint at iteration 10 is empty");
-    for (key, earlier) in &pilot_10.data {
-        let later = tables_30[0].get(*key).expect("iteration 10 info set was lost");
+    assert!(!pilot_10.entries().unwrap().is_empty(), "pilot checkpoint at iteration 10 is empty");
+    for (key, earlier) in pilot_10.entries().unwrap() {
+        let later = tables_30[0].get(*key).unwrap().expect("iteration 10 info set was lost");
         assert!(later.visit_count >= earlier.visit_count,
             "pilot info set {key} lost visits: {} -> {}",
             earlier.visit_count, later.visit_count);
     }
-    let visits_10: u64 = pilot_10.data.values().map(|entry| entry.visit_count).sum();
-    let visits_30: u64 = tables_30[0].data.values().map(|entry| entry.visit_count).sum();
+    let visits_10: u64 = pilot_10.entries().unwrap().values().map(|entry| entry.visit_count).sum();
+    let visits_30: u64 = tables_30[0].entries().unwrap().values().map(|entry| entry.visit_count).sum();
     assert!(visits_30 > visits_10,
         "pilot visits should grow in one continuous run: {visits_10} -> {visits_30}");
 
     let tables_10 = [pilot_10, RegretTable::new()];
-    let exploit_10 = mccfr::approximate_exploitability(&tables_10);
+    let exploit_10 = mccfr::approximate_exploitability(&tables_10).unwrap();
     let strat_10 = AbstractedMcfrStrategy::new(
         tables_10[0].clone(),
         Box::new(BucketedAbstraction),
     );
-    let exploit_30 = mccfr::approximate_exploitability(&tables_30);
+    let exploit_30 = mccfr::approximate_exploitability(&tables_30).unwrap();
     let strat_30 = AbstractedMcfrStrategy::new(
         tables_30[0].clone(),
         Box::new(BucketedAbstraction),
@@ -1294,8 +1294,8 @@ fn test_commander_goldfish_training_retains_coverage() {
     let results_10 = simulate_commander_goldfish(&db, &deck, commander, &strat_10, num_games);
     let results_30 = simulate_commander_goldfish(&db, &deck, commander, &strat_30, num_games);
 
-    let stats_10 = mccfr::training_stats(&tables_10);
-    let stats_30 = mccfr::training_stats(&tables_30);
+    let stats_10 = mccfr::training_stats(&tables_10).unwrap();
+    let stats_30 = mccfr::training_stats(&tables_30).unwrap();
 
     eprintln!("\n=== Commander Goldfish Training Retention Test ===");
     eprintln!(
@@ -1333,10 +1333,10 @@ fn test_commander_goldfish_info_set_includes_command_zone() {
     state2.move_object(cmd_obj, mtg_gto::card::ZoneType::Command, mtg_gto::card::ZoneType::Battlefield);
 
     let view1 = state1.visible_state(0);
-    let info1 = InformationSet::from_view(&view1, state1.card_db());
+    let info1 = InformationSet::from_view(&view1, state1.card_db()).unwrap();
 
     let view2 = state2.visible_state(0);
-    let info2 = InformationSet::from_view(&view2, state2.card_db());
+    let info2 = InformationSet::from_view(&view2, state2.card_db()).unwrap();
 
     // Command zone status should affect the info set hash
     assert_ne!(

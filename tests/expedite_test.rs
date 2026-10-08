@@ -477,7 +477,7 @@ fn active_grants_keep_timestamps_and_generations_across_state_roundtrips() {
     let json = serde_json::to_vec(&state).unwrap();
     let binary = bincode::serialize(&state).unwrap();
     let mut restored_from_snapshot = state.clone();
-    restored_from_snapshot.restore(snapshot.clone());
+    restored_from_snapshot.restore(snapshot.clone()).unwrap();
 
     // Change the live state after taking the snapshot: remove its EOT effects,
     // blink the target, warm the no-Haste cache, and grant Flying to the new
@@ -510,7 +510,7 @@ fn active_grants_keep_timestamps_and_generations_across_state_roundtrips() {
 
     // Restoring must replace the changed effects and incarnation, and clear
     // the post-snapshot cache entry that described the new permanent.
-    state.restore(snapshot);
+    state.restore(snapshot).unwrap();
     assert_eq!(state.continuous_effects, original_effects);
     assert_eq!(state.objects[&creature].zone_change_count, original_generation);
     assert_eq!(keyword_grants(&state, creature, KeywordAbility::Haste), expected_grants);

@@ -228,7 +228,7 @@ fn queued_trigger_survives_source_leaving_and_ordering() {
     assert!(state.pending_triggers.iter().all(|t| t.context.cast_spell.is_some()));
     state.objects.get_mut(&watcher).unwrap().is_token = true;
     state.move_object(watcher, ZoneType::Battlefield, ZoneType::Graveyard);
-    let pending_info = InformationSet::from_view(&state.visible_state(0), state.card_db());
+    let pending_info = InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap();
     assert_eq!(pending_info.pending_cast_spells.len(), 2);
     assert!(pending_info.pending_cast_spells.iter().all(|spell| spell.as_ref().unwrap().card_id == SPELL));
     let saved = state.snapshot();
@@ -238,13 +238,13 @@ fn queued_trigger_survives_source_leaving_and_ordering() {
         assert_eq!(restored.pending_triggers.len(), 2);
         assert!(restored.pending_triggers.iter().all(|t| t.context.cast_spell.as_ref().unwrap().definition.id == SPELL));
     }
-    state.restore(saved);
+    state.restore(saved).unwrap();
     let before = state.players[0].life;
     let order = Action::OrderTriggers {
         ordering: vec![(watcher, 0), (watcher, 1)],
     };
-    let canonical = canonicalize(&order, &state);
-    assert_eq!(resolve(&canonical, &state, 0), Some(order.clone()));
+    let canonical = canonicalize(&order, &state).unwrap();
+    assert_eq!(resolve(&canonical, &state, 0).unwrap(), Some(order.clone()));
     rules::apply_action(&mut state, &order);
     assert!(state.pending_triggers.is_empty());
     resolve_top(&mut state);
@@ -261,7 +261,7 @@ fn trigger_context_persists_and_information_set_uses_relationship_not_raw_id() {
         StackSource::TriggeredAbility { context, .. } => context.cast_spell.as_ref().unwrap().clone(),
         _ => panic!("missing trigger"),
     };
-    let info = InformationSet::from_view(&state.visible_state(0), state.card_db());
+    let info = InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap();
     assert_eq!(info.stack_entries[1].cast_spell.as_ref().unwrap().live_stack_position, Some(0));
     assert!(info.stack_entries[1].target_summary.is_empty());
     let mut equivalent = state.clone();
@@ -271,7 +271,7 @@ fn trigger_context_persists_and_information_set_uses_relationship_not_raw_id() {
     }
     equivalent.stack[1].id += 100;
     equivalent.next_stack_id += 100;
-    let equivalent_info = InformationSet::from_view(&equivalent.visible_state(0), equivalent.card_db());
+    let equivalent_info = InformationSet::from_view(&equivalent.visible_state(0), equivalent.card_db()).unwrap();
     assert_eq!(info.hash_value(), equivalent_info.hash_value());
 
     let snapshot = state.snapshot();
@@ -281,7 +281,7 @@ fn trigger_context_persists_and_information_set_uses_relationship_not_raw_id() {
         bincode::deserialize::<GameState>(&binary).unwrap()];
     let physical = match state.stack[0].source { StackSource::Spell(id) => id, _ => unreachable!() };
     state.move_object(physical, ZoneType::Stack, ZoneType::Graveyard);
-    state.restore(snapshot);
+    state.restore(snapshot).unwrap();
     restored.push(state);
     for mut game in restored {
         game.card_db = Some(database());
@@ -386,14 +386,14 @@ fn departed_historical_target_summary_ignores_runtime_object_id() {
     let (first, first_id) = history(0, CREATURE);
     let (second, second_id) = history(3, CREATURE);
     assert_ne!(first_id, second_id);
-    let a = InformationSet::from_view(&first.visible_state(0), first.card_db());
-    let b = InformationSet::from_view(&second.visible_state(0), second.card_db());
+    let a = InformationSet::from_view(&first.visible_state(0), first.card_db()).unwrap();
+    let b = InformationSet::from_view(&second.visible_state(0), second.card_db()).unwrap();
     assert_eq!(a.stack_entries[0].cast_spell.as_ref().unwrap().target_summary,
         b.stack_entries[0].cast_spell.as_ref().unwrap().target_summary);
     assert_eq!(a.hash_value(), b.hash_value());
 
     let (different, _) = history(0, REPLACEMENT);
-    let c = InformationSet::from_view(&different.visible_state(0), different.card_db());
+    let c = InformationSet::from_view(&different.visible_state(0), different.card_db()).unwrap();
     assert_ne!(a.stack_entries[0].cast_spell.as_ref().unwrap().target_summary,
         c.stack_entries[0].cast_spell.as_ref().unwrap().target_summary);
 }
@@ -441,7 +441,7 @@ fn historical_stack_id_survives_restore_without_allocator_collision() {
         assert_ne!(fresh, historical);
         assert!(restored.stack.iter().all(|entry| entry.id != fresh));
     }
-    state.restore(snapshot);
+    state.restore(snapshot).unwrap();
     assert_ne!(state.new_stack_id(), original);
 }
 

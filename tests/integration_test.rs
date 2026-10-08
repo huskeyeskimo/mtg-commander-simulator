@@ -500,22 +500,22 @@ mod ordinary_keyword_prerequisite {
         let (mut b, _) = simultaneous_fixture(true, 7, 3);
         rules::check_state_based_actions(&mut a);
         rules::check_state_based_actions(&mut b);
-        assert_eq!(InformationSet::from_view(&a.visible_state(0), a.card_db()).hash_value(),
-            InformationSet::from_view(&b.visible_state(0), b.card_db()).hash_value());
+        assert_eq!(InformationSet::from_view(&a.visible_state(0), a.card_db()).unwrap().hash_value(),
+            InformationSet::from_view(&b.visible_state(0), b.card_db()).unwrap().hash_value());
         let choices = |state: &GameState| legal_actions(state).into_iter().filter(|action|
             matches!(action, Action::OrderTriggerOccurrences { .. })).map(|action|
-            canonicalize(&action, state)).collect::<std::collections::HashSet<_>>();
+            canonicalize(&action, state).unwrap()).collect::<std::collections::HashSet<_>>();
         assert_eq!(choices(&a).len(), 6);
         assert_eq!(choices(&a), choices(&b));
         for action in legal_actions(&a).into_iter().filter(|action|
             matches!(action, Action::OrderTriggerOccurrences { .. })) {
-            let canonical = canonicalize(&action, &a);
-            let translated = resolve(&canonical, &b, 0).unwrap();
+            let canonical = canonicalize(&action, &a).unwrap();
+            let translated = resolve(&canonical, &b, 0).unwrap().unwrap();
             let mut first = a.clone(); let mut second = b.clone();
             rules::apply_action(&mut first, &action);
             rules::apply_action(&mut second, &translated);
-            assert_eq!(InformationSet::from_view(&first.visible_state(0), first.card_db()).hash_value(),
-                InformationSet::from_view(&second.visible_state(0), second.card_db()).hash_value());
+            assert_eq!(InformationSet::from_view(&first.visible_state(0), first.card_db()).unwrap().hash_value(),
+                InformationSet::from_view(&second.visible_state(0), second.card_db()).unwrap().hash_value());
         }
     }
 
@@ -526,15 +526,15 @@ mod ordinary_keyword_prerequisite {
         let (mut b, _) = simultaneous_fixture(true, 2, 7);
         rules::check_state_based_actions(&mut a);
         rules::check_state_based_actions(&mut b);
-        assert_eq!(InformationSet::from_view(&a.visible_state(0), a.card_db()).hash_value(),
-            InformationSet::from_view(&b.visible_state(0), b.card_db()).hash_value());
+        assert_eq!(InformationSet::from_view(&a.visible_state(0), a.card_db()).unwrap().hash_value(),
+            InformationSet::from_view(&b.visible_state(0), b.card_db()).unwrap().hash_value());
         for state in [&mut a, &mut b] {
             let original = state.pending_triggers.clone();
             let choices: Vec<_> = legal_actions(state).into_iter().filter(|action|
                 matches!(action, Action::OrderTriggerOccurrences { .. })).collect();
             assert_eq!(choices.len(), 1);
             let action = &choices[0];
-            assert_eq!(resolve(&canonicalize(action, state), state, 0), Some(action.clone()));
+            assert_eq!(resolve(&canonicalize(action, state).unwrap(), state, 0).unwrap(), Some(action.clone()));
             rules::apply_action(state, action);
             assert_eq!(state.stack.iter().map(|entry| match entry.source {
                 mtg_gto::game::StackSource::TriggeredAbility { source_id, .. } => source_id,
@@ -1370,8 +1370,8 @@ fn test_2a_cleanup_multiple_discards_order_and_restore() {
     let mut no_continuation = state.clone();
     no_continuation.cleanup_needs_repeat = false;
     assert_ne!(
-        InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value(),
-        InformationSet::from_view(&no_continuation.visible_state(0), no_continuation.card_db())
+        InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap().hash_value(),
+        InformationSet::from_view(&no_continuation.visible_state(0), no_continuation.card_db()).unwrap()
             .hash_value()
     );
 
@@ -1379,7 +1379,7 @@ fn test_2a_cleanup_multiple_discards_order_and_restore() {
     let json = serde_json::to_vec(&state).unwrap();
     let bin = bincode::serialize(&state).unwrap();
     let mut restored = state.clone();
-    restored.restore(snapshot);
+    restored.restore(snapshot).unwrap();
     let mut variants = [
         restored,
         serde_json::from_slice::<GameState>(&json).unwrap(),
@@ -1390,8 +1390,8 @@ fn test_2a_cleanup_multiple_discards_order_and_restore() {
         assert!(variant.cleanup_needs_repeat);
         assert_eq!(variant.pending_triggers.len(), 4);
         assert_eq!(
-            InformationSet::from_view(&variant.visible_state(0), variant.card_db()).hash_value(),
-            InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value()
+            InformationSet::from_view(&variant.visible_state(0), variant.card_db()).unwrap().hash_value(),
+            InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap().hash_value()
         );
         let order = legal_actions(variant)
             .into_iter()
@@ -1625,8 +1625,8 @@ fn test_2a_partial_cleanup_external_sba_and_restored_continuation() {
     let mut outside_discard = state.clone();
     outside_discard.cleanup_discard_in_progress = false;
     assert_ne!(
-        InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value(),
-        InformationSet::from_view(&outside_discard.visible_state(0), outside_discard.card_db())
+        InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap().hash_value(),
+        InformationSet::from_view(&outside_discard.visible_state(0), outside_discard.card_db()).unwrap()
             .hash_value()
     );
 
@@ -1634,7 +1634,7 @@ fn test_2a_partial_cleanup_external_sba_and_restored_continuation() {
     let json = serde_json::to_vec(&state).unwrap();
     let bin = bincode::serialize(&state).unwrap();
     let mut restored = state.clone();
-    restored.restore(snapshot);
+    restored.restore(snapshot).unwrap();
     let mut variants = [state, restored, serde_json::from_slice::<GameState>(&json).unwrap(),
         bincode::deserialize::<GameState>(&bin).unwrap()];
     for variant in &mut variants {
@@ -1862,7 +1862,7 @@ fn test_2a_interrupted_cleanup_goldfish_fast_forward_restores() {
     let json = serde_json::to_vec(&state).unwrap();
     let bin = bincode::serialize(&state).unwrap();
     let mut restored = state.clone();
-    restored.restore(snapshot);
+    restored.restore(snapshot).unwrap();
     let mut variants = [state, restored, serde_json::from_slice::<GameState>(&json).unwrap(),
         bincode::deserialize::<GameState>(&bin).unwrap()];
     for variant in &mut variants {
@@ -2750,8 +2750,8 @@ fn test_canonical_roundtrip_combat_phase() {
     assert!(!actions.is_empty());
 
     for action in &actions {
-        let canonical = canonicalize(action, &state);
-        let resolved = resolve(&canonical, &state, 0);
+        let canonical = canonicalize(action, &state).unwrap();
+        let resolved = resolve(&canonical, &state, 0).unwrap();
         assert!(
             resolved.is_some(),
             "Failed to resolve canonical for {:?}",
@@ -2806,8 +2806,8 @@ fn test_canonical_roundtrip_trigger_ordering() {
     assert_eq!(order_actions.len(), 2, "Should have 2 orderings");
 
     for action in &order_actions {
-        let canonical = canonicalize(action, &state);
-        let resolved = resolve(&canonical, &state, 0);
+        let canonical = canonicalize(action, &state).unwrap();
+        let resolved = resolve(&canonical, &state, 0).unwrap();
         assert!(
             resolved.is_some(),
             "Failed to resolve canonical OrderTriggers: {:?}",
@@ -2842,8 +2842,8 @@ fn test_canonical_roundtrip_full_game_all_actions() {
 
         // Verify round-trip for every legal action in this state
         for action in &actions {
-            let canonical = canonicalize(action, &state);
-            let resolved = resolve(&canonical, &state, player);
+            let canonical = canonicalize(action, &state).unwrap();
+            let resolved = resolve(&canonical, &state, player).unwrap();
             assert!(
                 resolved.is_some(),
                 "Round-trip failed at turn {} for action {:?} -> canonical {:?}",
@@ -2895,8 +2895,8 @@ fn test_canonical_hand_duplicate_disambiguation() {
     let action1 = Action::PlayLand { object_id: m1 };
     let action2 = Action::PlayLand { object_id: m2 };
 
-    let c1 = canonicalize(&action1, &state);
-    let c2 = canonicalize(&action2, &state);
+    let c1 = canonicalize(&action1, &state).unwrap();
+    let c2 = canonicalize(&action2, &state).unwrap();
 
     // Canonical forms must differ (different hand_index)
     assert_ne!(
@@ -2905,8 +2905,8 @@ fn test_canonical_hand_duplicate_disambiguation() {
     );
 
     // Round-trip must recover the exact ObjectId
-    let r1 = resolve(&c1, &state, 0).unwrap();
-    let r2 = resolve(&c2, &state, 0).unwrap();
+    let r1 = resolve(&c1, &state, 0).unwrap().unwrap();
+    let r2 = resolve(&c2, &state, 0).unwrap().unwrap();
     assert_eq!(
         r1, action1,
         "Round-trip must return exact ObjectId for first Mountain"
@@ -2938,7 +2938,7 @@ fn test_canonical_discard_hand_duplicate_disambiguation() {
     // Each discard action should have a distinct canonical form
     let canonical_actions: Vec<_> = mountain_ids
         .iter()
-        .map(|&id| canonicalize(&Action::Discard { object_id: id }, &state))
+        .map(|&id| canonicalize(&Action::Discard { object_id: id }, &state).unwrap())
         .collect();
 
     // All should be unique
@@ -2954,8 +2954,8 @@ fn test_canonical_discard_hand_duplicate_disambiguation() {
     // Each round-trips to the exact same ObjectId
     for &id in &mountain_ids {
         let action = Action::Discard { object_id: id };
-        let canonical = canonicalize(&action, &state);
-        let resolved = resolve(&canonical, &state, 0).unwrap();
+        let canonical = canonicalize(&action, &state).unwrap();
+        let resolved = resolve(&canonical, &state, 0).unwrap().unwrap();
         assert_eq!(resolved, action);
     }
 }
@@ -3533,8 +3533,8 @@ fn test_replacement_order_canonical_roundtrip() {
         ordering: vec![(p1, 0), (p2, 0)],
     };
 
-    let canonical = canonicalize(&action, &state);
-    let resolved = resolve(&canonical, &state, 0);
+    let canonical = canonicalize(&action, &state).unwrap();
+    let resolved = resolve(&canonical, &state, 0).unwrap();
     assert!(
         resolved.is_some(),
         "ChooseReplacementOrder should round-trip through canonical mapping"
@@ -3918,7 +3918,7 @@ fn test_greedy_strategy_handles_replacement_order() {
     // the strategy code path handles the match arm (no panic).
     let greedy = GreedyStrategy;
     // Normal action selection — should complete without panic
-    let action = greedy.choose_action(&state, 0);
+    let action = greedy.choose_action(&state, 0).unwrap();
     // Should return EndTurn (no creatures to attack with, so combat is skipped)
     // or PassPriority — either is acceptable, the point is no panic.
     assert!(
@@ -4663,7 +4663,7 @@ fn test_extra_turn() {
     let mut actions_taken = 0;
     let initial_turn = state.turn_number;
     while !state.game_over && state.turn_number == initial_turn && actions_taken < 2000 {
-        let action = greedy.choose_action(&state, state.priority_player);
+        let action = greedy.choose_action(&state, state.priority_player).unwrap();
         rules::apply_action(&mut state, &action);
         actions_taken += 1;
     }
@@ -4704,7 +4704,7 @@ fn test_game_state_snapshot_restore() {
     assert_ne!(state.players[0].life, original_life);
 
     // Restore from snapshot
-    state.restore(snap);
+    state.restore(snap).unwrap();
 
     // Verify restoration
     assert_eq!(
@@ -4935,10 +4935,10 @@ fn test_policy_snapshot_collection() {
     };
 
     // Train a small model
-    let tables = train_extended(&state, 5, &train_cfg);
+    let tables = train_extended(&state, 5, &train_cfg).unwrap();
 
     // Collect policy snapshots
-    let snapshots = collect_policy_snapshots(&state, &tables, &abstraction, 10);
+    let snapshots = collect_policy_snapshots(&state, &tables, &abstraction, 10).unwrap();
 
     // Should have at least some snapshots from the game
     assert!(
@@ -5046,11 +5046,11 @@ fn test_warm_start_produces_nonempty_tables() {
     rules::setup_game(&mut state, &deck0, &deck1);
 
     let abstraction = BucketedAbstraction;
-    let tables = warm_start_from_greedy(&state, 5, &abstraction, 1.0);
+    let tables = warm_start_from_greedy(&state, 5, &abstraction, 1.0).unwrap();
 
     // Both tables should have entries from warm-up
-    let p0_entries = tables[0].num_info_sets();
-    let p1_entries = tables[1].num_info_sets();
+    let p0_entries = tables[0].num_info_sets().unwrap();
+    let p1_entries = tables[1].num_info_sets().unwrap();
 
     assert!(p0_entries > 0, "P0 table should have warm-start entries");
     assert!(p1_entries > 0, "P1 table should have warm-start entries");
@@ -5078,7 +5078,7 @@ fn test_skip_phases() {
     let mut actions_taken = 0;
 
     while !state.game_over && state.turn_number == initial_turn && actions_taken < 500 {
-        let action = greedy.choose_action(&state, state.priority_player);
+        let action = greedy.choose_action(&state, state.priority_player).unwrap();
         rules::apply_action(&mut state, &action);
         actions_taken += 1;
     }
@@ -5436,7 +5436,7 @@ fn test_extra_turn_through_spell_resolution() {
     let initial_turn = state.turn_number;
     let mut actions_taken = 0;
     while !state.game_over && state.turn_number == initial_turn && actions_taken < 2000 {
-        let action = greedy.choose_action(&state, state.priority_player);
+        let action = greedy.choose_action(&state, state.priority_player).unwrap();
         rules::apply_action(&mut state, &action);
         actions_taken += 1;
     }
@@ -5552,7 +5552,7 @@ fn test_goldfish_strategy_passes_priority() {
     state.priority_player = 1;
     state.phase = Phase::PreCombatMain;
     let goldfish = GoldfishStrategy;
-    let action = goldfish.choose_action(&state, 1);
+    let action = goldfish.choose_action(&state, 1).unwrap();
     assert_eq!(
         action,
         Action::PassPriority,
@@ -5582,7 +5582,7 @@ fn test_goldfish_strategy_never_attacks() {
     }
 
     let goldfish = GoldfishStrategy;
-    let action = goldfish.choose_action(&state, 1);
+    let action = goldfish.choose_action(&state, 1).unwrap();
     match &action {
         Action::DeclareAttackers { attackers } => {
             assert!(attackers.is_empty(), "Goldfish should declare no attackers");
@@ -5623,7 +5623,7 @@ fn test_goldfish_strategy_never_blocks() {
     }
 
     let goldfish = GoldfishStrategy;
-    let action = goldfish.choose_action(&state, 1);
+    let action = goldfish.choose_action(&state, 1).unwrap();
     match &action {
         Action::DeclareBlockers { blocks } => {
             assert!(blocks.is_empty(), "Goldfish should declare no blockers");
@@ -5657,7 +5657,7 @@ fn test_goldfish_strategy_handles_forced_discard() {
     assert!(state.players[1].hand.len() > 7);
 
     let goldfish = GoldfishStrategy;
-    let action = goldfish.choose_action(&state, 1);
+    let action = goldfish.choose_action(&state, 1).unwrap();
     assert!(
         matches!(action, Action::Discard { .. }),
         "Goldfish should discard when forced, got {:?}",
@@ -6197,7 +6197,7 @@ fn test_commander_snapshot_restore() {
     assert_eq!(state.players[1].commander_damage_received[0], 21);
 
     // Restore from snapshot
-    state.restore(snap);
+    state.restore(snap).unwrap();
 
     // Verify all commander state was restored
     assert_eq!(state.players[0].life, 40, "Life should be restored to 40");
@@ -6410,8 +6410,8 @@ fn test_macro_action_canonical_roundtrip() {
     state.phase = Phase::PreCombatMain;
 
     let action = Action::ActivateMacro { combo_id: 0 };
-    let canonical = canonicalize(&action, &state);
-    let resolved = resolve(&canonical, &state, 0);
+    let canonical = canonicalize(&action, &state).unwrap();
+    let resolved = resolve(&canonical, &state, 0).unwrap();
     assert_eq!(
         resolved,
         Some(action),
@@ -8040,18 +8040,18 @@ fn test_stack_target_canonical_roundtrip_across_equivalent_states() {
     let (state, _, _, counter) = stack_target_state(0);
     let (other, _, _, other_counter) = stack_target_state(1000);
     use mtg_gto::info_set::InformationSet;
-    assert_eq!(InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value(),
-        InformationSet::from_view(&other.visible_state(0), other.card_db()).hash_value());
+    assert_eq!(InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap().hash_value(),
+        InformationSet::from_view(&other.visible_state(0), other.card_db()).unwrap().hash_value());
     for index in [0, 1] {
         let action = Action::CastSpell { object_id: counter, targets: vec![Target::StackEntry(state.stack[index].id)] };
-        let canonical = canonicalize(&action, &state);
-        assert_eq!(resolve(&canonical, &state, 0), Some(action));
+        let canonical = canonicalize(&action, &state).unwrap();
+        assert_eq!(resolve(&canonical, &state, 0).unwrap(), Some(action));
         let other_action = Action::CastSpell { object_id: other_counter, targets: vec![Target::StackEntry(other.stack[index].id)] };
-        assert_eq!(canonicalize(&other_action, &other), canonical);
-        assert_eq!(resolve(&canonical, &other, 0), Some(other_action));
+        assert_eq!(canonicalize(&other_action, &other).unwrap(), canonical);
+        assert_eq!(resolve(&canonical, &other, 0).unwrap(), Some(other_action));
         let bytes = bincode::serialize(&canonical).unwrap();
         let decoded = bincode::deserialize(&bytes).unwrap();
-        assert_eq!(resolve(&decoded, &other, 0), resolve(&canonical, &other, 0));
+        assert_eq!(resolve(&decoded, &other, 0).unwrap(), resolve(&canonical, &other, 0).unwrap());
     }
 }
 
@@ -8065,7 +8065,7 @@ fn test_stack_target_information_set_preserves_relationships() {
             let (mut state, _, _, counter) = stack_target_state(offset);
             let target = state.stack[index].id;
             targeting_cast(&mut state, counter, vec![Target::StackEntry(target)]);
-            equivalent_hashes.push(InformationSet::from_view(&state.visible_state(0), state.card_db()).hash_value());
+            equivalent_hashes.push(InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap().hash_value());
         }
         assert_eq!(equivalent_hashes[0], equivalent_hashes[1]);
         hashes.push(equivalent_hashes[0]);
@@ -8089,7 +8089,7 @@ fn test_stack_target_snapshot_and_serialization() {
     from_binary.card_db = state.card_db.clone();
     targeting_resolve(&mut state);
     state.new_stack_id();
-    state.restore(saved);
+    state.restore(saved).unwrap();
     for mut restored in [state.clone(), from_json, from_binary] {
         assert_eq!(serde_json::to_value(&restored.stack).unwrap(), expected_stack);
         assert_eq!(restored.new_stack_id(), expected_next_id);
@@ -8120,7 +8120,7 @@ fn test_stack_target_invalid_and_stale_casts_do_not_mutate() {
         assert_eq!(serde_json::to_value(&state).unwrap(), before);
         assert!(state.drain_events().is_empty());
         if matches!(target, Target::StackEntry(_)) {
-            assert_eq!(resolve(&canonicalize(&action, &state), &state, 0), None);
+            assert_eq!(resolve(&canonicalize(&action, &state).unwrap(), &state, 0).unwrap(), None);
         }
     }
 }
@@ -8151,7 +8151,7 @@ fn test_stack_target_does_not_replace_permanent_or_player_targets() {
     assert!(!target_is_legal(&state, 0, &TargetSpec::AnyPlayer, &Target::StackEntry(stack_id)));
     for target in [Target::Object(creature), Target::Player(1)] {
         let action = Action::CastSpell { object_id: state.create_card_in_zone(920004, 0, ZoneType::Hand), targets: vec![target] };
-        assert_eq!(resolve(&canonicalize(&action, &state), &state, 0), Some(action));
+        assert_eq!(resolve(&canonicalize(&action, &state).unwrap(), &state, 0).unwrap(), Some(action));
     }
 }
 
@@ -8163,20 +8163,20 @@ fn test_stack_target_cleanup_graveyard_reconstruction_rejects_missing_targets() 
     let action = Action::CastFromGraveyard {
         object_id: counter, targets: vec![Target::StackEntry(state.stack[1].id)],
     };
-    let canonical = canonicalize(&action, &state);
-    assert_eq!(resolve(&canonical, &state, 0), Some(action));
+    let canonical = canonicalize(&action, &state).unwrap();
+    assert_eq!(resolve(&canonical, &state, 0).unwrap(), Some(action));
     for index in [None, Some(state.stack.len()), Some(usize::MAX)] {
         let mut invalid = canonical.clone();
         if let CanonicalAction::CastFromGraveyard { targets, .. } = &mut invalid {
             *targets = vec![CanonicalTarget::StackEntry { stack_index: index }];
         } else { panic!("expected graveyard cast"); }
-        assert_eq!(resolve(&invalid, &state, 0), None, "index {index:?}");
+        assert_eq!(resolve(&invalid, &state, 0).unwrap(), None, "index {index:?}");
     }
     // An occupied position is insufficient: AnySpell cannot select an ability.
     state.stack[1].source = mtg_gto::game::StackSource::ActivatedAbility {
         source_id: counter, ability_index: 0,
     };
-    assert_eq!(resolve(&canonical, &state, 0), None);
+    assert_eq!(resolve(&canonical, &state, 0).unwrap(), None);
 }
 
 #[test]
@@ -8196,21 +8196,21 @@ fn test_stack_target_cleanup_interleaved_ability_positions() {
     for index in [0, 2] {
         let action = Action::CastSpell { object_id: counter, targets: vec![Target::StackEntry(state.stack[index].id)] };
         assert!(actions.contains(&action));
-        let canonical = canonicalize(&action, &state);
+        let canonical = canonicalize(&action, &state).unwrap();
         assert!(matches!(&canonical, CanonicalAction::CastSpell { targets, .. }
             if targets == &vec![CanonicalTarget::StackEntry { stack_index: Some(index) }]));
-        assert_eq!(resolve(&canonical, &state, 0), Some(action));
-        assert_eq!(resolve(&canonical, &equivalent, 0), Some(Action::CastSpell {
+        assert_eq!(resolve(&canonical, &state, 0).unwrap(), Some(action));
+        assert_eq!(resolve(&canonical, &equivalent, 0).unwrap(), Some(Action::CastSpell {
             object_id: counter, targets: vec![Target::StackEntry(equivalent.stack[index].id)],
         }));
     }
     let ability_action = Action::CastSpell { object_id: counter, targets: vec![Target::StackEntry(ability_id)] };
     assert!(!actions.contains(&ability_action));
-    let mut canonical = canonicalize(&ability_action, &state);
+    let mut canonical = canonicalize(&ability_action, &state).unwrap();
     if let CanonicalAction::CastSpell { targets, .. } = &mut canonical {
         *targets = vec![CanonicalTarget::StackEntry { stack_index: Some(1) }];
     }
-    assert_eq!(resolve(&canonical, &state, 0), None);
+    assert_eq!(resolve(&canonical, &state, 0).unwrap(), None);
 }
 
 #[test]
@@ -8369,7 +8369,7 @@ fn test_2a_successive_draw_events_wait_and_remain_two_occurrences() {
     let json = serde_json::to_vec(&state).unwrap();
     let bin = bincode::serialize(&state).unwrap();
     let mut restored = state.clone();
-    restored.restore(snap);
+    restored.restore(snap).unwrap();
     for candidate in [
         restored,
         serde_json::from_slice::<GameState>(&json).unwrap(),
@@ -8463,7 +8463,7 @@ fn test_2a_deferred_source_survives_departure_and_state_roundtrips() {
     let json = serde_json::to_vec(&state).unwrap();
     let bin = bincode::serialize(&state).unwrap();
     let mut restored = state.clone();
-    restored.restore(snap);
+    restored.restore(snap).unwrap();
     for candidate in [
         restored,
         serde_json::from_slice::<GameState>(&json).unwrap(),
@@ -8554,7 +8554,7 @@ fn test_2a_restored_copy_completion_keeps_sba_triggers_deferred() {
     let json = serde_json::to_vec(&state).unwrap();
     let bin = bincode::serialize(&state).unwrap();
     let mut restored = state.clone();
-    restored.restore(snapshot);
+    restored.restore(snapshot).unwrap();
     let mut candidates = vec![
         state,
         restored,
@@ -8953,7 +8953,7 @@ fn boundary_2b3a_game() -> GameState {
         card_types: vec![CardType::Creature], power: Some(1), toughness: Some(1),
         ..Default::default() });
     db.insert(CardDef { id: 995002, name: "Boundary equipment".into(),
-        card_types: vec![CardType::Artifact], equip_cost: Some(ManaCost::zero()),
+        card_types: vec![CardType::Artifact], subtypes: vec![mtg_gto::card::Subtype("Equipment".into())], equip_cost: Some(ManaCost::zero()),
         static_abilities: vec![StaticAbility::Anthem { power: 0, toughness: -1,
             affected: AffectedObjects::AttachedTo }], ..Default::default() });
     db.insert(CardDef { id: 995003, name: "Boundary walker".into(),
@@ -9209,7 +9209,7 @@ fn test_2b3a_equip_roundtrips_before_action_and_counted_solver_boundary() {
     let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
     let action = Action::Equip { equipment_id: equipment, target_id: victim };
     let mut snapshot = state.clone();
-    snapshot.restore(state.snapshot());
+    snapshot.restore(state.snapshot()).unwrap();
     let mut variants = [state.clone(), snapshot,
         serde_json::from_slice::<GameState>(&serde_json::to_vec(&state).unwrap()).unwrap(),
         bincode::deserialize::<GameState>(&bincode::serialize(&state).unwrap()).unwrap()];
@@ -9259,7 +9259,7 @@ fn test_2b3a_partial_cleanup_does_not_enter_action_epilogue() {
     assert!(state.battlefield.contains(&victim));
     assert_eq!(state.players[0].hand.len(), 8);
     let mut snapshot = state.clone();
-    snapshot.restore(state.snapshot());
+    snapshot.restore(state.snapshot()).unwrap();
     let mut variants = [state.clone(), snapshot,
         serde_json::from_slice::<GameState>(&serde_json::to_vec(&state).unwrap()).unwrap(),
         bincode::deserialize::<GameState>(&bincode::serialize(&state).unwrap()).unwrap()];
@@ -9476,7 +9476,7 @@ fn boundary_2b3a_concession_controls(state: &GameState, loser: usize) {
 
 fn boundary_2b3a_review_roundtrips(state: &GameState) -> [GameState; 4] {
     let mut snapshot = state.clone();
-    snapshot.restore(state.snapshot());
+    snapshot.restore(state.snapshot()).unwrap();
     let mut variants = [state.clone(), snapshot,
         serde_json::from_slice::<GameState>(&serde_json::to_vec(state).unwrap()).unwrap(),
         bincode::deserialize::<GameState>(&bincode::serialize(state).unwrap()).unwrap()];
@@ -9792,7 +9792,7 @@ mod terminal_loss_prerequisite {
 
     fn roundtrips(state: &GameState) -> Vec<GameState> {
         let mut snapshot = state.clone();
-        snapshot.restore(state.snapshot());
+        snapshot.restore(state.snapshot()).unwrap();
         let mut variants = vec![state.clone(), snapshot,
             serde_json::from_slice::<GameState>(&serde_json::to_vec(state).unwrap()).unwrap(),
             bincode::deserialize::<GameState>(&bincode::serialize(state).unwrap()).unwrap()];
@@ -10571,7 +10571,7 @@ mod common_pass_2b3b {
         zero(&mut s, a);
         let orphan = add(&mut s, A, 0);
         let attached = add(&mut s, A, 0);
-        s.objects.get_mut(&attached).unwrap().attached_to = Some(a);
+        s.set_malformed_attachment_fixture(attached, Some(mtg_gto::card::AttachmentLink { source_generation: s.objects[&attached].zone_change_count, target: mtg_gto::card::ExactObjectRef { id: a, generation: 0 }, kind: if s.card_db().get(s.objects[&attached].card_def_id).is_some_and(|def| def.is_aura()) { mtg_gto::card::AttachmentKind::Aura } else { mtg_gto::card::AttachmentKind::Equipment }, timestamp: 0 }));
         rules::check_state_based_actions(&mut s);
         assert_eq!(group(&s, a), group(&s, orphan));
         assert_ne!(group(&s, a), group(&s, attached));
@@ -10594,7 +10594,17 @@ mod common_pass_2b3b {
     }
     fn variants(s: &GameState) -> Vec<GameState> {
         let mut snapshot = s.clone();
-        snapshot.restore(s.snapshot());
+        let restored = snapshot.restore(s.snapshot());
+        if s.sba_failure == Some(mtg_gto::rules::sba::PreparedPassFailure::UnprovedLegendTie)
+            && s.players.iter().any(|seat| seat.hand.iter().any(|id| s.battlefield.contains(id))) {
+            // The original mode-8 fixture intentionally duplicates zone
+            // membership. The new structural entry boundary rejects it while
+            // retaining the already-latched stop state and all old assertions.
+            assert_eq!(restored, Err(mtg_gto::card::AttachmentError::Membership));
+            assert_eq!(snapshot.sba_failure, s.sba_failure);
+        } else {
+            restored.unwrap();
+        }
         let mut result = vec![
             s.clone(),
             snapshot,
@@ -10606,8 +10616,8 @@ mod common_pass_2b3b {
         }
         result
     }
-    fn norm(s: &GameState) -> mtg_gto::rules::transitions::RetainedNormalization {
-        mtg_gto::info_set::InformationSet::normalize_retained_view(&s.visible_state(0))
+    fn norm(s: &GameState) -> mtg_gto::public_projection::JointPublicNormalization<'_> {
+        mtg_gto::info_set::InformationSet::normalize_retained_view(&s.visible_state(0)).unwrap()
     }
     fn coords(s: &GameState) -> (Vec<u8>, u64, Vec<Vec<u8>>) {
         let n = norm(s);
@@ -10615,14 +10625,14 @@ mod common_pass_2b3b {
             &s.visible_state(0),
             s.card_db(),
             &n,
-        );
+        ).unwrap();
         let mut keys: Vec<_> =
-            mtg_gto::action::canonical::canonicalize_actions(&legal_actions_abstracted(s), s, &n)
+            mtg_gto::action::canonical::canonicalize_actions(&legal_actions_abstracted(s), s, &n).unwrap()
                 .iter()
                 .map(|key| bincode::serialize(key).unwrap())
                 .collect();
         keys.sort();
-        (n.encoding, info.hash_value(), keys)
+        (n.encoding.clone(), info.hash_value(), keys)
     }
     fn drain(s: &mut GameState) {
         for _ in 0..100 {
@@ -10877,7 +10887,7 @@ mod common_pass_2b3b {
             let other = add(&mut s, E, 0);
             match mode {
                 0 => {}
-                1 => s.objects.get_mut(&other).unwrap().attached_to = Some(a),
+                1 => s.set_malformed_attachment_fixture(other, Some(mtg_gto::card::AttachmentLink { source_generation: s.objects[&other].zone_change_count, target: mtg_gto::card::ExactObjectRef { id: a, generation: 0 }, kind: if s.card_db().get(s.objects[&other].card_def_id).is_some_and(|def| def.is_aura()) { mtg_gto::card::AttachmentKind::Aura } else { mtg_gto::card::AttachmentKind::Equipment }, timestamp: 0 })),
                 2 => s.combat.attackers.push(a),
                 3 => {
                     let t =
@@ -11034,14 +11044,14 @@ mod common_pass_2b3b {
         let victim = add(&mut s, C, 0);
         zero(&mut s, victim);
         let existing = add(&mut s, E, 0);
-        s.objects.get_mut(&existing).unwrap().attached_to = Some(999_999);
+        s.set_malformed_attachment_fixture(existing, Some(mtg_gto::card::AttachmentLink { source_generation: s.objects[&existing].zone_change_count, target: mtg_gto::card::ExactObjectRef { id: 999_999, generation: 0 }, kind: if s.card_db().get(s.objects[&existing].card_def_id).is_some_and(|def| def.is_aura()) { mtg_gto::card::AttachmentKind::Aura } else { mtg_gto::card::AttachmentKind::Equipment }, timestamp: 0 }));
         let later = add(&mut s, E, 1);
-        s.objects.get_mut(&later).unwrap().attached_to = Some(victim);
+        s.set_malformed_attachment_fixture(later, Some(mtg_gto::card::AttachmentLink { source_generation: s.objects[&later].zone_change_count, target: mtg_gto::card::ExactObjectRef { id: victim, generation: 0 }, kind: if s.card_db().get(s.objects[&later].card_def_id).is_some_and(|def| def.is_aura()) { mtg_gto::card::AttachmentKind::Aura } else { mtg_gto::card::AttachmentKind::Equipment }, timestamp: 0 }));
         rules::check_state_based_actions(&mut s);
         assert!(s.battlefield.contains(&existing));
         assert!(s.battlefield.contains(&later));
-        assert_eq!(s.objects[&existing].attached_to, None);
-        assert_eq!(s.objects[&later].attached_to, None);
+        assert_eq!(s.objects[&existing].attachment_link().map(|link| link.target.id), None);
+        assert_eq!(s.objects[&later].attachment_link().map(|link| link.target.id), None);
         assert!(s.sba_failure.is_none());
     }
     #[test]
@@ -11133,7 +11143,7 @@ mod common_pass_2b3b {
                 let mut s = fixture();
                 let correction = add(&mut s, if equipment { E } else { C }, 0);
                 if equipment {
-                    s.objects.get_mut(&correction).unwrap().attached_to = Some(999);
+                    s.set_malformed_attachment_fixture(correction, Some(mtg_gto::card::AttachmentLink { source_generation: s.objects[&correction].zone_change_count, target: mtg_gto::card::ExactObjectRef { id: 999, generation: 0 }, kind: if s.card_db().get(s.objects[&correction].card_def_id).is_some_and(|def| def.is_aura()) { mtg_gto::card::AttachmentKind::Aura } else { mtg_gto::card::AttachmentKind::Equipment }, timestamp: 0 }));
                 } else {
                     s.objects.get_mut(&correction).unwrap().plus_counters = 2;
                     s.objects.get_mut(&correction).unwrap().minus_counters = 2;
@@ -11185,7 +11195,7 @@ mod common_pass_2b3b {
                         s.objects.get_mut(&correction).unwrap().plus_counters = 2;
                         s.objects.get_mut(&correction).unwrap().minus_counters = 2;
                         if equipment {
-                            s.objects.get_mut(&correction).unwrap().attached_to = Some(999);
+                            s.set_malformed_attachment_fixture(correction, Some(mtg_gto::card::AttachmentLink { source_generation: s.objects[&correction].zone_change_count, target: mtg_gto::card::ExactObjectRef { id: 999, generation: 0 }, kind: if s.card_db().get(s.objects[&correction].card_def_id).is_some_and(|def| def.is_aura()) { mtg_gto::card::AttachmentKind::Aura } else { mtg_gto::card::AttachmentKind::Equipment }, timestamp: 0 }));
                         }
                         if with_mover {
                             let mover = add(&mut s, C, 0);
@@ -11227,7 +11237,7 @@ mod common_pass_2b3b {
                     inst.minus_counters = 2;
                     inst.zone_change_count = u32::MAX;
                     if equipment {
-                        inst.attached_to = Some(999);
+                        s.set_malformed_attachment_fixture(correction, Some(mtg_gto::card::AttachmentLink { source_generation: s.objects[&correction].zone_change_count, target: mtg_gto::card::ExactObjectRef { id: 999, generation: 0 }, kind: if s.card_db().get(s.objects[&correction].card_def_id).is_some_and(|def| def.is_aura()) { mtg_gto::card::AttachmentKind::Aura } else { mtg_gto::card::AttachmentKind::Equipment }, timestamp: 0 }));
                     }
                     // No departure from the correction subject means no linked
                     // followup. Its linked card need not have generation room.
@@ -11251,7 +11261,7 @@ mod common_pass_2b3b {
                     let inst = &s.objects[&correction];
                     assert_eq!((inst.plus_counters, inst.minus_counters), (1, 0));
                     assert_eq!(inst.zone_change_count, u32::MAX);
-                    assert_eq!(inst.attached_to, None);
+                    assert_eq!(inst.attachment_link().map(|link| link.target.id), None);
                     assert!(s.players[0].exile.contains(&linked));
                     if let Some(mover) = mover {
                         assert!(s.players[0].graveyard.contains(&mover));
@@ -11425,11 +11435,11 @@ mod common_pass_2b3b {
             &legal_actions_abstracted(&base),
             &base,
             &n,
-        );
+        ).unwrap();
         for key in keys {
-            let a = resolve(&key, &base, 0).unwrap();
-            let b = resolve(&key, &other, 0).unwrap();
-            assert_eq!(canonicalize(&b, &other), key);
+            let a = resolve(&key, &base, 0).unwrap().unwrap();
+            let b = resolve(&key, &other, 0).unwrap().unwrap();
+            assert_eq!(canonicalize(&b, &other).unwrap(), key);
             let mut left = base.clone();
             let mut right = other.clone();
             rules::apply_action(&mut left, &a);
@@ -11452,13 +11462,13 @@ mod common_pass_2b3b {
         let n2 = norm(&other);
         assert_eq!(n.encoding, n2.encoding);
         let hash = |s: &GameState| {
-            mtg_gto::info_set::InformationSet::from_view(&s.visible_state(0), s.card_db())
+            mtg_gto::info_set::InformationSet::from_view(&s.visible_state(0), s.card_db()).unwrap()
                 .hash_value()
         };
         assert_eq!(hash(&base), hash(&other));
         for action in legal_actions_abstracted(&base) {
-            let key = canonicalize(&action, &base);
-            assert!(resolve(&key, &base, 0).is_some());
+            let key = canonicalize(&action, &base).unwrap();
+            assert!(resolve(&key, &base, 0).unwrap().is_some());
         }
     }
     #[test]
@@ -11727,7 +11737,7 @@ mod common_pass_2b3b {
         s.objects.get_mut(&counter).unwrap().plus_counters = 1;
         s.objects.get_mut(&counter).unwrap().minus_counters = 1;
         let equip = add(&mut s, E, 0);
-        s.objects.get_mut(&equip).unwrap().attached_to = Some(777);
+        s.set_malformed_attachment_fixture(equip, Some(mtg_gto::card::AttachmentLink { source_generation: s.objects[&equip].zone_change_count, target: mtg_gto::card::ExactObjectRef { id: 777, generation: 0 }, kind: if s.card_db().get(s.objects[&equip].card_def_id).is_some_and(|def| def.is_aura()) { mtg_gto::card::AttachmentKind::Aura } else { mtg_gto::card::AttachmentKind::Equipment }, timestamp: 0 }));
         s.replacement_effects.push(ReplacementEffect {
             source_id: a,
             controller: 0,
@@ -11743,7 +11753,7 @@ mod common_pass_2b3b {
         );
         assert_eq!(s.objects[&counter].plus_counters, 1);
         assert_eq!(s.objects[&counter].minus_counters, 1);
-        assert_eq!(s.objects[&equip].attached_to, Some(777));
+        assert_eq!(s.objects[&equip].attachment_link().map(|link| link.target.id), Some(777));
     }
     #[test]
     fn accepted_action_settlement_propagates_preparation_failure() {

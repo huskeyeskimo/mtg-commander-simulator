@@ -3,6 +3,7 @@ pub mod database;
 pub mod effects;
 pub mod keywords;
 pub mod sample;
+mod attachments;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -14,6 +15,9 @@ use crate::mana::{Color, ManaCost};
 pub use database::CardDatabase;
 pub use effects::{DynamicContext, DynamicValue, Effect, TargetSpec, TokenDef};
 pub use keywords::KeywordAbility;
+pub use attachments::{AttachmentContext, AttachmentError, AttachmentEvidence, AttachmentKind,
+    AttachmentLink, PreparedAttachment};
+pub(crate) use attachments::AttachmentInventory;
 
 /// Unique identifier for a card definition (template).
 pub type CardId = u64;
@@ -21,6 +25,12 @@ pub type CardId = u64;
 /// Unique identifier for a specific card instance in a game.
 /// Two copies of "Lightning Bolt" share a CardId but have different ObjectId.
 pub type ObjectId = u64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ExactObjectRef {
+    pub id: ObjectId,
+    pub generation: u32,
+}
 
 /// Top-level card types in MTG.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -153,6 +163,8 @@ pub enum TriggerCondition {
     /// Departure observer predicate for the transition kernel. No authored
     /// card currently relies on this general predicate.
     APermanentLeaves,
+    /// Narrow historical predicate; no authored card is added by 2D.1.
+    EquippedCreatureDies,
 }
 
 /// What spells a cost reduction applies to.
@@ -463,8 +475,7 @@ pub struct CardInstance {
     pub loyalty_activated_this_turn: bool,
 
     // Attached permanents (auras, equipment).
-    pub attached_to: Option<ObjectId>,
-    pub attachments: Vec<ObjectId>,
+    attachment: Option<AttachmentLink>,
 
     /// Whether this is a token (CR 111.6).
     pub is_token: bool,
@@ -493,8 +504,7 @@ impl CardInstance {
             temp_keywords: Vec::new(),
             loyalty_counters: 0,
             loyalty_activated_this_turn: false,
-            attached_to: None,
-            attachments: Vec::new(),
+            attachment: None,
             is_token: false,
             zone_change_count: 0,
             exiled_by: None,

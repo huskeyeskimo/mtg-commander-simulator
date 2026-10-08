@@ -122,6 +122,7 @@ pub fn apply_counted_action(state: &mut GameState, action: &crate::action::Actio
         return Err(reason);
     }
     if state.gameplay_stopped() || !legal.contains(action) { return Ok(false); }
+    crate::public_projection::JointPublicNormalization::for_state(state, state.priority_player)?;
     let accepted_before = state.loss_boundary.accepted_actions;
     // Top-level engine accounting already compares canonical mutation exactly.
     // Nested contexts intentionally do not increment that counter, so retain
@@ -343,6 +344,9 @@ fn run_game_loop(
             interrupted = Some(GameOutcome::Invalid(TerminationReason::IncompleteCleanup));
             break;
         }
+        if let Err(reason) = crate::public_projection::JointPublicNormalization::for_state(state, state.priority_player) {
+            interrupted = Some(GameOutcome::Invalid(reason)); break;
+        }
         let player = state.priority_player;
         let actions = legal_actions(state);
 
@@ -372,7 +376,10 @@ fn run_game_loop(
         }
 
         let strategy: &dyn Strategy = if player == 0 { strategy0 } else { strategy1 };
-        let action = strategy.choose_action(state, player);
+        let action = match strategy.choose_action(state, player) {
+            Ok(action) => action,
+            Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
+        };
 
         if verbose && actions_taken < 200 {
             log_action(state, &action, player);
@@ -708,6 +715,9 @@ pub(crate) fn run_goldfish_loop(
             interrupted = Some(GameOutcome::Invalid(TerminationReason::IncompleteCleanup));
             break;
         }
+        if let Err(reason) = crate::public_projection::JointPublicNormalization::for_state(state, state.priority_player) {
+            interrupted = Some(GameOutcome::Invalid(reason)); break;
+        }
         // Fast-forward the goldfish's entire turn without calling legal_actions
         if state.active_player != 0 {
             let before = match bincode::serialize(state) {
@@ -734,6 +744,9 @@ pub(crate) fn run_goldfish_loop(
             continue;
         }
 
+        if let Err(reason) = crate::public_projection::JointPublicNormalization::for_state(state, state.priority_player) {
+            interrupted = Some(GameOutcome::Invalid(reason)); break;
+        }
         let player = state.priority_player;
         let actions = legal_actions(state);
 
@@ -762,7 +775,10 @@ pub(crate) fn run_goldfish_loop(
             continue;
         }
 
-        let action = strategy.choose_action(state, player);
+        let action = match strategy.choose_action(state, player) {
+            Ok(action) => action,
+            Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
+        };
 
         if verbose && actions_taken < 200 {
             log_action(state, &action, player);
@@ -1329,16 +1345,16 @@ mod cleanup_continuation_tests {
 
     struct AlwaysPass;
     impl Strategy for AlwaysPass {
-        fn choose_action(&self, _: &GameState, _: PlayerIndex) -> Action { Action::PassPriority }
+        fn choose_action(&self, _: &GameState, _: PlayerIndex) -> Result<Action, TerminationReason> { Ok((|| -> Action { Action::PassPriority })()) }
         fn name(&self) -> &str { "always-pass" }
     }
 
     struct RejectOnce(std::sync::atomic::AtomicUsize);
     impl Strategy for RejectOnce {
-        fn choose_action(&self, state: &GameState, _: PlayerIndex) -> Action {
+        fn choose_action(&self, state: &GameState, _: PlayerIndex) -> Result<Action, TerminationReason> { Ok((|| -> Action {
             if self.0.fetch_add(1, Ordering::Relaxed) == 0 { Action::PassPriority }
             else { legal_actions(state)[0].clone() }
-        }
+        })()) }
         fn name(&self) -> &str { "reject-once" }
     }
 
@@ -1531,9 +1547,9 @@ mod loss_boundary_consumer_tests {
     fn resumed_unsupported_simulation_never_calls_a_strategy() {
         struct UnreachableStrategy;
         impl Strategy for UnreachableStrategy {
-            fn choose_action(&self, _: &GameState, _: PlayerIndex) -> Action {
+            fn choose_action(&self, _: &GameState, _: PlayerIndex) -> Result<Action, TerminationReason> { Ok((|| -> Action {
                 panic!("stopped simulation requested an action")
-            }
+            })()) }
             fn name(&self) -> &str { "unreachable" }
         }
         for goldfish in [false, true] {
@@ -1615,9 +1631,9 @@ mod completed_invalid_action_tests {
 
     struct PayLastLife(ObjectId);
     impl Strategy for PayLastLife {
-        fn choose_action(&self, _: &GameState, _: PlayerIndex) -> Action {
+        fn choose_action(&self, _: &GameState, _: PlayerIndex) -> Result<Action, TerminationReason> { Ok((|| -> Action {
             Action::ActivateAbility { object_id: self.0, ability_index: 0, targets: vec![] }
-        }
+        })()) }
         fn name(&self) -> &str { "pay last life" }
     }
 
@@ -1636,7 +1652,7 @@ mod completed_invalid_action_tests {
         state.loss_boundary.accepted_actions = 41;
         let source = state.create_card_in_zone(987_101, 0, ZoneType::Battlefield);
         let strategy = PayLastLife(source);
-        assert!(legal_actions(&state).contains(&strategy.choose_action(&state, 0)));
+        assert!(legal_actions(&state).contains(&strategy.choose_action(&state, 0).unwrap()));
         let result = run_game_loop(&mut state.clone(), &strategy, &GoldfishStrategy, false);
         let goldfish_result = run_goldfish_loop(&mut state, &strategy, false);
         for result in [result, goldfish_result] {

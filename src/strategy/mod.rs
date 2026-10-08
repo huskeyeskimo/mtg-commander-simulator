@@ -10,7 +10,7 @@ use crate::solver::{sample_from_distribution, RegretTable};
 /// A strategy decides what action to take given a game state.
 /// This is the interface the GTO solver will optimize over.
 pub trait Strategy: Send + Sync {
-    fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Action;
+    fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Result<Action, crate::simulation::TerminationReason>;
     fn name(&self) -> &str;
 }
 
@@ -19,13 +19,16 @@ pub trait Strategy: Send + Sync {
 pub struct RandomStrategy;
 
 impl Strategy for RandomStrategy {
-    fn choose_action(&self, state: &GameState, _player: PlayerIndex) -> Action {
+    fn choose_action(&self, state: &GameState, _player: PlayerIndex) -> Result<Action, crate::simulation::TerminationReason> {
+        Ok((|| -> Action {
         let mut rng = rand::thread_rng();
         let actions = legal_actions(state);
         actions
             .choose(&mut rng)
             .cloned()
             .unwrap_or(Action::PassPriority)
+
+        })())
     }
 
     fn name(&self) -> &str {
@@ -126,7 +129,8 @@ fn spell_target_value(state: &GameState, controller: PlayerIndex, effect: &Effec
 }
 
 impl Strategy for GreedyStrategy {
-    fn choose_action(&self, state: &GameState, _player: PlayerIndex) -> Action {
+    fn choose_action(&self, state: &GameState, _player: PlayerIndex) -> Result<Action, crate::simulation::TerminationReason> {
+        Ok((|| -> Action {
         let actions = legal_actions(state);
         if state.pending_copy_order.is_some() { return actions[0].clone(); }
         let db = state.card_db();
@@ -422,6 +426,8 @@ impl Strategy for GreedyStrategy {
 
         // Default: pass priority
         Action::PassPriority
+
+        })())
     }
 
     fn name(&self) -> &str {
@@ -452,23 +458,25 @@ impl McfrStrategy {
 }
 
 impl Strategy for McfrStrategy {
-    fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Action {
+    fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Result<Action, crate::simulation::TerminationReason> {
+        self.policy.ensure_usable()?;
+        if player >= state.players.len() || state.players.len() < 2 { return Err(crate::simulation::TerminationReason::StateEncoding); }
+        let view = state.visible_state(player);
+        let normalized = InformationSet::normalize_retained_view(&view)?;
         let actions = legal_actions_abstracted(state);
         if actions.is_empty() {
-            return Action::PassPriority;
+            return Ok(Action::PassPriority);
         }
         if actions.len() == 1 {
-            return actions[0].clone();
+            return Ok(actions[0].clone());
         }
 
         // Canonicalize actions for stable regret table lookup
-        let view = state.visible_state(player);
-        let normalized = InformationSet::normalize_retained_view(&view);
-        let canonical_actions = canonicalize_actions(&actions, state, &normalized);
-        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
+        let canonical_actions = canonicalize_actions(&actions, state, &normalized)?;
+        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized)?;
         let info_hash = info_set.hash_value();
 
-        let distribution = match self.policy.get(info_hash) {
+        let distribution = match self.policy.get(info_hash)? {
             Some(data) => data.average_strategy(&canonical_actions),
             // Greedy chooses from this state's concrete legal actions; no
             // stored canonical action is reconstructed for an unseen state.
@@ -477,7 +485,7 @@ impl Strategy for McfrStrategy {
 
         let mut rng = rand::thread_rng();
         let idx = sample_from_distribution(&distribution, &mut rng);
-        actions[idx].clone()
+        Ok(actions[idx].clone())
     }
 
     fn name(&self) -> &str {
@@ -509,22 +517,24 @@ impl AbstractedMcfrStrategy {
 }
 
 impl Strategy for AbstractedMcfrStrategy {
-    fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Action {
+    fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Result<Action, crate::simulation::TerminationReason> {
+        self.policy.ensure_usable()?;
+        if player >= state.players.len() || state.players.len() < 2 { return Err(crate::simulation::TerminationReason::StateEncoding); }
+        let view = state.visible_state(player);
+        let normalized = InformationSet::normalize_retained_view(&view)?;
         let actions = legal_actions_abstracted(state);
         if actions.is_empty() {
-            return Action::PassPriority;
+            return Ok(Action::PassPriority);
         }
         if actions.len() == 1 {
-            return actions[0].clone();
+            return Ok(actions[0].clone());
         }
 
-        let view = state.visible_state(player);
-        let normalized = InformationSet::normalize_retained_view(&view);
-        let canonical_actions = canonicalize_actions(&actions, state, &normalized);
-        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized);
+        let canonical_actions = canonicalize_actions(&actions, state, &normalized)?;
+        let info_set = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized)?;
         let info_hash = self.abstraction.abstract_info_set(&info_set);
 
-        let distribution = match self.policy.get(info_hash) {
+        let distribution = match self.policy.get(info_hash)? {
             Some(data) => data.average_strategy(&canonical_actions),
             None => {
                 let n = actions.len();
@@ -534,7 +544,7 @@ impl Strategy for AbstractedMcfrStrategy {
 
         let mut rng = rand::thread_rng();
         let idx = sample_from_distribution(&distribution, &mut rng);
-        actions[idx].clone()
+        Ok(actions[idx].clone())
     }
 
     fn name(&self) -> &str {
@@ -559,7 +569,8 @@ impl Strategy for AbstractedMcfrStrategy {
 pub struct GoldfishStrategy;
 
 impl Strategy for GoldfishStrategy {
-    fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Action {
+    fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Result<Action, crate::simulation::TerminationReason> {
+        Ok((|| -> Action {
         let actions = legal_actions(state);
         if state.pending_copy_order.is_some() { return actions[0].clone(); }
 
@@ -622,6 +633,8 @@ impl Strategy for GoldfishStrategy {
 
         // Default: always pass priority
         Action::PassPriority
+
+        })())
     }
 
     fn name(&self) -> &str {

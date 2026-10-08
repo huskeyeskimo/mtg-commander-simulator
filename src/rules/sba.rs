@@ -20,6 +20,7 @@ pub enum PreparedPassFailure {
     Transition(TransitionError),
     UnprovedLegendTie,
     PreventedMandatoryMovement,
+    StateEncoding,
 }
 
 /// Version 1 public semantic legend-retention key. Numeric signed facts compare
@@ -146,11 +147,9 @@ fn isolated_twins(state: &GameState, candidates: &[ObjectId]) -> bool {
     }
     if state.objects.values().any(|inst| {
         (ids.contains(&inst.object_id)
-            && (inst.attached_to.is_some()
-                || !inst.attachments.is_empty()
+            && (inst.attachment_link().is_some()
                 || inst.exiled_by.is_some()))
-            || inst.attached_to.is_some_and(|id| ids.contains(&id))
-            || inst.attachments.iter().any(|id| ids.contains(id))
+            || inst.attachment_link().is_some_and(|link| ids.contains(&link.target.id))
             || inst.exiled_by.is_some_and(|id| ids.contains(&id))
     }) {
         return false;
@@ -347,7 +346,7 @@ fn commit_token_cessations(state: &mut GameState, subjects: &[PreparedTokenCessa
 struct PreparedPass {
     movements: PreparedSbaMovements,
     cancellations: Vec<(ExactObjectRef, i32)>,
-    orphan_equipment: Vec<ExactObjectRef>,
+    orphan_equipment: Vec<(ExactObjectRef, ExactObjectRef)>,
     token_cessations: Vec<PreparedTokenCessation>,
 }
 
@@ -405,9 +404,7 @@ fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> 
             causes.push(SbaCause::ZeroLoyalty);
         }
         if def.is_aura()
-            && inst
-                .attached_to
-                .is_none_or(|target| !state.battlefield.contains(&target))
+            && state.attachment_target(object).is_none()
         {
             causes.push(SbaCause::OrphanAura);
         }
@@ -424,13 +421,12 @@ fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> 
             cancellations.push((object, inst.plus_counters.min(inst.minus_counters)));
         }
         if def.is_equipment()
-            && inst
-                .attached_to
-                .is_some_and(|target| !state.battlefield.contains(&target))
+            && state.illegal_equipment_attachment(object)
         {
-            orphan_equipment.push(object);
+            if let Some(link) = inst.attachment_link() { orphan_equipment.push((object, link.target)); }
         }
     }
+    state.validate_attachment_structure().map_err(|_| PreparedPassFailure::StateEncoding)?;
     for ids in legends.values().filter(|ids| ids.len() > 1) {
         let keyed: Vec<_> = ids.iter().map(|&id| (id, legend_key(state, id))).collect();
         let minimum = keyed.iter().map(|(_, key)| key).min().unwrap();
@@ -465,7 +461,7 @@ fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> 
     for object in cancellations
         .iter()
         .map(|(object, _)| object)
-        .chain(&orphan_equipment)
+        .chain(orphan_equipment.iter().map(|(source, _)| source))
     {
         subjects.insert(object.id, *object);
     }
@@ -506,14 +502,8 @@ fn commit_pass(state: &mut GameState, pass: PreparedPass) -> Result<(), Transiti
             inst.minus_counters -= cancel;
         }
     }
-    for object in pass.orphan_equipment {
-        if let Some(inst) = state
-            .objects
-            .get_mut(&object.id)
-            .filter(|inst| inst.zone_change_count == object.generation)
-        {
-            inst.attached_to = None;
-        }
+    for (object, expected_target) in pass.orphan_equipment {
+        state.detach_exact(object, expected_target);
     }
     commit_token_cessations(state, &pass.token_cessations);
     state.refresh_continuous_effects();
@@ -627,11 +617,11 @@ mod common_pass_tests {
         s.objects.get_mut(&subject).unwrap().damage_marked = 2;
         let orphan = s.create_card_in_zone(2, 0, ZoneType::Battlefield);
         let aura = s.create_card_in_zone(2, 0, ZoneType::Battlefield);
-        s.objects.get_mut(&aura).unwrap().attached_to = Some(subject);
+        s.set_malformed_attachment_fixture(aura, Some(crate::card::AttachmentLink { source_generation: s.objects[&aura].zone_change_count, target: crate::card::ExactObjectRef { id: subject, generation: 0 }, kind: if s.card_db().get(s.objects[&aura].card_def_id).is_some_and(|def| def.is_aura()) { crate::card::AttachmentKind::Aura } else { crate::card::AttachmentKind::Equipment }, timestamp: 0 }));
         let existing = s.create_card_in_zone(3, 0, ZoneType::Battlefield);
-        s.objects.get_mut(&existing).unwrap().attached_to = Some(900);
+        s.set_malformed_attachment_fixture(existing, Some(crate::card::AttachmentLink { source_generation: s.objects[&existing].zone_change_count, target: crate::card::ExactObjectRef { id: 900, generation: 0 }, kind: if s.card_db().get(s.objects[&existing].card_def_id).is_some_and(|def| def.is_aura()) { crate::card::AttachmentKind::Aura } else { crate::card::AttachmentKind::Equipment }, timestamp: 0 }));
         let equip = s.create_card_in_zone(3, 0, ZoneType::Battlefield);
-        s.objects.get_mut(&equip).unwrap().attached_to = Some(subject);
+        s.set_malformed_attachment_fixture(equip, Some(crate::card::AttachmentLink { source_generation: s.objects[&equip].zone_change_count, target: crate::card::ExactObjectRef { id: subject, generation: 0 }, kind: if s.card_db().get(s.objects[&equip].card_def_id).is_some_and(|def| def.is_aura()) { crate::card::AttachmentKind::Aura } else { crate::card::AttachmentKind::Equipment }, timestamp: 0 }));
         let counter = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
         s.objects.get_mut(&counter).unwrap().plus_counters = 2;
         s.objects.get_mut(&counter).unwrap().minus_counters = 1;
@@ -642,17 +632,75 @@ mod common_pass_tests {
         assert!(s.players[0].graveyard.contains(&orphan));
         assert!(s.players[0].graveyard.contains(&subject));
         assert!(s.battlefield.contains(&aura));
-        assert_eq!(s.objects[&existing].attached_to, None);
-        assert_eq!(s.objects[&equip].attached_to, Some(subject));
+        assert_eq!(s.objects[&existing].attachment_link().map(|link| link.target.id), None);
+        assert_eq!(s.objects[&equip].attachment_link(), None);
         assert_eq!(s.objects[&counter].plus_counters, 1);
         let later = prepare_pass(&s).unwrap();
-        assert_eq!(later.orphan_equipment.len(), 1);
+        assert_eq!(later.orphan_equipment.len(), 0);
         commit_pass(&mut s, later).unwrap();
         assert!(s.players[0].graveyard.contains(&aura));
-        assert_eq!(s.objects[&equip].attached_to, None);
+        assert_eq!(s.objects[&equip].attachment_link().map(|link| link.target.id), None);
         assert_eq!(s.next_zone_event_group_id, 2);
         assert!(s.stack.is_empty());
     }
+    #[test]
+    fn equipment_detach_only_progress_precedes_later_zero_toughness_pass() {
+        let mut state = fixture();
+        let target = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(3, 0, ZoneType::Battlefield);
+        let prepared = state.prepare_attach(state.exact_object(source).unwrap(), state.exact_object(target).unwrap(), crate::card::AttachmentContext::Established).unwrap();
+        state.commit_attach(prepared).unwrap();
+        state.objects.get_mut(&target).unwrap().temp_toughness_mod = -2;
+        for (affected, modification) in [
+            (AffectedObjects::Specific(source), LayerModification::AddType(CardType::Creature)),
+            (AffectedObjects::Specific(source), LayerModification::SetPT(2, 2)),
+            (AffectedObjects::AttachedTo, LayerModification::ModifyPT(0, 1)),
+        ] {
+            state.continuous_effects.push(ContinuousEffect { source_id: source, controller: 0, timestamp: 1,
+                duration: Duration::Permanent, affected, modification });
+        }
+        state.invalidate_characteristics_cache();
+        assert_eq!(state.effective_toughness(target), 1);
+        let first = prepare_pass(&state).unwrap();
+        assert_eq!(first.orphan_equipment.len(), 1);
+        assert!(!first.movements.has_movers());
+        commit_pass(&mut state, first).unwrap();
+        assert_eq!(state.objects[&source].attachment_link(), None);
+        assert!(state.battlefield.contains(&target));
+        assert_eq!(state.effective_toughness(target), 0);
+        assert_eq!(state.next_zone_event_group_id, 0);
+        let next = prepare_pass(&state).unwrap();
+        assert!(next.movements.has_movers());
+        commit_pass(&mut state, next).unwrap();
+        assert!(state.players[0].graveyard.contains(&target));
+        assert_eq!(state.next_zone_event_group_id, 1);
+    }
+
+    #[test]
+    fn aura_departure_consequence_moves_in_two_later_frozen_groups() {
+        let mut state = fixture();
+        let target = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let aura = state.create_card_in_zone(2, 0, ZoneType::Battlefield);
+        let child = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let prepared = state.prepare_attach(state.exact_object(aura).unwrap(), state.exact_object(target).unwrap(), crate::card::AttachmentContext::Established).unwrap();
+        state.commit_attach(prepared).unwrap();
+        state.objects.get_mut(&target).unwrap().damage_marked = 2;
+        state.objects.get_mut(&child).unwrap().temp_toughness_mod = -2;
+        state.continuous_effects.push(ContinuousEffect { source_id: aura, controller: 0, timestamp: 10,
+            duration: Duration::WhileSourceOnBattlefield, affected: AffectedObjects::Specific(child), modification: LayerModification::ModifyPT(0, 1) });
+        state.invalidate_characteristics_cache();
+        for (index, departed) in [target, aura, child].into_iter().enumerate() {
+            let pass = prepare_pass(&state).unwrap();
+            commit_pass(&mut state, pass).unwrap();
+            assert!(state.players[0].graveyard.contains(&departed));
+            assert_eq!(state.next_zone_event_group_id, index as u64 + 1);
+            if index == 0 { assert!(state.battlefield.contains(&aura)); assert_eq!(state.objects[&aura].attachment_link(), None); }
+            if index < 2 { assert!(state.battlefield.contains(&child)); }
+        }
+        assert_eq!(state.pending_triggers.iter().filter(|t|t.source_id==target).count(), 1);
+        assert_eq!(state.pending_triggers.iter().filter(|t|t.source_id==child).count(), 1);
+    }
+
     #[test]
     fn private_stabilization_before_placement_and_restore_has_no_planner_state() {
         let mut s = fixture();
@@ -815,7 +863,7 @@ mod common_pass_tests {
                 inst.plus_counters = 2;
                 inst.minus_counters = 1;
                 let equipment = s.create_card_in_zone(3, 0, ZoneType::Battlefield);
-                s.objects.get_mut(&equipment).unwrap().attached_to = Some(900);
+                s.set_malformed_attachment_fixture(equipment, Some(crate::card::AttachmentLink { source_generation: s.objects[&equipment].zone_change_count, target: crate::card::ExactObjectRef { id: 900, generation: 0 }, kind: if s.card_db().get(s.objects[&equipment].card_def_id).is_some_and(|def| def.is_aura()) { crate::card::AttachmentKind::Aura } else { crate::card::AttachmentKind::Equipment }, timestamp: 0 }));
                 match malformed {
                     0 => s.objects.get_mut(&token).unwrap().object_id = 900,
                     1 => s.players[0].exile.push(token),
@@ -858,7 +906,7 @@ mod common_pass_tests {
                 assert_eq!(format!("{:?}", s.pending_events), events);
                 assert!(s.objects.contains_key(&token));
                 assert_eq!(s.objects[&counter].plus_counters, 2);
-                assert_eq!(s.objects[&equipment].attached_to, Some(900));
+                assert_eq!(s.objects[&equipment].attachment_link().map(|link| link.target.id), Some(900));
             }
         }
     }
@@ -1055,7 +1103,7 @@ mod common_pass_tests {
                     assert_eq!(s.pending_triggers.len(), occurrences);
                     assert!(s.stack.is_empty());
                     let view = s.visible_state(0);
-                    let normal = InformationSet::normalize_retained_view(&view);
+                    let normal = InformationSet::normalize_retained_view(&view).unwrap();
                     println!("2C_PERF build={} tokens={} mixed={} watchers={} cessations={} occurrences={} sources={} components={:?} ties={:?} nodes={} candidates={} departure_ns={} cessation_prepare_ns={} cessation_commit_ns={} settlement_ns={} normalization_ns={}",
                         if cfg!(debug_assertions) { "debug" } else { "release" }, count, mixed, watchers, count, occurrences,
                         normal.source_ranks.len(), normal.stats.component_sizes, normal.stats.tied_cell_sizes,

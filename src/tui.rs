@@ -148,7 +148,10 @@ const MAX_ACTIONS: u32 = 10_000;
 
 impl App {
     pub fn new(state: GameState, db: CardDatabase) -> Self {
-        let cached_actions = legal_actions(&state);
+        let encoding_error = if state.gameplay_stopped() { None } else {
+            crate::public_projection::JointPublicNormalization::for_state(&state, state.priority_player).err()
+        };
+        let cached_actions = if encoding_error.is_some() { Vec::new() } else { legal_actions(&state) };
         let mut zone_cursors = HashMap::new();
         for &z in ZONE_ORDER {
             zone_cursors.insert(z, 0);
@@ -169,7 +172,10 @@ impl App {
 
             should_quit: false,
         };
-        if app.state.gameplay_stopped() { app.auto_advance(); }
+        if let Some(reason) = encoding_error {
+            app.status_log.push(format!("INVALID reason={}", reason.code()));
+            app.mode = UiMode::GameOver;
+        } else if app.state.gameplay_stopped() { app.auto_advance(); }
         app
     }
 
@@ -196,7 +202,18 @@ impl App {
         self.zone_cursors.insert(self.active_zone, clamped);
     }
 
+    fn encoding_is_valid(&mut self) -> bool {
+        if self.state.gameplay_stopped() { return true; }
+        if let Err(reason) = crate::public_projection::JointPublicNormalization::for_state(&self.state, self.state.priority_player) {
+            self.status_log.push(format!("INVALID reason={}", reason.code()));
+            self.mode = UiMode::GameOver;
+            return false;
+        }
+        true
+    }
+
     pub fn refresh_actions(&mut self) {
+        if !self.encoding_is_valid() { return; }
         self.cached_actions = legal_actions(&self.state);
         let len = self.cached_actions.len();
         if len > 0 {
@@ -233,6 +250,7 @@ impl App {
             && self.actions_taken < MAX_ACTIONS
             && passes < 200
         {
+            if !self.encoding_is_valid() { return; }
             // Fast-forward the opponent until a human mandatory choice is due.
             if self.state.active_player != 0
                 && !self.human_mandatory_choice_pending() {
@@ -256,7 +274,14 @@ impl App {
             }
 
             if player != 0 {
-                let action = self.goldfish.choose_action(&self.state, player);
+                let action = match self.goldfish.choose_action(&self.state, player) {
+                    Ok(action) => action,
+                    Err(reason) => {
+                        self.status_log.push(format!("INVALID reason={}", reason.code()));
+                        self.mode = UiMode::GameOver;
+                        return;
+                    }
+                };
                 rules::apply_action(&mut self.state, &action);
                 self.actions_taken += 1;
                 passes += 1;
@@ -289,6 +314,7 @@ impl App {
             self.auto_advance();
             return;
         }
+        if !self.encoding_is_valid() { return; }
         if idx >= self.cached_actions.len() {
             return;
         }
@@ -1331,15 +1357,17 @@ pub struct Scenario {
 
 /// Generate snapshots for a series of game states using the greedy strategy
 /// to auto-play actions. Returns (scenario_name, svg_content) pairs.
-pub fn generate_snapshots(preset: &str, cols: u16, rows: u16) -> Vec<(Scenario, String)> {
+pub fn generate_snapshots(preset: &str, cols: u16, rows: u16) -> Result<Vec<(Scenario, String)>, crate::simulation::TerminationReason> {
     let args = vec![
         String::new(), // argv[0]
         "--preset".into(),
         preset.into(),
     ];
     let (state, db) = load_game(&args);
+    crate::public_projection::JointPublicNormalization::for_state(&state, state.priority_player)?;
     let mut app = App::new(state, db);
     app.auto_advance();
+    crate::public_projection::JointPublicNormalization::for_state(&app.state, app.state.priority_player)?;
 
     let mut snapshots = Vec::new();
 
@@ -1390,7 +1418,8 @@ pub fn generate_snapshots(preset: &str, cols: u16, rows: u16) -> Vec<(Scenario, 
         if app.state.gameplay_stopped() || app.cached_actions.is_empty() {
             break;
         }
-        let action = greedy.choose_action(&app.state, 0);
+        crate::public_projection::JointPublicNormalization::for_state(&app.state, app.state.priority_player)?;
+        let action = greedy.choose_action(&app.state, 0)?;
         if let Some(idx) = app.cached_actions.iter().position(|a| *a == action) {
             app.execute_action(idx);
         } else if !app.cached_actions.is_empty() {
@@ -1407,6 +1436,7 @@ pub fn generate_snapshots(preset: &str, cols: u16, rows: u16) -> Vec<(Scenario, 
         render_snapshot(&app, cols, rows),
     ));
 
+    crate::public_projection::JointPublicNormalization::for_state(&app.state, app.state.priority_player)?;
     // Snapshot 6: Command zone view (for commander decks)
     app.active_zone = Zone::CommandZone;
     snapshots.push((
@@ -1417,12 +1447,31 @@ pub fn generate_snapshots(preset: &str, cols: u16, rows: u16) -> Vec<(Scenario, 
         render_snapshot(&app, cols, rows),
     ));
 
-    snapshots
+    Ok(snapshots)
 }
 
 #[cfg(test)]
 mod loss_boundary_ui_tests {
     use super::*;
+
+    #[test]
+    fn malformed_encoding_ui_stops_before_enumeration_undo_or_advance() {
+        let db = crate::card::sample::build_sample_db();
+        let mut state = GameState::new(2); state.card_db = Some(std::sync::Arc::new(db.clone()));
+        state.phase = crate::game::Phase::PreCombatMain;
+        let source = state.create_card_in_zone(crate::card::sample::ids::LIGHTNING_GREAVES, 0, crate::card::ZoneType::Battlefield);
+        let target = state.create_card_in_zone(crate::card::sample::ids::LLANOWAR_ELVES, 0, crate::card::ZoneType::Battlefield);
+        state.set_malformed_attachment_fixture(source, Some(crate::card::AttachmentLink { source_generation: 1,
+            target: state.exact_object(target).unwrap(), kind: crate::card::AttachmentKind::Equipment, timestamp: 0 }));
+        let before = bincode::serialize(&state).unwrap();
+        let mut app = App::new(state, db);
+        assert!(matches!(app.mode, UiMode::GameOver));
+        assert!(app.status_log.last().unwrap().contains("INVALID reason=state_encoding"));
+        assert!(app.cached_actions.is_empty());
+        app.execute_action(0); app.auto_advance();
+        assert!(app.undo_stack.is_empty()); assert_eq!(app.actions_taken, 0); assert!(!app.state.game_over);
+        assert_eq!(before, bincode::serialize(&app.state).unwrap());
+    }
 
     #[test]
     fn unsupported_ui_stops_before_cached_action_undo_or_advance() {

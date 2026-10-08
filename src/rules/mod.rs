@@ -352,7 +352,7 @@ mod settlement_2b3a_boundary_tests {
                         11 => initial.priority_player = 1,
                         _ => {}
                     }
-                    let mut snapshot = initial.clone(); snapshot.restore(initial.snapshot());
+                    let mut snapshot = initial.clone(); snapshot.restore(initial.snapshot()).unwrap();
                     let mut restored = [initial.clone(), snapshot,
                         serde_json::from_slice::<GameState>(&serde_json::to_vec(&initial).unwrap()).unwrap(),
                         bincode::deserialize::<GameState>(&bincode::serialize(&initial).unwrap()).unwrap()];
@@ -394,7 +394,7 @@ mod settlement_2b3a_boundary_tests {
             card_types: vec![CardType::Creature], power: Some(1), toughness: Some(1),
             ..Default::default() });
         db.insert(CardDef { id: 995102, name: "Boundary equipment".into(),
-            card_types: vec![CardType::Artifact], equip_cost: Some(ManaCost::zero()),
+            card_types: vec![CardType::Artifact], subtypes: vec![crate::card::Subtype("Equipment".into())], equip_cost: Some(ManaCost::zero()),
             static_abilities: vec![StaticAbility::Anthem { power: 0, toughness: -1,
                 affected: AffectedObjects::AttachedTo }], ..Default::default() });
         let mut state = GameState::new(2);
@@ -412,7 +412,7 @@ mod settlement_2b3a_boundary_tests {
         assert!(apply_action_inner(&mut state, &action));
         assert!(state.battlefield.contains(&victim));
         let mut snapshot = state.clone();
-        snapshot.restore(state.snapshot());
+        snapshot.restore(state.snapshot()).unwrap();
         let mut variants = [state.clone(), snapshot,
             serde_json::from_slice::<GameState>(&serde_json::to_vec(&state).unwrap()).unwrap(),
             bincode::deserialize::<GameState>(&bincode::serialize(&state).unwrap()).unwrap()];
@@ -1011,24 +1011,9 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                 }
             }
 
-            // Detach from previous creature (if any)
-            if let Some(old_target) = state.objects.get(&eq_id).and_then(|i| i.attached_to) {
-                if let Some(old_inst) = state.objects.get_mut(&old_target) {
-                    old_inst.attachments.retain(|&id| id != eq_id);
-                }
-            }
-
-            // Attach to new creature
-            if let Some(eq_inst) = state.objects.get_mut(&eq_id) {
-                eq_inst.attached_to = Some(tgt_id);
-            }
-            if let Some(tgt_inst) = state.objects.get_mut(&tgt_id) {
-                if !tgt_inst.attachments.contains(&eq_id) {
-                    tgt_inst.attachments.push(eq_id);
-                }
-            }
-
-            state.refresh_continuous_effects();
+            let (Some(source), Some(target)) = (state.exact_object(eq_id), state.exact_object(tgt_id)) else { return false; };
+            let Ok(prepared) = state.prepare_attach(source, target, crate::card::AttachmentContext::ExistingEquip) else { return false; };
+            if state.commit_attach(prepared).is_err() { return false; }
             state.consecutive_passes = 0;
         }
 
