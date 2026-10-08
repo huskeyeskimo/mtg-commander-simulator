@@ -21,7 +21,31 @@ cargo run --release --features tui --bin tui  # TUI goldfish player
 cargo run --release --bin goldfish -- --preset kinnan --trace  # CLI goldfish
 ```
 
-All tests must pass with 0 warnings before committing. Run `cargo test` after every change.
+All tests must pass with 0 warnings before committing.
+
+Validation has three phases:
+
+1. **Development validation:** during implementation, run focused tests covering the changed behavior.
+2. **Post-correction regression validation:** after bounded corrections, run the related integration and regression families.
+3. **Final checkpoint qualification:** before checkpoint approval, complete independent review and all required sequential full validation gates.
+
+The final gates remain mandatory, in this order:
+
+```bash
+cargo test
+cargo test --all-features
+cargo build
+cargo build --features tui --bin tui
+cargo build --all-features
+cargo check --all-targets
+cargo check --all-features --all-targets
+```
+
+Do not overlap qualifying full gates. Run other validation sequentially where shared temporary paths make concurrent execution unsafe. Require zero warnings and a clean `git diff --check`.
+
+If source changes after qualifying validation, determine which evidence was invalidated and rerun the affected gates before checkpoint approval. Independent review must cover the final changed source. Do not rerun expensive full suites solely to collect timing information when existing logs are sufficient.
+
+Preserve all existing tests, ignored-test classifications, performance thresholds, benchmark methodology, deterministic and stochastic coverage, solver methodology, and independent reviewer requirements. Do not consolidate, remove or weaken tests, or move tests into explicit diagnostics.
 
 ## Architecture
 
