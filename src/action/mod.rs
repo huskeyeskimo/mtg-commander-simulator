@@ -683,6 +683,19 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                 }
             }
 
+            if crate::targeting::equip_activation_context(state) {
+                for &equipment_id in &state.battlefield {
+                    if let Some(cost) = crate::targeting::equip_source_activation_cost(state, equipment_id) {
+                        if !can_potentially_pay(state, player, &cost) { continue; }
+                        for &target_id in &state.battlefield {
+                            if crate::targeting::equip_target_is_legal(state, player, target_id) {
+                                actions.push(Action::Equip { equipment_id, target_id });
+                            }
+                        }
+                    }
+                }
+            }
+
             // Activated abilities and mana abilities from permanents
             let permanents = state.permanents_controlled_by(player);
             for &obj_id in &permanents {
@@ -761,25 +774,6 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                             object_id: obj_id,
                             ability_index: i,
                         });
-                    }
-                }
-
-                // Equip abilities (sorcery speed, main phase, empty stack)
-                if is_main && state.stack.is_empty() {
-                    if let Some(ref equip_cost) = def.equip_cost {
-                        if can_potentially_pay(state, player, equip_cost) {
-                            // Find all creatures we control that we could equip to
-                            let creatures = state.creatures_controlled_by(player);
-                            for &creature_id in &creatures {
-                                // Can't equip to itself; can equip to any creature we control
-                                if creature_id != obj_id {
-                                    actions.push(Action::Equip {
-                                        equipment_id: obj_id,
-                                        target_id: creature_id,
-                                    });
-                                }
-                            }
-                        }
                     }
                 }
 

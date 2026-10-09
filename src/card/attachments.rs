@@ -25,9 +25,11 @@ pub struct AttachmentLink {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentContext {
     /// Already-established synthetic/API relationship; assign its represented
-    /// attachment-source timestamp. Full Equip stack semantics are deferred.
+    /// attachment-source timestamp.
     Established,
-    /// Preserve the existing immediate Equip timestamp behavior until 2D.2.
+    /// Successful Equip resolution; renew timestamps only when the link changes.
+    EquipResolution,
+    /// Legacy API fixture context; production Equip uses EquipResolution.
     ExistingEquip,
     /// Mechanical conversion of the existing Aura resolution path, not new
     /// enchant metadata or a new target-validity rule.
@@ -182,7 +184,10 @@ impl GameState {
                 }
             }
         }
-        if context == AttachmentContext::Established && self.next_timestamp == u32::MAX {
+        if (context == AttachmentContext::Established && self.next_timestamp == u32::MAX)
+            || (context == AttachmentContext::EquipResolution
+                && inst.attachment.is_none_or(|link| link.target != target)
+                && self.next_timestamp.checked_add(self.equip_static_timestamp_count(source.id)).is_none()) {
             return Err(AttachmentError::Timestamp);
         }
         Ok(PreparedAttachment {
@@ -194,12 +199,37 @@ impl GameState {
         })
     }
 
+    fn equip_static_indices(&self, source: ObjectId) -> Vec<usize> {
+        let Some(inst) = self.objects.get(&source) else { return vec![]; };
+        let Some(def) = self.card_db.as_ref().and_then(|db| db.get(inst.card_def_id)) else { return vec![]; };
+        let mut templates: Vec<_> = def.static_abilities.iter().flat_map(|ability|
+            ability.to_continuous_effects(source, inst.controller, 0)).collect();
+        self.continuous_effects.iter().enumerate().filter_map(|(index, effect)| {
+            if effect.source_id != source || effect.duration != crate::layers::Duration::WhileSourceOnBattlefield { return None; }
+            let matched = templates.iter().position(|template| template.affected == effect.affected
+                && template.modification == effect.modification && template.duration == effect.duration)?;
+            templates.remove(matched);
+            Some(index)
+        }).collect()
+    }
+
+    fn equip_static_timestamp_count(&self, source: ObjectId) -> u32 {
+        // Include missing records that refresh will materialize after attachment.
+        let represented = self.equip_static_indices(source).len();
+        let generated = self.objects.get(&source).and_then(|inst|
+            self.card_db.as_ref().and_then(|db| db.get(inst.card_def_id)))
+            .map_or(0, |def| def.static_abilities.len());
+        u32::try_from(represented.max(generated)).unwrap_or(u32::MAX).saturating_add(1)
+    }
+
     pub fn commit_attach(&mut self, prepared: PreparedAttachment) -> Result<(), AttachmentError> {
         let current = self.prepare_attach(prepared.source, prepared.target, prepared.context)?;
         if current.old_link != prepared.old_link || current.kind != prepared.kind {
             return Err(AttachmentError::Source);
         }
-        let timestamp = if prepared.context == AttachmentContext::Established {
+        let renew = prepared.context == AttachmentContext::EquipResolution
+            && prepared.old_link.is_none_or(|link| link.target != prepared.target);
+        let timestamp = if prepared.context == AttachmentContext::Established || renew {
             self.new_timestamp()
         } else {
             prepared
@@ -221,6 +251,34 @@ impl GameState {
                     && effect.affected == crate::layers::AffectedObjects::AttachedTo
                 {
                     effect.timestamp = timestamp;
+                }
+            }
+        }
+        if renew {
+            // Materialize a previously absent static source with the attachment's
+            // timestamp, retaining each static ability's represented order.
+            if !self.continuous_effects.iter().any(|effect| effect.source_id == prepared.source.id
+                && effect.duration == crate::layers::Duration::WhileSourceOnBattlefield) {
+                let inst = &self.objects[&prepared.source.id];
+                let controller = inst.controller;
+                let abilities = self.card_db().get(inst.card_def_id).unwrap().static_abilities.clone();
+                for (rank, ability) in abilities.iter().enumerate() {
+                    let stamp = if rank == 0 { timestamp } else { self.new_timestamp() };
+                    self.continuous_effects.extend(ability.to_continuous_effects(prepared.source.id, controller, stamp));
+                }
+            } else {
+                // Match the represented static records, not independent spell effects.
+                // Mutate in place and retain the ordering of distinct source timestamps.
+                let indices = self.equip_static_indices(prepared.source.id);
+                let mut old: Vec<_> = indices.iter().map(|&i| self.continuous_effects[i].timestamp).collect();
+                old.sort_unstable(); old.dedup();
+                let mut replacements = Vec::new();
+                for rank in 0..old.len() {
+                    replacements.push(if rank == 0 { timestamp } else { self.new_timestamp() });
+                }
+                for i in indices {
+                    let rank = old.binary_search(&self.continuous_effects[i].timestamp).unwrap();
+                    self.continuous_effects[i].timestamp = replacements[rank];
                 }
             }
         }
@@ -463,7 +521,9 @@ impl GameState {
             return false;
         };
         link.kind == AttachmentKind::Equipment
-            && (self.is_creature(source.id)
+            && (self.get_characteristics(source.id).is_none_or(|chars|
+                    !chars.subtypes.iter().any(|subtype| subtype.0 == "Equipment"))
+                || self.is_creature(source.id)
                 || self.attachment_target(source).is_none()
                 || self
                     .get_characteristics(link.target.id)

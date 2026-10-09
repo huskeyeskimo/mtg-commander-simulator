@@ -240,6 +240,124 @@ pub fn target_is_legal(
     }
 }
 
+/// Equip uses computed control and type, and the shared represented targeting restrictions.
+pub(crate) fn equip_target_is_legal(state: &GameState, controller: PlayerIndex, id: crate::card::ObjectId) -> bool {
+    state.get_characteristics(id).is_some_and(|chars| chars.controller == controller)
+        && target_is_legal(state, controller, &TargetSpec::AnyCreature, &Target::Object(id))
+}
+
+/// Equip's sorcery timing and mandatory-choice context.
+pub(crate) fn equip_activation_context(state: &GameState) -> bool {
+    let player = state.priority_player;
+    player < state.players.len() && !state.players[player].has_lost
+        && player == state.active_player && state.phase.is_main_phase()
+        && state.stack.is_empty() && state.pending_tutor.is_none()
+        && state.pending_copy_order.is_none() && !state.cleanup_discard_in_progress
+        && state.pending_triggers.is_empty()
+}
+
+/// Source eligibility before candidate-target enumeration. Animated Equipment
+/// retains its represented Equip ability independently of attachment feasibility.
+pub(crate) fn equip_source_activation_cost(state: &GameState, source: crate::card::ObjectId)
+    -> Option<crate::mana::ManaCost> {
+    if !equip_activation_context(state) { return None; }
+    let inst = state.objects.get(&source)?;
+    let def = state.card_db().get(inst.card_def_id)?;
+    if !def.is_equipment() || def.equip_cost.is_none() || !state.battlefield.contains(&source) { return None; }
+    let chars = state.get_characteristics(source)?;
+    if chars.controller != state.priority_player || chars.abilities_removed { return None; }
+    def.equip_cost.clone()
+}
+
+pub(crate) fn equip_activation_cost(state: &GameState, source: crate::card::ObjectId,
+    target: crate::card::ObjectId) -> Option<crate::mana::ManaCost> {
+    let cost = equip_source_activation_cost(state, source)?;
+    equip_target_is_legal(state, state.priority_player, target).then_some(cost)
+}
+
+/// Authoritative residence lists, excluding ability/copy references to objects.
+/// Missing proposed endpoints may be ordinarily illegal; contradictory membership
+/// is encoding failure and must not be repaired as part of an Equip action.
+fn validate_equip_endpoint_membership(state: &GameState, id: crate::card::ObjectId)
+    -> Result<(), crate::simulation::TerminationReason> {
+    use crate::{game::StackSource, simulation::TerminationReason::StateEncoding};
+    let mut residents = state.battlefield.iter().filter(|&&object| object == id).count();
+    for player in &state.players {
+        for zone in [&player.hand, &player.library, &player.graveyard, &player.exile, &player.command_zone] {
+            residents += zone.iter().filter(|&&object| object == id).count();
+        }
+    }
+    residents += state.stack.iter().filter(|entry| matches!(entry.source, StackSource::Spell(object) if object == id)).count();
+    if state.pending_copy_order.as_ref().and_then(crate::game::PendingCopyOrder::resolving_entry)
+        .is_some_and(|entry| matches!(entry.source, StackSource::Spell(object) if object == id)) { residents += 1; }
+    if residents != usize::from(state.objects.contains_key(&id)) { return Err(StateEncoding); }
+    Ok(())
+}
+
+/// Read-only endpoint preflight, performed before payment and accepted-action accounting.
+pub(crate) fn validate_equip_activation_structure(state: &GameState,
+    source: crate::card::ObjectId, target: crate::card::ObjectId,
+) -> Result<(), crate::simulation::TerminationReason> {
+    use crate::simulation::TerminationReason::StateEncoding;
+    state.validate_attachment_structure().map_err(|_| StateEncoding)?;
+    for id in [source, target] {
+        validate_equip_endpoint_membership(state, id)?;
+        if state.objects.get(&id).is_some_and(|inst| inst.object_id != id
+                || inst.owner >= state.players.len() || inst.controller >= state.players.len()
+                || state.card_db().get(inst.card_def_id).is_none()) { return Err(StateEncoding); }
+    }
+    if state.next_stack_id == u64::MAX { return Err(StateEncoding); }
+    Ok(())
+}
+
+/// Owned Equip shape and identity validation. Only supplied public/current objects
+/// are consulted; callers must not expose a hidden newer incarnation.
+pub(crate) fn equip_entry_target<'a>(entry: &crate::game::StackEntry,
+    db: &crate::game::CardDatabase, players: usize,
+    object: impl Fn(crate::card::ObjectId) -> Option<&'a crate::card::CardInstance>,
+) -> Result<Option<crate::card::ExactObjectRef>, crate::simulation::TerminationReason> {
+    use crate::{card::ExactObjectRef, game::StackSource, simulation::TerminationReason::StateEncoding};
+    let StackSource::EquipAbility { source, source_card_id, target_card_id } = &entry.source else { return Ok(None); };
+    let ([Target::Object(id)], [Some(generation)]) = (entry.targets.as_slice(), entry.target_generations.as_slice()) else { return Err(StateEncoding); };
+    if entry.controller >= players || db.get(*source_card_id).is_none_or(|def| !def.is_equipment())
+        || db.get(*target_card_id).is_none() { return Err(StateEncoding); }
+    let target = ExactObjectRef { id: *id, generation: *generation };
+    if source.id == target.id && (source.generation != target.generation || source_card_id != target_card_id) { return Err(StateEncoding); }
+    for (exact, definition) in [(*source, *source_card_id), (target, *target_card_id)] {
+        if let Some(inst) = object(exact.id) {
+            if inst.object_id != exact.id || inst.zone_change_count < exact.generation
+                || (inst.zone_change_count == exact.generation && (inst.card_def_id != definition
+                    || inst.owner >= players || inst.controller >= players)) {
+                return Err(StateEncoding);
+            }
+        }
+    }
+    Ok(Some(target))
+}
+
+/// Validate pending Equip without consuming it or changing gameplay state.
+pub(crate) fn validate_pending_equips(state: &GameState) -> Result<(), crate::simulation::TerminationReason> {
+    use crate::{game::StackSource, simulation::TerminationReason::StateEncoding};
+    if !state.stack.iter().any(|entry| matches!(entry.source, StackSource::EquipAbility { .. })) { return Ok(()); }
+    let mut ids = std::collections::HashSet::new();
+    let mut definitions = std::collections::HashMap::new();
+    for entry in &state.stack {
+        if !ids.insert(entry.id) { return Err(StateEncoding); }
+        if let Some(target) = equip_entry_target(entry, state.card_db(), state.players.len(), |id| state.objects.get(&id))? {
+            let StackSource::EquipAbility { source, source_card_id, target_card_id } = &entry.source else { unreachable!() };
+            for (endpoint, definition) in [(*source, *source_card_id), (target, *target_card_id)] {
+                if definitions.insert(endpoint, definition).is_some_and(|old| old != definition) { return Err(StateEncoding); }
+                // Departed references own their facts. Do not inspect residence
+                // or bind facts from a newer, potentially hidden incarnation.
+                if state.exact_object(endpoint.id).is_none_or(|current| current == endpoint) {
+                    validate_equip_endpoint_membership(state, endpoint.id)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn valid_spell_targets(
     state: &GameState,
     controller: PlayerIndex,

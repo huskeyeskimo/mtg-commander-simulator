@@ -166,6 +166,12 @@ pub enum StackSource {
         ability_index: usize,
         context: Box<TriggerContext>,
     },
+    /// A paid Equip activation. Endpoint definitions remain public after departure.
+    EquipAbility {
+        source: crate::card::ExactObjectRef,
+        source_card_id: crate::card::CardId,
+        target_card_id: crate::card::CardId,
+    },
     /// A spell without a physical card on the stack. Owns its spell data.
     SpellCopy { definition: Box<CardDef> },
 }
@@ -787,6 +793,7 @@ pub struct GameStateSnapshot {
 /// continuous effects cache), MCCFR is insulated — only `visible_state()`
 /// needs updating.
 pub struct PlayerView<'a> {
+    pub(crate) player_count: usize,
     // --- Public information (both players can see) ---
     /// Current game phase/step.
     pub phase: Phase,
@@ -924,7 +931,8 @@ impl GameState {
         for entry in &self.stack {
             let source_id = match entry.source {
                 StackSource::Spell(id) => Some(id),
-                StackSource::ActivatedAbility { .. } | StackSource::TriggeredAbility { .. } => None,
+                StackSource::ActivatedAbility { .. } | StackSource::TriggeredAbility { .. }
+                    | StackSource::EquipAbility { .. } => None,
                 StackSource::SpellCopy { .. } => None,
             };
             if let Some(source_id) = source_id {
@@ -1049,6 +1057,7 @@ impl GameState {
             }
         }
         PlayerView {
+            player_count: self.players.len(),
             phase: self.phase,
             active_player: self.active_player,
             turn_number: self.turn_number,

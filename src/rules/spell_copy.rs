@@ -61,7 +61,7 @@ pub fn snapshot_stack_spell(state: &GameState, source_stack_id: StackId) -> Resu
                 .ok_or(CopyError::MissingDefinition)?.clone()
         }
         StackSource::SpellCopy { definition } => (**definition).clone(),
-        StackSource::ActivatedAbility { .. } | StackSource::TriggeredAbility { .. } => {
+        StackSource::ActivatedAbility { .. } | StackSource::TriggeredAbility { .. } | StackSource::EquipAbility { .. } => {
             return Err(CopyError::SourceIsAbility);
         }
     };

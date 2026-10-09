@@ -1772,6 +1772,17 @@ impl<'v, 'a> Inventory<'v, 'a> {
         Ok(())
     }
 
+    fn equip_endpoints(&mut self, entry: &crate::game::StackEntry) -> EncodingResult<(usize, usize)> {
+        let Some(target) = crate::targeting::equip_entry_target(entry, self.view.card_db,
+            self.view.player_count, |id| self.view.objects.get(&id).copied())? else {
+            return Err(TerminationReason::StateEncoding);
+        };
+        let StackSource::EquipAbility { source, source_card_id, target_card_id } = &entry.source else { unreachable!() };
+        let source = self.exact(*source, StableIdentityFacts { definition: Some(*source_card_id), ..Default::default() })?;
+        let target = self.exact(target, StableIdentityFacts { definition: Some(*target_card_id), ..Default::default() })?;
+        Ok((source, target))
+    }
+
     fn operations(&mut self) -> EncodingResult<()> {
         for trigger in self.view.pending_triggers {
             let occurrence = self.occurrence(
@@ -1794,6 +1805,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                     encode(&(2u8, ability_index))?
                 }
                 StackSource::SpellCopy { definition } => encode(&(3u8, definition))?,
+                StackSource::EquipAbility { source_card_id, target_card_id, .. } => encode(&(4u8, source_card_id, target_card_id))?,
             };
             let record = self.graph.vertex(
                 VertexKind::StackOrOperation,
@@ -1825,19 +1837,20 @@ impl<'v, 'a> Inventory<'v, 'a> {
                     (Some(occurrence), Some(occurrence))
                 }
                 StackSource::SpellCopy { .. } => (None, None),
+                StackSource::EquipAbility { .. } => {
+                    let (source, target) = self.equip_endpoints(entry)?;
+                    self.graph.edge(record, target, EdgeKind::StackTarget, &(0usize, 0u8, true))?;
+                    (Some(source), None)
+                }
             };
             self.stack_occurrence_vertices.push(occurrence);
             if let Some(source) = source {
                 self.graph
                     .edge(record, source, EdgeKind::StackSource, &())?;
             }
-            self.targets(
-                record,
-                &entry.targets,
-                &entry.target_generations,
-                EdgeKind::StackTarget,
-                &records,
-            )?;
+            if !matches!(entry.source, StackSource::EquipAbility { .. }) {
+                self.targets(record, &entry.targets, &entry.target_generations, EdgeKind::StackTarget, &records)?;
+            }
         }
         if let Some(operation) = self.view.pending_copy_order {
             let record = self.graph.vertex(
@@ -1879,6 +1892,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                         encode(&(2u8, ability_index))?
                     }
                     StackSource::SpellCopy { definition } => encode(&(3u8, definition))?,
+                    StackSource::EquipAbility { source_card_id, target_card_id, .. } => encode(&(4u8, source_card_id, target_card_id))?,
                 };
                 let member = self.graph.vertex(
                     VertexKind::StackOrOperation,
@@ -1914,6 +1928,11 @@ impl<'v, 'a> Inventory<'v, 'a> {
                         self.resolving_occurrence_vertex = Some(occurrence);
                         Some(occurrence)
                     }
+                    StackSource::EquipAbility { .. } => {
+                        let (source, target) = self.equip_endpoints(entry)?;
+                        self.graph.edge(member, target, EdgeKind::ContinuationTarget, &(0usize, 0u8, true))?;
+                        Some(source)
+                    }
                     StackSource::SpellCopy { definition } => Some(
                         self.graph
                             .vertex(VertexKind::StackOrOperation, &(4u8, definition))?,
@@ -1923,13 +1942,9 @@ impl<'v, 'a> Inventory<'v, 'a> {
                     self.graph
                         .edge(member, source, EdgeKind::StackSource, &())?;
                 }
-                self.targets(
-                    member,
-                    &entry.targets,
-                    &entry.target_generations,
-                    EdgeKind::ContinuationTarget,
-                    &records,
-                )?;
+                if !matches!(entry.source, StackSource::EquipAbility { .. }) {
+                    self.targets(member, &entry.targets, &entry.target_generations, EdgeKind::ContinuationTarget, &records)?;
+                }
             }
         }
         for (&id, &(snapshot, _)) in &self.cast_records {

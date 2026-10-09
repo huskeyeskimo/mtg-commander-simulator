@@ -58,6 +58,16 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
         apply_action_at_boundary(state, action);
         return;
     }
+    if crate::targeting::validate_pending_equips(state).is_err() {
+        state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding);
+        return;
+    }
+    if let Action::Equip { equipment_id, target_id } = action {
+        if crate::targeting::validate_equip_activation_structure(state, *equipment_id, *target_id).is_err() {
+            state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding);
+            return;
+        }
+    }
     // Existing monotone mutation markers are exact for these handlers. All
     // other proposals retain the full canonical comparison, including absent
     // ability indices and malformed actor indices. No handler validity changes.
@@ -402,7 +412,10 @@ mod settlement_2b3a_boundary_tests {
         state.phase = Phase::PreCombatMain;
         let equipment_id = state.create_card_in_zone(995102, 0, ZoneType::Battlefield);
         let target_id = state.create_card_in_zone(995101, 0, ZoneType::Battlefield);
-        (state, Action::Equip { equipment_id, target_id }, target_id)
+        let victim = state.create_card_in_zone(995101, 0, ZoneType::Battlefield);
+        state.objects.get_mut(&victim).unwrap().temp_toughness_mod = -1;
+        state.invalidate_characteristics_cache();
+        (state, Action::Equip { equipment_id, target_id }, victim)
     }
 
     #[test]
@@ -994,26 +1007,23 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         }
 
         Action::Equip { equipment_id, target_id } => {
-            let eq_id = *equipment_id;
-            let tgt_id = *target_id;
             let player = state.priority_player;
-
-            // Pay equip cost
-            let equip_cost = {
-                let db = state.card_db();
-                let inst = &state.objects[&eq_id];
-                let def = db.get(inst.card_def_id).unwrap();
-                def.equip_cost.clone()
-            };
-            if let Some(cost) = equip_cost {
-                if !mana::pay_cost(state, player, &cost, None) {
-                    return false;
-                }
+            if crate::targeting::validate_equip_activation_structure(state, *equipment_id, *target_id).is_err() {
+                state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding);
+                return false;
             }
-
-            let (Some(source), Some(target)) = (state.exact_object(eq_id), state.exact_object(tgt_id)) else { return false; };
-            let Ok(prepared) = state.prepare_attach(source, target, crate::card::AttachmentContext::ExistingEquip) else { return false; };
-            if state.commit_attach(prepared).is_err() { return false; }
+            let Some(cost) = crate::targeting::equip_activation_cost(state, *equipment_id, *target_id) else { return false; };
+            let source = state.exact_object(*equipment_id).unwrap();
+            let target = state.exact_object(*target_id).unwrap();
+            let source_card_id = state.objects[equipment_id].card_def_id;
+            let target_card_id = state.objects[target_id].card_def_id;
+            if !mana::pay_cost(state, player, &cost, None) { return false; }
+            let id = state.new_stack_id();
+            state.stack.push(StackEntry { id, controller: player,
+                source: StackSource::EquipAbility { source, source_card_id, target_card_id },
+                targets: vec![crate::game::Target::Object(target.id)],
+                target_generations: vec![Some(target.generation)],
+            });
             state.consecutive_passes = 0;
         }
 

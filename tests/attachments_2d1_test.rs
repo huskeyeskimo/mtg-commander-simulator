@@ -57,7 +57,14 @@ fn fixture() -> (GameState, u64, u64) {
             target_id: c,
         },
     );
+    resolve_equip(&mut s);
     (s, e, c)
+}
+fn resolve_equip(s: &mut GameState) {
+    assert_eq!(s.stack.len(), 1);
+    assert!(matches!(s.stack[0].source, mtg_gto::game::StackSource::EquipAbility { .. }));
+    for _ in 0..s.players.len() { rules::apply_action(s, &Action::PassPriority); }
+    assert!(s.stack.is_empty());
 }
 fn leave(s: &mut GameState, id: u64) {
     let generation = s.objects[&id].zone_change_count;
@@ -261,6 +268,7 @@ fn composed_effect_attachment_distribution_distinguishes_02_11() {
             target_id: c2,
         },
     );
+    resolve_equip(&mut a);
     let mut b = a.clone();
     rules::apply_action(
         &mut b,
@@ -269,6 +277,7 @@ fn composed_effect_attachment_distribution_distinguishes_02_11() {
             target_id: c3,
         },
     );
+    resolve_equip(&mut b);
     assert_eq!(
         a.objects[&e1].attachment_link().map(|link| link.target.id),
         Some(c1)
@@ -546,6 +555,7 @@ fn action_only_incidence_merge_split_and_departure_rebuild() {
         .unwrap();
     drop(first);
     rules::apply_action(&mut state, &action);
+    resolve_equip(&mut state);
     let linked = JointPublicNormalization::for_state(&state, 0).unwrap();
     assert_eq!(
         linked.exact_to_coordinate[&state.exact_object(c).unwrap()].namespace,
@@ -812,6 +822,7 @@ fn both_isolated_endpoints_move_to_relational_and_component_merges_rebuild() {
         .unwrap();
     drop(initial);
     rules::apply_action(&mut state, &action);
+    resolve_equip(&mut state);
     established(&mut state, e2, c2);
     let distinct = JointPublicNormalization::for_state(&state, 0).unwrap();
     assert_eq!(
@@ -924,6 +935,7 @@ fn solver_checkpoint_rejects_old_and_unversioned_semantic_keys_explicitly() {
     let tables = [RegretTable::new(), RegretTable::new()];
     save_checkpoint(&tables, path, 7).unwrap();
     let current = std::fs::read(folder.join("player_0_iter_7.bin")).unwrap();
+    assert_eq!(mtg_gto::solver::SEMANTIC_FORMAT, "mtg-joint-public-2d2-v1");
     assert!(load_checkpoint(path, 7).is_ok());
     for legacy in [
         bincode::serialize(&std::collections::HashMap::<
@@ -931,6 +943,14 @@ fn solver_checkpoint_rejects_old_and_unversioned_semantic_keys_explicitly() {
             mtg_gto::solver::InfoSetData,
         >::new())
         .unwrap(),
+        {
+            let mut bytes = current.clone();
+            let index = bytes.windows(mtg_gto::solver::SEMANTIC_FORMAT.len())
+                .position(|part| part == mtg_gto::solver::SEMANTIC_FORMAT.as_bytes()).unwrap();
+            bytes[index..index + mtg_gto::solver::SEMANTIC_FORMAT.len()]
+                .copy_from_slice(b"mtg-joint-public-2d1-v1");
+            bytes
+        },
         {
             let mut bytes = current.clone();
             let index = bytes

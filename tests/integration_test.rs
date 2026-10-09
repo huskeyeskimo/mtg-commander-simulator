@@ -8981,7 +8981,12 @@ fn test_2b3a_equip_settles_before_priority_and_legal_actions() {
     let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
     let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
     rules::apply_action(&mut state, &Action::Equip { equipment_id: equipment, target_id: victim });
-    assert!(state.players[0].graveyard.contains(&victim), "Equip must settle before returning");
+    assert!(state.battlefield.contains(&victim));
+    assert_eq!(state.stack.len(), 1);
+    assert!(state.pending_triggers.is_empty());
+    assert!(state.objects[&equipment].attachment_link().is_none());
+    for _ in 0..state.players.len() { rules::apply_action(&mut state, &Action::PassPriority); }
+    assert!(state.players[0].graveyard.contains(&victim), "Equip resolution must settle before returning");
     assert_eq!(state.priority_player, 0);
     assert!(!legal_actions(&state).iter().any(|a| matches!(a,
         Action::Equip { target_id, .. } if *target_id == victim)));
@@ -9218,6 +9223,12 @@ fn test_2b3a_equip_roundtrips_before_action_and_counted_solver_boundary() {
         candidate.card_db = state.card_db.clone();
         let legal = legal_actions(candidate);
         assert!(simulation::apply_counted_action(candidate, &action, &legal).unwrap());
+        assert!(candidate.battlefield.contains(&victim));
+        assert_eq!(candidate.stack.len(), 1);
+        let mut restored = candidate.clone();
+        restored.restore(candidate.snapshot()).unwrap();
+        assert_eq!(serde_json::to_value(&restored).unwrap(), serde_json::to_value(&*candidate).unwrap());
+        for _ in 0..candidate.players.len() { rules::apply_action(candidate, &Action::PassPriority); }
         assert!(candidate.players[0].graveyard.contains(&victim));
         assert!(!legal_actions_abstracted(candidate).iter().any(|a| matches!(a, Action::Equip { target_id, .. } if *target_id == victim)));
         rules::check_state_based_actions(candidate); // retained periodic check
@@ -9287,6 +9298,11 @@ fn test_2b3a_equip_death_triggers_order_only_after_settlement() {
     let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
     let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
     rules::apply_action(&mut state, &Action::Equip { equipment_id: equipment, target_id: victim });
+    assert!(state.battlefield.contains(&victim));
+    assert_eq!(state.stack.len(), 1);
+    assert!(state.pending_triggers.is_empty());
+    assert!(state.objects[&equipment].attachment_link().is_none());
+    for _ in 0..state.players.len() { rules::apply_action(&mut state, &Action::PassPriority); }
     assert!(state.players[0].graveyard.contains(&victim));
     assert_eq!(state.pending_triggers.len(), 2);
     assert!(state.stack.is_empty());
@@ -9333,15 +9349,37 @@ fn test_2b3a_concession_during_ordering_resumes_on_live_player() {
 #[cfg(feature = "tui")]
 #[test]
 fn test_2b3a_tui_equip_uses_shared_settlement_before_cached_actions() {
-    let mut state = boundary_2b3a_game();
-    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
-    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
-    let db = state.card_db().clone();
-    let mut app = mtg_gto::tui::App::new(state, db);
-    let index = app.cached_actions.iter().position(|a| matches!(a, Action::Equip { equipment_id, target_id } if *equipment_id == equipment && *target_id == victim)).unwrap();
-    app.execute_action(index);
-    assert!(app.state.players[0].graveyard.contains(&victim));
-    assert!(!app.cached_actions.iter().any(|a| matches!(a, Action::Equip { target_id, .. } if *target_id == victim)));
+    for hold_priority in [false, true] {
+        let mut state = boundary_2b3a_game();
+        let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
+        let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+        // A surviving candidate gives the UI a decision after resolution.
+        state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+        if hold_priority {
+            Arc::make_mut(state.card_db.as_mut().unwrap()).insert(mtg_gto::card::CardDef {
+                id: 995005, name: "UI response".into(), card_types: vec![mtg_gto::card::CardType::Instant],
+                mana_cost: Some(mtg_gto::mana::ManaCost::zero()),
+                spell_effect: Some(mtg_gto::card::Effect::GainLife { amount: 1 }), ..Default::default()
+            });
+            state.create_card_in_zone(995005, 0, ZoneType::Hand);
+        }
+        let db = state.card_db().clone();
+        let mut app = mtg_gto::tui::App::new(state, db);
+        let index = app.cached_actions.iter().position(|a| matches!(a, Action::Equip { equipment_id, target_id } if *equipment_id == equipment && *target_id == victim)).unwrap();
+        app.execute_action(index);
+        if hold_priority {
+            assert!(app.state.battlefield.contains(&victim));
+            assert_eq!(app.state.stack.len(), 1);
+            assert!(app.state.objects[&equipment].attachment_link().is_none());
+            assert!(!app.cached_actions.iter().any(|a| matches!(a, Action::Equip { .. })));
+            let pass = app.cached_actions.iter().position(|a| matches!(a, Action::PassPriority)).unwrap();
+            app.execute_action(pass);
+        }
+        assert!(app.state.players[0].graveyard.contains(&victim));
+        assert!(app.state.stack.is_empty());
+        assert_eq!(app.state.priority_player, 0);
+        assert!(!app.cached_actions.iter().any(|a| matches!(a, Action::Equip { target_id, .. } if *target_id == victim)));
+    }
 }
 
 fn boundary_2b3a_dynamic_game(dynamic: mtg_gto::card::DynamicValue) -> GameState {

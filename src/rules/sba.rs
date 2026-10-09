@@ -205,6 +205,7 @@ fn isolated_twins(state: &GameState, candidates: &[ObjectId]) -> bool {
                     source_id, context, ..
                 } => ids.contains(source_id) || context_mentions(context, &ids),
                 StackSource::SpellCopy { .. } => false,
+                StackSource::EquipAbility { source, .. } => ids.contains(&source.id),
             }
     })
 }
@@ -351,6 +352,7 @@ struct PreparedPass {
 }
 
 fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> {
+    crate::targeting::validate_pending_equips(state).map_err(|_| PreparedPassFailure::StateEncoding)?;
     let fail = PreparedPassFailure::Transition;
     let db = state
         .card_db

@@ -4,6 +4,10 @@ use crate::game::{GameState, PlayerIndex, StackSource, Target};
 /// Resolve the top entry on the stack.
 pub(super) fn resolve_top_of_stack(state: &mut GameState) {
     if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if crate::targeting::validate_pending_equips(state).is_err() {
+        state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding);
+        return;
+    }
     let entry = match state.stack.pop() {
         Some(e) => e,
         None => return,
@@ -25,6 +29,28 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
         } => {
             resolve_activated_ability(state, *source_id, *ability_index, &entry.targets,
                 &entry.target_generations, entry.controller);
+        }
+        StackSource::EquipAbility { source, .. } => {
+            let target = crate::targeting::equip_entry_target(&entry, state.card_db(),
+                state.players.len(), |id| state.objects.get(&id)).unwrap().unwrap();
+            if state.exact_object(source.id) == Some(*source)
+                && state.battlefield.contains(&source.id)
+                && state.exact_object(target.id) == Some(target)
+                && crate::targeting::equip_target_is_legal(state, entry.controller, target.id)
+                && state.get_characteristics(source.id).is_some_and(|chars|
+                    !chars.card_types.contains(&CardType::Creature)
+                        && chars.subtypes.iter().any(|subtype| subtype.0 == "Equipment")) {
+                match state.prepare_attach(*source, target, crate::card::AttachmentContext::EquipResolution) {
+                    Ok(prepared) => {
+                        if state.commit_attach(prepared).is_err() {
+                            state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding);
+                        }
+                    }
+                    // Well-formed endpoints that cannot attach resolve unsuccessfully.
+                    Err(crate::card::AttachmentError::Source | crate::card::AttachmentError::Target) => {}
+                    Err(_) => state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding),
+                }
+            }
         }
         StackSource::TriggeredAbility {
             source_id,

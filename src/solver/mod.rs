@@ -148,8 +148,8 @@ pub struct RegretTable {
     usable: bool,
 }
 
-/// Information/action keys before 2D.1 do not have these semantic meanings.
-pub const SEMANTIC_FORMAT: &str = "mtg-joint-public-2d1-v1";
+/// Pending Equip changes observation and action semantics; prior keys are incompatible.
+pub const SEMANTIC_FORMAT: &str = "mtg-joint-public-2d2-v1";
 
 #[derive(Serialize, Deserialize)]
 struct SemanticTable {
@@ -295,7 +295,7 @@ mod tests {
         let old = bincode::serialize(&table.data).unwrap();
         assert!(RegretTable::from_bytes(&old).unwrap_err().to_string().contains("unversioned"));
         let incompatible = bincode::serialize(&SemanticTable {
-            semantic_format: "prior-semantic-meaning".into(), data: HashMap::new(),
+            semantic_format: "mtg-joint-public-2d1-v1".into(), data: HashMap::new(),
         }).unwrap();
         assert!(RegretTable::from_bytes(&incompatible).is_err());
         assert!(serde_json::from_str::<RegretTable>("{\"data\":{}}").is_err());

@@ -449,6 +449,11 @@ fn display_game_state(state: &GameState, db: &CardDatabase) {
                         .map(|d| format!("Ability of {} (#{}) ", d.name, ability_index))
                         .unwrap_or_else(|| "Ability: ?".into())
                 }
+                mtg_gto::game::StackSource::EquipAbility { source_card_id, target_card_id, .. } => {
+                    let source = db.get(*source_card_id).map(|def| def.name.as_str()).unwrap_or("?");
+                    let target = db.get(*target_card_id).map(|def| def.name.as_str()).unwrap_or("?");
+                    format!("Equip: {} → {} (stack #{})", source, target, entry.id)
+                }
                 mtg_gto::game::StackSource::TriggeredAbility { ability_index, context, .. } => {
                     db.get(context.source_card_id)
                         .map(|d| format!("Trigger of {} (#{}) ", d.name, ability_index))

@@ -395,9 +395,20 @@ fn stack_entry_to_info(
             .unwrap_or(0),
         StackSource::TriggeredAbility { context, .. } => context.source_card_id,
         StackSource::SpellCopy { definition } => definition.id,
+        StackSource::EquipAbility { source_card_id, .. } => *source_card_id,
     };
 
-    let target_summary = summarize_targets(&entry.targets, objects, stack);
+    let target_summary = match &entry.source {
+        StackSource::EquipAbility { target_card_id, .. } => {
+            // The joint witness carries endpoint incidence. This owned summary
+            // never falls back to a raw missing ID or a newer current object.
+            let mut h = DefaultHasher::new();
+            4u8.hash(&mut h);
+            target_card_id.hash(&mut h);
+            vec![h.finish()]
+        }
+        _ => summarize_targets(&entry.targets, objects, stack),
+    };
     let cast_spell = match &entry.source {
         StackSource::TriggeredAbility { context, .. } => context.cast_spell.as_ref()
             .map(|spell| cast_spell_to_info(spell, objects, stack)),
