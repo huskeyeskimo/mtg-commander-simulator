@@ -421,14 +421,16 @@ mod terminal_position_tests {
 
     #[test]
     fn physical_spell_finishes_only_after_atomic_batch_commit() {
+        for commander in [false, true] {
         let definition = CardDef { id: 982002, name: "Original".into(),
             card_types: vec![CardType::Instant],
             spell_effect: Some(Effect::DrawCards { count: 1 }), ..Default::default() };
         let mut db = CardDatabase::new();
         db.insert(definition);
-        let mut state = GameState::new(2);
+        let mut state = if commander { GameState::new_commander(2) } else { GameState::new(2) };
         state.card_db = Some(Arc::new(db));
         let object = state.create_card_in_zone(982002, 0, ZoneType::Hand).unwrap();
+        if commander { state.designate_commander(object, 0).unwrap(); }
         super::super::apply_action(&mut state, &Action::CastSpell { object_id: object, targets: vec![] });
         let snapshot = snapshot_stack_spell(&state, state.stack[0].id).unwrap();
         let entry = state.stack.pop().unwrap();
@@ -456,8 +458,11 @@ mod terminal_position_tests {
             }
             assert!(state.pending_copy_order.as_ref().unwrap().resolving_entry().is_some());
             super::super::apply_action(&mut state, &Action::ChooseNextCopy { item_index: 0 });
-            assert_eq!(state.players[0].graveyard.iter().filter(|&&id| id == object).count(), 1);
+            let zone = if commander { &state.players[0].command_zone } else { &state.players[0].graveyard };
+            assert_eq!(zone.iter().filter(|&&id| id == object).count(), 1);
+            assert_eq!(state.is_commander(object), commander);
             assert_eq!(state.stack.iter().map(|entry| entry.id).collect::<Vec<_>>(), vec![next, next + 1]);
+        }
         }
     }
 

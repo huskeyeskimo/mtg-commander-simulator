@@ -234,7 +234,7 @@ pub const MAX_MULLIGANS: u32 = 4;
 
 /// Core action enumeration with configurable combat abstraction level.
 fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<Action> {
-    if state.gameplay_stopped() || state.validate_trigger_placement().is_err() { return Vec::new(); }
+    if state.gameplay_stopped() || state.validate_commanders().is_err() || state.validate_trigger_placement().is_err() { return Vec::new(); }
     use crate::game::Phase;
 
     let player = state.priority_player;
@@ -626,58 +626,18 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                 }
             }
 
-            // Commander: cast commander(s) from command zone
-            if state.is_commander_format() && is_main {
-                let cmd_zone = &state.players[player].command_zone;
-                for &obj_id in cmd_zone {
-                    if !state.is_card(obj_id) { continue; }
-                    let inst = &state.objects[&obj_id];
-                    let def = match db.get(inst.card_def_id) {
-                        Some(d) => d,
-                        None => continue,
-                    };
-                    if def.is_aura() { continue; }
-                    let mut future = inst.clone();
-                    future.controller = player;
-                    if let Some(generation) = future.zone_change_count.checked_add(2) {
-                        future.zone_change_count = generation;
-                        if state.prospective_aura(future, def).unwrap_or(true) { continue; }
+            // The same admission/cost quote is used for direct execution.
+            for &obj_id in &state.players[player].command_zone {
+                if crate::rules::commander_cast_cost(state, obj_id).is_none() { continue; }
+                let def = &db.get(state.objects[&obj_id].card_def_id).expect("admitted card");
+                let targets = enumerate_targets_for_spell(state, player, def);
+                if targets.is_empty() {
+                    if crate::targeting::valid_spell_targets(state, player, def, &[]) {
+                        actions.push(Action::CastCommander { object_id: obj_id, targets: vec![] });
                     }
-                    // Must be this player's commander or partner commander
-                    let is_primary = state.players[player].commander_card_id == Some(inst.card_def_id);
-                    let is_partner = state.players[player].partner_commander_card_id == Some(inst.card_def_id);
-                    if !is_primary && !is_partner {
-                        continue;
-                    }
-                    if let Some(ref cost) = def.mana_cost {
-                        // Commander tax: separate tracking for partner
-                        let tax = if is_partner {
-                            state.players[player].partner_commander_tax
-                        } else {
-                            state.players[player].commander_tax
-                        };
-                        let mut taxed_cost = cost.clone();
-                        taxed_cost.generic += tax * 2;
-                        let reduction = crate::rules::total_cost_reduction(
-                            state, player, def.is_creature(),
-                        );
-                        let final_cost = crate::rules::apply_cost_reduction(&taxed_cost, reduction);
-                        if can_potentially_pay(state, player, &final_cost) {
-                            let targets = enumerate_targets_for_spell(state, player, def);
-                            if targets.is_empty() {
-                                actions.push(Action::CastCommander {
-                                    object_id: obj_id,
-                                    targets: vec![],
-                                });
-                            } else {
-                                for target in targets {
-                                    actions.push(Action::CastCommander {
-                                        object_id: obj_id,
-                                        targets: vec![target],
-                                    });
-                                }
-                            }
-                        }
+                } else {
+                    for target in targets {
+                        actions.push(Action::CastCommander { object_id: obj_id, targets: vec![target] });
                     }
                 }
             }

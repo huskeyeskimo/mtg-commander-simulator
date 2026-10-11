@@ -490,7 +490,7 @@ fn each_replacements_prevention_tokens_and_commanders() {
     let ids: Vec<_> = (1..3)
         .map(|p| {
             let id = state.create_card_in_zone(CREATURE, p, ZoneType::Battlefield).unwrap();
-            state.players[p].commander_object_id = Some(id);
+            state.designate_commander(id, 0).unwrap();
             id
         })
         .collect();

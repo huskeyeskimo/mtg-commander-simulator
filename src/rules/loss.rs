@@ -12,8 +12,12 @@ pub(super) fn adjudicate(state: &mut GameState, concession: Option<PlayerIndex>)
         if seat.life <= 0 { causes.push(LossCause::LifeTotal); }
         if seat.poison_counters >= 10 { causes.push(LossCause::Poison); }
         if state.is_commander_format() {
-            for (source_player, damage) in seat.commander_damage_received.iter().enumerate() {
-                if *damage >= 21 { causes.push(LossCause::CommanderDamage { source_player }); }
+            let mut commanders: Vec<_> = state.commanders.iter().collect();
+            commanders.sort_by_key(|c| c.designation);
+            for c in commanders {
+                if c.damage_to_player.get(player).is_some_and(|damage| *damage >= 21) {
+                    causes.push(LossCause::CommanderDamage { commander: c.designation });
+                }
             }
         }
         if state.loss_boundary.pending_failed_draws.contains(&player) { causes.push(LossCause::FailedDraw); }

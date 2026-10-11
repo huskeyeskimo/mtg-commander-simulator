@@ -148,15 +148,13 @@ pub fn setup_commander_game_seeded(
     if state.pending_copy_order.is_some() { return; }
     let mut rng = StdRng::seed_from_u64(seed);
 
-    state.players[0].commander_card_id = Some(commander0);
-    state.players[1].commander_card_id = Some(commander1);
 
     let mut lib0 = Vec::new();
     let mut found_commander0 = false;
     for &card_id in deck0 {
         if card_id == commander0 && !found_commander0 {
             let obj_id = setup_card!(state, card_id, 0, ZoneType::Command);
-            state.players[0].commander_object_id = Some(obj_id);
+            state.designate_commander(obj_id, 0).expect("valid setup commander");
             found_commander0 = true;
         } else {
             lib0.push(setup_card!(state, card_id, 0, ZoneType::Library));
@@ -170,7 +168,7 @@ pub fn setup_commander_game_seeded(
     for &card_id in deck1 {
         if card_id == commander1 && !found_commander1 {
             let obj_id = setup_card!(state, card_id, 1, ZoneType::Command);
-            state.players[1].commander_object_id = Some(obj_id);
+            state.designate_commander(obj_id, 0).expect("valid setup commander");
             found_commander1 = true;
         } else {
             lib1.push(setup_card!(state, card_id, 1, ZoneType::Library));
@@ -205,17 +203,13 @@ pub fn setup_commander_game(
     if state.pending_copy_order.is_some() { return; }
     let mut rng = rand::thread_rng();
 
-    // Record commander designations
-    state.players[0].commander_card_id = Some(commander0);
-    state.players[1].commander_card_id = Some(commander1);
-
     // Player 0: create all cards, put commander in command zone, rest in library
     let mut lib0 = Vec::new();
     let mut found_commander0 = false;
     for &card_id in deck0 {
         if card_id == commander0 && !found_commander0 {
             let obj_id = setup_card!(state, card_id, 0, ZoneType::Command);
-            state.players[0].commander_object_id = Some(obj_id);
+            state.designate_commander(obj_id, 0).expect("valid setup commander");
             found_commander0 = true;
         } else {
             lib0.push(setup_card!(state, card_id, 0, ZoneType::Library));
@@ -230,7 +224,7 @@ pub fn setup_commander_game(
     for &card_id in deck1 {
         if card_id == commander1 && !found_commander1 {
             let obj_id = setup_card!(state, card_id, 1, ZoneType::Command);
-            state.players[1].commander_object_id = Some(obj_id);
+            state.designate_commander(obj_id, 0).expect("valid setup commander");
             found_commander1 = true;
         } else {
             lib1.push(setup_card!(state, card_id, 1, ZoneType::Library));
@@ -268,16 +262,6 @@ pub fn setup_commander_game_with_partners(
     if state.pending_copy_order.is_some() { return; }
     let mut rng = rand::thread_rng();
 
-    // Record commander designations
-    state.players[0].commander_card_id = Some(commander0);
-    state.players[1].commander_card_id = Some(commander1);
-    if let Some(p) = partner0 {
-        state.players[0].partner_commander_card_id = Some(p);
-    }
-    if let Some(p) = partner1 {
-        state.players[1].partner_commander_card_id = Some(p);
-    }
-
     // Player 0: create all cards, put commanders in command zone, rest in library
     let mut lib0 = Vec::new();
     let mut found_commander0 = false;
@@ -285,11 +269,11 @@ pub fn setup_commander_game_with_partners(
     for &card_id in deck0 {
         if card_id == commander0 && !found_commander0 {
             let obj_id = setup_card!(state, card_id, 0, ZoneType::Command);
-            state.players[0].commander_object_id = Some(obj_id);
+            state.designate_commander(obj_id, 0).expect("valid setup commander");
             found_commander0 = true;
         } else if partner0 == Some(card_id) && !found_partner0 {
             let obj_id = setup_card!(state, card_id, 0, ZoneType::Command);
-            state.players[0].partner_commander_object_id = Some(obj_id);
+            state.designate_commander(obj_id, 1).expect("valid setup commander");
             found_partner0 = true;
         } else {
             lib0.push(setup_card!(state, card_id, 0, ZoneType::Library));
@@ -305,11 +289,11 @@ pub fn setup_commander_game_with_partners(
     for &card_id in deck1 {
         if card_id == commander1 && !found_commander1 {
             let obj_id = setup_card!(state, card_id, 1, ZoneType::Command);
-            state.players[1].commander_object_id = Some(obj_id);
+            state.designate_commander(obj_id, 0).expect("valid setup commander");
             found_commander1 = true;
         } else if partner1 == Some(card_id) && !found_partner1 {
             let obj_id = setup_card!(state, card_id, 1, ZoneType::Command);
-            state.players[1].partner_commander_object_id = Some(obj_id);
+            state.designate_commander(obj_id, 1).expect("valid setup commander");
             found_partner1 = true;
         } else {
             lib1.push(setup_card!(state, card_id, 1, ZoneType::Library));

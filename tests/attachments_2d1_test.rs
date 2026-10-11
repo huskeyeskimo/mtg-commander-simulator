@@ -936,9 +936,18 @@ fn solver_checkpoint_rejects_old_and_unversioned_semantic_keys_explicitly() {
     let tables = [RegretTable::new(), RegretTable::new()];
     save_checkpoint(&tables, path, 7).unwrap();
     let current = std::fs::read(folder.join("player_0_iter_7.bin")).unwrap();
-    assert_eq!(mtg_gto::solver::SEMANTIC_FORMAT, "mtg-joint-public-2e-v1");
+    assert_eq!(mtg_gto::solver::SEMANTIC_FORMAT, "mtg-joint-public-2f1-v1");
     assert!(load_checkpoint(path, 7).is_ok());
     for legacy in [
+        {
+            let mut bytes = current.clone();
+            let index = bytes.windows(mtg_gto::solver::SEMANTIC_FORMAT.len())
+                .position(|part| part == mtg_gto::solver::SEMANTIC_FORMAT.as_bytes()).unwrap();
+            let old = b"mtg-joint-public-2e-v1";
+            bytes.splice(index..index + mtg_gto::solver::SEMANTIC_FORMAT.len(), old.iter().copied());
+            bytes[index - 8..index].copy_from_slice(&(old.len() as u64).to_le_bytes());
+            bytes
+        },
         {
             let mut bytes = current.clone();
             let index = bytes.windows(mtg_gto::solver::SEMANTIC_FORMAT.len())

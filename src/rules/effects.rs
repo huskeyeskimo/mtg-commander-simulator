@@ -269,7 +269,7 @@ mod destruction_migration_tests {
         let mut commander = GameState::new_commander(2);
         commander.card_db = state.card_db.clone();
         let id = commander.create_card_in_zone(995_003, 0, ZoneType::Battlefield).unwrap();
-        commander.players[0].commander_object_id = Some(id);
+        commander.designate_commander(id, 0).unwrap();
         let id_ref = exact(&commander, id);
         let batch = destroy_batch(&mut commander, &[id_ref]).unwrap().unwrap();
         assert_eq!(batch.transitions[0].destination.zone, ZoneType::Command);

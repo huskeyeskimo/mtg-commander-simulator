@@ -148,8 +148,8 @@ pub struct RegretTable {
     usable: bool,
 }
 
-/// Pending Aura spells change observation and action semantics; prior keys are incompatible.
-pub const SEMANTIC_FORMAT: &str = "mtg-joint-public-2e-v1";
+/// Commander designation, public histories, and cast actions change semantic keys.
+pub const SEMANTIC_FORMAT: &str = "mtg-joint-public-2f1-v1";
 
 #[derive(Serialize, Deserialize)]
 struct SemanticTable {
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn solver_semantic_format_rejects_prior_and_unversioned_keys() {
-        assert_eq!(SEMANTIC_FORMAT, "mtg-joint-public-2e-v1");
+        assert_eq!(SEMANTIC_FORMAT, "mtg-joint-public-2f1-v1");
         let table = RegretTable::new();
         let current = table.to_bytes().unwrap();
         assert_eq!(RegretTable::from_bytes(&current).unwrap().num_info_sets(), Ok(0));

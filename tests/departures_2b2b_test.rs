@@ -479,8 +479,8 @@ fn commander_hand_and_library_compatibility_records_actual_destination() {
         state.format = mtg_gto::game::GameFormat::Commander;
         state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
         let commander = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
-        state.players[1].commander_card_id = Some(CREATURE);
-        state.players[1].commander_object_id = Some(commander);
+
+        state.designate_commander(commander, 0).unwrap();
         state.objects.get_mut(&commander).unwrap().controller = 0;
         move_subject(&mut state, source, commander);
         assert!(state.is_commander(commander));
@@ -488,13 +488,13 @@ fn commander_hand_and_library_compatibility_records_actual_destination() {
         let to = if index == 0 { ZoneType::Hand } else { ZoneType::Library };
         assert!(state.pending_triggers.iter().all(|p|
             p.context.zone_transition.as_ref().unwrap().subject.destination.zone == to));
-        assert_eq!(state.players[1].commander_tax, 0);
+        assert_eq!(state.commander_casts(1, 0, 1), 0);
         assert_continuations(state);
     }
     let (mut state, source) = fixture(Effect::BounceAllNonlandOpponents, 3);
     state.format = mtg_gto::game::GameFormat::Commander;
     let commander = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield).unwrap();
-    state.players[2].commander_object_id = Some(commander);
+    state.designate_commander(commander, 0).unwrap();
     activate(&mut state, source, vec![]);
     pass_round(&mut state);
     assert!(state.players[2].hand.contains(&commander));

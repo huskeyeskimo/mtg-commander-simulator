@@ -637,7 +637,7 @@ fn render_zone_command(f: &mut Frame, app: &App, area: Rect) {
 
     let items: Vec<Line> = cz.iter().enumerate().map(|(i, &oid)| {
         let name = card_name(&app.state, oid, &app.db);
-        let tax = app.state.players[0].commander_tax;
+        let tax = app.state.commander_casts(0, 0, 0);
         let text = if tax > 0 {
             format!("{} (tax: {})", name, tax * 2)
         } else {

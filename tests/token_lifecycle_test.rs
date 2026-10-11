@@ -401,19 +401,19 @@ fn terminal_before_cessation_preserves_residence_and_loss_coordinates() {
     }
 }
 #[test]
-fn synthetic_commander_token_uses_actual_command_destination() {
+fn synthetic_commander_token_is_rejected_and_retains_ordinary_lifecycle() {
     let mut s = GameState::new_commander(2);
     s.card_db = fixture().card_db;
     let id = token(&mut s, ZoneType::Battlefield);
-    s.players[0].commander_object_id = Some(id);
+    assert!(s.designate_commander(id, 0).is_err());
+    assert!(s.commanders.is_empty());
     let b = depart(&mut s, id, ZoneType::Graveyard);
-    assert_eq!(b.transitions[0].destination.zone, ZoneType::Command);
-    assert!(!b.transitions[0].creature_died());
-    assert!(s.pending_triggers.is_empty());
-    assert!(s.players[0].command_zone.contains(&id));
+    assert_eq!(b.transitions[0].destination.zone, ZoneType::Graveyard);
+    assert!(b.transitions[0].creature_died());
+    assert!(s.players[0].command_zone.is_empty());
     rules::check_state_based_actions(&mut s);
     assert!(!s.objects.contains_key(&id));
-    assert_eq!(s.players[0].commander_object_id, Some(id));
+    assert!(s.commanders.is_empty());
 }
 #[test]
 fn failed_draw_skips_tokens_and_draws_next_real_card_without_moving_token() {

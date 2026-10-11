@@ -187,8 +187,35 @@ pub(super) fn resolve_combat_damage(state: &mut GameState, first_strike_only: bo
         }
     }
 
-    // Phase 2: Apply all damage events (mutable)
+    // The represented automatic subset needs no replacement decision frame.
+    // Reject other damage replacements rather than silently ignoring them.
+    if damage_events.iter().any(|event| event.amount > 0) && state.replacement_effects.iter().any(|effect|
+        effect.applies_to == crate::replacement::ReplacementEventKind::DamageDealt
+            && (!effect.is_self_replacement || !matches!(effect.action,
+                crate::replacement::ReplacementAction::Prevent | crate::replacement::ReplacementAction::ModifyAmount { .. }))) {
+        state.sba_failure = Some(super::sba::PreparedPassFailure::Transition(super::transitions::TransitionError::UnsupportedPath));
+        return;
+    }
+    // Resolve the represented automatic replacements before changing results.
+    for event in &mut damage_events {
+        let target = event.target_object.map(Target::Object).or_else(|| event.target_player.map(Target::Player));
+        if let Some(target) = target { event.amount = state.deal_damage_with_replacement(event.amount, &target); }
+    }
+    // Capacity errors discard this damage batch before any life/counter/ledger
+    // mutation. This does not introduce replacement choices or continuations.
+    if damage_capacity(state, &damage_events).is_none() {
+        state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return;
+    }
     for event in damage_events {
+        if event.amount == 0 { continue; }
+        if let Some(player) = event.target_player {
+            if let Some(record) = state.commanders.iter_mut().find(|c| c.object == event.source_id) {
+                let Some(total) = record.damage_to_player[player].checked_add(event.amount) else {
+                    state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return;
+                };
+                record.damage_to_player[player] = total;
+            }
+        }
         if let Some(obj_id) = event.target_object {
             if event.wither {
                 // Wither/Infect: damage to creatures as -1/-1 counters
@@ -215,19 +242,6 @@ pub(super) fn resolve_combat_damage(state: &mut GameState, first_strike_only: bo
             } else {
                 let old_life = state.players[player].life;
                 state.players[player].life -= event.amount as i32;
-
-                // Commander damage tracking (CR 903.10a)
-                if state.is_commander(event.source_id) {
-                    let source_owner = state.objects.get(&event.source_id)
-                        .map(|i| i.owner)
-                        .unwrap_or(0);
-                    if player < state.players.len()
-                        && source_owner < state.players[player].commander_damage_received.len()
-                    {
-                        state.players[player].commander_damage_received[source_owner] +=
-                            event.amount as i32;
-                    }
-                }
 
                 state.emit_event(GameEvent::LifeChanged {
                     player,
@@ -263,6 +277,43 @@ pub(super) fn resolve_combat_damage(state: &mut GameState, first_strike_only: bo
             });
         }
     }
+}
+
+/// Check the exact sequence of represented damage results without mutating it.
+fn damage_capacity(state: &GameState, events: &[DamageEvent]) -> Option<()> {
+    use std::collections::HashMap;
+    let mut life: Vec<_> = state.players.iter().map(|p| p.life).collect();
+    let mut poison: Vec<_> = state.players.iter().map(|p| p.poison_counters).collect();
+    let mut marked = HashMap::new();
+    let mut counters = HashMap::new();
+    let mut commander_damage: Vec<_> = state.commanders.iter().map(|c| c.damage_to_player.clone()).collect();
+    for event in events {
+        if event.amount == 0 { continue; }
+        let signed = i32::try_from(event.amount).ok()?;
+        if let Some(id) = event.target_object {
+            let inst = state.objects.get(&id)?;
+            if event.wither {
+                let value = counters.entry(id).or_insert(inst.minus_counters);
+                *value = value.checked_add(signed)?;
+            } else {
+                let value = marked.entry(id).or_insert(inst.damage_marked);
+                *value = value.checked_add(event.amount)?;
+            }
+        }
+        if let Some(player) = event.target_player {
+            if let Some(index) = state.commanders.iter().position(|c| c.object == event.source_id) {
+                let value = commander_damage.get_mut(index)?.get_mut(player)?;
+                *value = value.checked_add(event.amount)?;
+            }
+            if event.infect { *poison.get_mut(player)? = poison[player].checked_add(event.amount)?; }
+            else { *life.get_mut(player)? = life[player].checked_sub(signed)?; }
+            if !event.infect && state.has_keyword(event.source_id, KeywordAbility::Toxic) {
+                *poison.get_mut(player)? = poison[player].checked_add(1)?;
+            }
+        }
+        if let Some(player) = event.lifelink_for { *life.get_mut(player)? = life[player].checked_add(signed)?; }
+    }
+    Some(())
 }
 
 /// Apply flanking: when a creature with flanking becomes blocked by a creature

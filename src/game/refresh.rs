@@ -459,8 +459,8 @@ mod tests {
             checked.objects.get_mut(&linked).unwrap().exiled_by = Some(primary);
             if commander {
                 checked.format = GameFormat::Commander;
-                checked.players[1].commander_object_id = Some(primary);
-                checked.players[1].commander_card_id = Some(979704);
+                checked.designate_commander(primary, 0).unwrap();
+
             }
             let stamp = checked.next_timestamp;
             let before_effects = checked.continuous_effects.clone();

@@ -407,8 +407,10 @@ fn command_and_graveyard_casts_capture_durable_snapshots() {
     for from_command in [true, false] {
         let (mut state, _, _) = setup();
         let (card, action) = if from_command {
+            state.format = mtg_gto::game::GameFormat::Commander;
+            Arc::make_mut(state.card_db.as_mut().unwrap()).cards.get_mut(&CREATURE).unwrap().mana_cost = Some(ManaCost::zero());
             let card = state.create_card_in_zone(CREATURE, 0, ZoneType::Command).unwrap();
-            state.players[0].commander_object_id = Some(card);
+            state.designate_commander(card, 0).unwrap();
             (card, Action::CastCommander { object_id: card, targets: vec![] })
         } else {
             let card = state.create_card_in_zone(FLASHBACK_SPELL, 0, ZoneType::Graveyard).unwrap();

@@ -1036,7 +1036,7 @@ fn supported_commander_redirect_is_recorded_as_actual_command_destination() {
     let mut state = GameState::new_commander(2);
     state.card_db = Some(database());
     let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
-    state.players[0].commander_object_id = Some(id);
+    state.designate_commander(id, 0).unwrap();
     let requested = request(&state, id, ZoneType::Exile);
     let batch = transition_batch(&mut state, &[requested]).unwrap();
     assert_eq!(batch.transitions[0].destination.zone, ZoneType::Command);

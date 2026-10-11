@@ -1,3 +1,5 @@
+mod commander;
+pub(crate) use commander::commander_cast_cost;
 mod aura;
 mod combat;
 mod loss;
@@ -47,6 +49,12 @@ fn mandatory_trigger_order_chooser(state: &GameState) -> Option<PlayerIndex> {
 /// Apply an action to the game state, advancing it.
 pub fn apply_action(state: &mut GameState, action: &Action) {
     if state.gameplay_stopped() { return; }
+    if state.validate_commanders().is_err() {
+        state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding); return;
+    }
+    if let Action::CastCommander { object_id, .. } = action {
+        if commander_cast_cost(state, *object_id).is_none() { return; }
+    }
     if state.validate_trigger_placement().is_err() {
         state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding); return;
     }
@@ -926,31 +934,10 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
             let def = db.get(inst.card_def_id).unwrap().clone();
             let is_creature = def.is_creature();
 
-            // Determine if this is the partner commander (separate tax tracking)
-            let is_partner = state.players[player].partner_commander_object_id == Some(obj_id);
-
-            // Pay mana cost with commander tax (and cost reduction)
-            if let Some(ref cost) = def.mana_cost {
-                let tax = if is_partner {
-                    state.players[player].partner_commander_tax
-                } else {
-                    state.players[player].commander_tax
-                };
-                let reduction = mana::total_cost_reduction(state, player, is_creature);
-                let mut taxed_cost = cost.clone();
-                taxed_cost.generic += tax * 2;
-                let final_cost = mana::apply_cost_reduction(&taxed_cost, reduction);
-                if !mana::pay_cost(state, player, &final_cost, None) {
-                    return false;
-                }
-            }
-
-            // Increment commander tax for next cast (separate tracking per partner)
-            if is_partner {
-                state.players[player].partner_commander_tax += 1;
-            } else {
-                state.players[player].commander_tax += 1;
-            }
+            let Some(cost) = commander_cast_cost(state, obj_id) else { return false; };
+            if !mana::pay_cost(state, player, &cost, None) { return false; }
+            let record = state.commanders.iter_mut().find(|c| c.object == obj_id).expect("admitted designation");
+            record.casts_by_player[player] += 1;
 
             // Move to stack
             let stack_id = state.new_stack_id();

@@ -537,7 +537,7 @@ fn fingerprint(state: &GameState) -> u64 {
     p0.mana_pool.green.hash(&mut hasher);
     p0.mana_pool.colorless.hash(&mut hasher);
     p0.land_plays_remaining.hash(&mut hasher);
-    p0.commander_tax.hash(&mut hasher);
+    state.public_commanders().hash(&mut hasher);
 
     let mut hand_ids: Vec<CardId> = p0
         .hand

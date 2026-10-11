@@ -333,7 +333,7 @@ fn token_and_commander_actual_evidence() {
     let mut commander = GameState::new_commander(2);
     commander.card_db = game(2).card_db;
     let id = commander.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
-    commander.players[0].commander_object_id = Some(id);
+    commander.designate_commander(id, 0).unwrap();
     sacrifice(&mut commander, 0, 1);
     assert!(commander.players[0].command_zone.contains(&id));
     assert_eq!(commander.stack.len(), 1);

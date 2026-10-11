@@ -57,6 +57,7 @@ impl AttachmentLki {
 /// definition in this game's database; no CardDef or GameState is cloned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LastKnownObject {
+    pub commander: Option<crate::game::CommanderDesignation>,
     pub object: ExactObjectRef,
     pub card_id: CardId,
     pub owner: PlayerIndex,
@@ -1417,6 +1418,7 @@ fn capture_subject(state: &GameState, id: ObjectId, attachments: &crate::card::A
         .get_characteristics(id)
         .expect("validated battlefield definition");
     LastKnownObject {
+        commander: state.commander_for_object(id).map(|c| c.designation),
         object: ExactObjectRef {
             id,
             generation: inst.zone_change_count,

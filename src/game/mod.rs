@@ -1,3 +1,6 @@
+mod wire;
+mod commander;
+pub use commander::{CommanderDesignation, CommanderRecord, PublicCommander};
 mod refresh;
 pub(crate) use refresh::{PreparedContinuousRefresh, RefreshProjection};
 use serde::{Deserialize, Serialize};
@@ -228,30 +231,6 @@ pub struct PlayerState {
     /// The command zone (Commander format only). Contains ObjectIds of cards
     /// currently in the command zone (typically the commander).
     pub command_zone: Vec<ObjectId>,
-    /// The CardId of this player's commander (None in non-Commander formats).
-    /// Used during setup to identify which card is the commander.
-    pub commander_card_id: Option<CardId>,
-    /// The ObjectId of this player's commander instance (set during game setup).
-    /// Used at runtime for identity checks — more robust than card_def_id
-    /// matching since two cards can share a CardId (e.g., clone effects).
-    pub commander_object_id: Option<ObjectId>,
-    /// How many times the commander has been cast from the command zone.
-    /// Each additional cast costs {2} more (the "commander tax").
-    pub commander_tax: u32,
-    /// Partner commander fields (CR 702.124): a second commander with Partner.
-    /// Combined color identity is used for deck validation.
-    #[serde(default)]
-    pub partner_commander_card_id: Option<CardId>,
-    #[serde(default)]
-    pub partner_commander_object_id: Option<ObjectId>,
-    /// Separate tax for the partner commander.
-    #[serde(default)]
-    pub partner_commander_tax: u32,
-    /// Commander damage received from each opponent's commander, indexed by
-    /// opponent PlayerIndex. In 1v1 this is a single-element vec.
-    /// A player loses if any entry reaches 21.
-    pub commander_damage_received: Vec<i32>,
-
     /// Poison counters on this player (10+ = lose the game via SBA).
     #[serde(default)]
     pub poison_counters: u32,
@@ -284,13 +263,6 @@ impl PlayerState {
             graveyard: Vec::new(),
             exile: Vec::new(),
             command_zone: Vec::new(),
-            commander_card_id: None,
-            commander_object_id: None,
-            commander_tax: 0,
-            partner_commander_card_id: None,
-            partner_commander_object_id: None,
-            partner_commander_tax: 0,
-            commander_damage_received: Vec::new(),
             poison_counters: 0,
             mulligan_count: 0,
             mulligan_decided: false,
@@ -360,7 +332,7 @@ impl CombatState {
 /// **Rule**: Any field added to `GameState` that is derivable from other fields must be
 /// marked `#[serde(skip)]` and excluded from equality/hashing. The canonical game state
 /// is the minimal set of fields needed to reconstruct the full state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GameState {
     #[serde(deserialize_with = "deserialize_game_state_format")]
     state_format: u32,
@@ -391,6 +363,8 @@ pub struct GameState {
 
     /// Player states.
     pub players: Vec<PlayerState>,
+    /// Authoritative designation bindings and public histories.
+    pub commanders: Vec<CommanderRecord>,
 
     /// Whose turn is it?
     pub active_player: PlayerIndex,
@@ -541,7 +515,7 @@ pub struct GameState {
 pub enum LossCause {
     LifeTotal,
     Poison,
-    CommanderDamage { source_player: PlayerIndex },
+    CommanderDamage { commander: CommanderDesignation },
     FailedDraw,
     Concession,
     /// A resumed represented loss without an original persisted cause.
@@ -798,6 +772,7 @@ pub struct GameStateSnapshot {
     battlefield: Vec<ObjectId>,
     stack: Vec<StackEntry>,
     players: Vec<PlayerState>,
+    commanders: Vec<CommanderRecord>,
     active_player: PlayerIndex,
     phase: Phase,
     priority_player: PlayerIndex,
@@ -904,6 +879,7 @@ pub struct PlayerView<'a> {
     pub opp_command_zone: &'a [ObjectId],
     /// How many times the viewing player has cast their commander.
     pub my_commander_tax: u32,
+    pub commanders: Vec<PublicCommander>,
     /// The game format (Standard or Commander).
     pub format: GameFormat,
 
@@ -1099,15 +1075,11 @@ impl GameState {
         }
         let represented_characteristics = visible.keys().filter_map(|&id|
             self.card_db.as_ref().and_then(|_| self.get_characteristics(id)).map(|chars| (id, chars))).collect();
-        let commander_objects = self.players.iter().flat_map(|seat|
-            [seat.commander_object_id, seat.partner_commander_object_id].into_iter().flatten())
+        let commander_objects = self.commanders.iter().map(|c| c.object)
             .filter(|id| visible.contains_key(id)).collect();
-        let mut commander_roles = HashMap::new();
-        for (player, seat) in self.players.iter().enumerate() {
-            for (id, role, tax) in [(seat.commander_object_id, 0u8, seat.commander_tax), (seat.partner_commander_object_id, 1u8, seat.partner_commander_tax)] {
-                if let Some(id) = id.filter(|id| visible.contains_key(id)) { commander_roles.insert(id, (player, role, tax)); }
-            }
-        }
+        let commander_roles = self.commanders.iter().filter(|c| visible.contains_key(&c.object))
+            .map(|c| (c.object, (c.designation.owner, c.designation.role,
+                c.casts_by_player.get(c.designation.owner).copied().unwrap_or(0)))).collect();
         PlayerView {
             player_count: self.players.len(),
             phase: self.phase,
@@ -1142,7 +1114,8 @@ impl GameState {
 
             my_command_zone: &self.players[player].command_zone,
             opp_command_zone: &self.players[opp].command_zone,
-            my_commander_tax: self.players[player].commander_tax,
+            my_commander_tax: self.commander_casts(player, 0, player),
+            commanders: self.public_commanders(),
             format: self.format,
 
             my_mulligan_count: self.players[player].mulligan_count,
@@ -1150,7 +1123,7 @@ impl GameState {
             pending_tutor: self.pending_tutor.clone(),
 
             objects: visible,
-            state_encoding_failed: self.validate_trigger_placement().is_err() || matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)),
+            state_encoding_failed: self.validate_commanders().is_err() || self.validate_trigger_placement().is_err() || matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)),
             visible_locations,
             represented_characteristics,
             commander_objects,
@@ -1181,6 +1154,7 @@ impl GameState {
             battlefield: Vec::new(),
             stack: Vec::new(),
             players: (0..num_players).map(|_| PlayerState::new()).collect(),
+            commanders: Vec::new(),
             active_player: 0,
             phase: Phase::Untap,
             priority_player: 0,
@@ -1218,7 +1192,7 @@ impl GameState {
 
     /// Create a new game state configured for Commander format.
     pub fn new_commander(num_players: usize) -> Self {
-        let mut state = GameState {
+        let state = GameState {
             state_format: GAME_STATE_FORMAT,
             card_db: None,
             combo_registry: None,
@@ -1229,6 +1203,7 @@ impl GameState {
             players: (0..num_players)
                 .map(|_| PlayerState::new_commander(40))
                 .collect(),
+            commanders: Vec::new(),
             active_player: 0,
             phase: Phase::Untap,
             priority_player: 0,
@@ -1262,10 +1237,6 @@ impl GameState {
             loss_action_in_progress: false,
             sba_failure: None,
         };
-        // Initialize commander damage tracking (each player tracks damage from each opponent)
-        for i in 0..num_players {
-            state.players[i].commander_damage_received = vec![0; num_players];
-        }
         state
     }
 
@@ -1323,6 +1294,7 @@ impl GameState {
             battlefield: self.battlefield.clone(),
             stack: self.stack.clone(),
             players: self.players.clone(),
+            commanders: self.commanders.clone(),
             active_player: self.active_player,
             phase: self.phase,
             priority_player: self.priority_player,
@@ -1361,6 +1333,7 @@ impl GameState {
         self.battlefield = snap.battlefield;
         self.stack = snap.stack;
         self.players = snap.players;
+        self.commanders = snap.commanders;
         self.active_player = snap.active_player;
         self.phase = snap.phase;
         self.priority_player = snap.priority_player;
@@ -1394,7 +1367,7 @@ impl GameState {
         self.pending_events.clear();
         self.invalidate_characteristics_cache();
 
-        if self.validate_trigger_placement().is_err() {
+        if self.validate_commanders().is_err() || self.validate_trigger_placement().is_err() {
             self.sba_failure = Some(crate::rules::sba::PreparedPassFailure::StateEncoding);
             return Err(crate::card::AttachmentError::Source);
         }
@@ -2079,7 +2052,8 @@ impl GameState {
                 },
             );
 
-        let mut effective_amount = amount as i32;
+        if amount == 0 { return 0; }
+        let mut effective_amount = i64::from(amount);
 
         // Apply self-replacement effects automatically
         for &idx in &self_replacements {
@@ -2087,9 +2061,12 @@ impl GameState {
                 match &effect.action {
                     ReplacementAction::Prevent => {
                         effective_amount = 0;
+                        break;
                     }
                     ReplacementAction::ModifyAmount { delta } => {
-                        effective_amount += delta;
+                        effective_amount += i64::from(*delta);
+                        // CR 614.7a: zero damage leaves no event to increase.
+                        if effective_amount <= 0 { return 0; }
                     }
                     _ => {}
                 }
@@ -2100,7 +2077,7 @@ impl GameState {
         // For now, apply them in order
         // (CR 614.5: each effect applies only once per event)
 
-        effective_amount.max(0) as u32
+        effective_amount.clamp(0, i64::from(u32::MAX)) as u32
     }
 
     /// Check for death replacement effects (CR 614).
@@ -2196,36 +2173,9 @@ impl GameState {
     }
 
     /// Check if the given object is a player's commander.
-    ///
-    /// Checks by object identity (`commander_object_id`) when available,
-    /// which is robust against clone effects. Falls back to `card_def_id`
-    /// matching for states set up without `commander_object_id`.
+    /// Designation belongs to a physical card, never its copied characteristics.
     pub fn is_commander(&self, obj_id: ObjectId) -> bool {
-        if self.format != GameFormat::Commander {
-            return false;
-        }
-        // Prefer object identity check (primary + partner)
-        for player in &self.players {
-            if player.commander_object_id == Some(obj_id) {
-                return true;
-            }
-            if player.partner_commander_object_id == Some(obj_id) {
-                return true;
-            }
-        }
-        // Fallback: card_def_id match (for backwards compatibility)
-        if let Some(inst) = self.objects.get(&obj_id) {
-            let owner = inst.owner;
-            if self.players[owner].commander_object_id.is_none() {
-                return self.players[owner].commander_card_id == Some(inst.card_def_id);
-            }
-            if self.players[owner].partner_commander_object_id.is_none() {
-                if self.players[owner].partner_commander_card_id == Some(inst.card_def_id) {
-                    return true;
-                }
-            }
-        }
-        false
+        self.commander_for_object(obj_id).is_some()
     }
 
     /// Check if the given object is in a player's command zone.
@@ -2348,9 +2298,9 @@ fn deserialize_trigger_placement<'de, D: serde::Deserializer<'de>>(d: D) -> Resu
 
 // The leading tag rejects historical positional bincode before interpreting any
 // changed layout. JSON must carry the same explicit version.
-const GAME_STATE_FORMAT: u32 = 0x3245_4754;
+const GAME_STATE_FORMAT: u32 = 0x3246_3154;
 fn deserialize_game_state_format<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let version = u32::deserialize(d)?;
-    if version != GAME_STATE_FORMAT { return Err(serde::de::Error::custom("incompatible GameState trigger format")); }
+    if version != GAME_STATE_FORMAT { return Err(serde::de::Error::custom("incompatible GameState Commander format")); }
     Ok(version)
 }

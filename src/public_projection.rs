@@ -12,7 +12,7 @@ use crate::card::{ExactObjectRef, ObjectId, ZoneType};
 use crate::game::{GameState, PlayerView, StackSource, Target, TriggerContext};
 use crate::simulation::TerminationReason;
 
-pub const PROJECTION_SCHEMA: u16 = 2;
+pub const PROJECTION_SCHEMA: u16 = 3;
 type EncodingResult<T> = Result<T, TerminationReason>;
 
 pub fn encode<T: Serialize>(value: &T) -> EncodingResult<Vec<u8>> {
@@ -33,6 +33,7 @@ pub enum VertexKind {
     StackOrOperation,
     LegacyReference,
     Replacement,
+    CommanderHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1268,6 +1269,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
             0u8,
             rank,
             (
+                object.commander,
                 object.card_id,
                 object.owner,
                 object.controller,
@@ -2043,6 +2045,9 @@ impl<'v, 'a> PreparedPublicNormalization<'v, 'a> {
         }
         let start = std::time::Instant::now();
         let mut inventory = Inventory::new(view);
+        if !view.commanders.is_empty() {
+            inventory.graph.vertex(VertexKind::CommanderHistory, &view.commanders)?;
+        }
         inventory.current_objects()?;
         inventory.history()?;
         inventory.effects()?;

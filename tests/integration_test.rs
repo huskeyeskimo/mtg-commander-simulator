@@ -315,7 +315,7 @@ mod ordinary_keyword_prerequisite {
         for legacy in [false, true] {
             let (mut state, id) = fixture(vec![KeywordAbility::Undying]);
             state.format = GameFormat::Commander;
-            state.players[0].commander_object_id = Some(id);
+            state.designate_commander(id, 0).unwrap();
             if legacy { lethal_sba(&mut state, id); }
             else { depart(&mut state, &[id], ZoneType::Graveyard); }
             assert!(state.players[0].command_zone.contains(&id));
@@ -5028,6 +5028,7 @@ fn test_multi_phase_abstraction() {
         my_command_zone: vec![],
         opp_command_zone: vec![],
         my_commander_tax: 0,
+        commanders: vec![],
         my_mulligan_count: 0,
     };
 
@@ -6162,8 +6163,7 @@ fn test_new_kinnan_deck_cards_in_db() {
 #[test]
 fn test_commander_snapshot_restore() {
     // Test that snapshot/restore preserves commander-specific state:
-    // command_zone, commander_card_id, commander_object_id, commander_tax,
-    // and commander_damage_received.
+    // command_zone, authoritative designations, cast histories and damage ledgers.
     let db = sample::build_sample_db();
     let mut state = GameState::new_commander(2);
     state.card_db = Some(Arc::new(db));
@@ -6191,15 +6191,15 @@ fn test_commander_snapshot_restore() {
         1,
         "Player 1 should have a commander"
     );
-    assert!(state.players[0].commander_object_id.is_some());
-    assert!(state.players[1].commander_object_id.is_some());
+    assert!(state.commander(0, 0).map(|c| c.object).is_some());
+    assert!(state.commander(1, 0).map(|c| c.object).is_some());
 
     let cmd0_obj = state.players[0].command_zone[0];
     let cmd1_obj = state.players[1].command_zone[0];
 
     // Simulate commander tax and damage
-    state.players[0].commander_tax = 2;
-    state.players[1].commander_damage_received[0] = 7;
+    state.commander_mut(0, 0).unwrap().casts_by_player[0] = 2;
+    state.commander_mut(0, 0).unwrap().damage_to_player[1] = 7;
 
     // Take snapshot
     let snap = state.snapshot();
@@ -6208,14 +6208,14 @@ fn test_commander_snapshot_restore() {
     state.players[0].life -= 10;
     state.players[1].life -= 5;
     state.players[0].command_zone.clear();
-    state.players[0].commander_tax = 5;
-    state.players[1].commander_damage_received[0] = 21;
+    state.commander_mut(0, 0).unwrap().casts_by_player[0] = 5;
+    state.commander_mut(0, 0).unwrap().damage_to_player[1] = 21;
 
     // Verify mutations took effect
     assert_eq!(state.players[0].life, 30);
     assert!(state.players[0].command_zone.is_empty());
-    assert_eq!(state.players[0].commander_tax, 5);
-    assert_eq!(state.players[1].commander_damage_received[0], 21);
+    assert_eq!(state.commander_casts(0, 0, 0), 5);
+    assert_eq!(state.commander(0, 0).unwrap().damage_to_player[1], 21);
 
     // Restore from snapshot
     state.restore(snap).unwrap();
@@ -6242,20 +6242,20 @@ fn test_commander_snapshot_restore() {
         "Commander ID should match"
     );
     assert_eq!(
-        state.players[0].commander_tax, 2,
+        state.commander_casts(0, 0, 0), 2,
         "Commander tax should be restored"
     );
     assert_eq!(
-        state.players[1].commander_damage_received[0], 7,
+        state.commander(0, 0).unwrap().damage_to_player[1], 7,
         "Commander damage should be restored to pre-snapshot value"
     );
     assert_eq!(
-        state.players[0].commander_card_id,
+        state.commander(0, 0).map(|c| c.initial_card),
         Some(cmd0_card),
         "Commander card ID should be restored"
     );
     assert_eq!(
-        state.players[1].commander_card_id,
+        state.commander(1, 0).map(|c| c.initial_card),
         Some(cmd1_card),
         "Commander card ID should be restored"
     );
@@ -9089,7 +9089,7 @@ fn test_2b3a_all_cast_zones_settle_cast_side_life_changes() {
         let spell = state.create_card_in_zone(995005, 0, zone).unwrap();
         if zone == ZoneType::Command {
             state.format = mtg_gto::game::GameFormat::Commander;
-            state.players[0].commander_card_id = Some(995005);
+            state.designate_commander(spell, 0).unwrap();
         }
         let action = match zone {
             ZoneType::Hand => Action::CastSpell { object_id: spell, targets: vec![] },
@@ -9831,6 +9831,14 @@ mod terminal_loss_prerequisite {
     use mtg_gto::card::{CardDef, CardType, Effect, TriggerCondition, TriggeredAbility};
     use mtg_gto::game::{CardDatabase, StackEntry, StackSource};
 
+    fn damage(state: &mut GameState, owner: usize, recipient: usize, amount: u32) {
+        if state.commander(owner, 0).is_none() {
+            let id = state.create_card_in_zone(998_101, owner, ZoneType::Command).unwrap();
+            state.designate_commander(id, 0).unwrap();
+        }
+        state.commander_mut(owner, 0).unwrap().damage_to_player[recipient] = amount;
+    }
+
     fn fixture(players: usize) -> GameState {
         let mut db = CardDatabase::new();
         db.insert(CardDef { id: 998_101, name: "Terminal boundary permanent".into(),
@@ -10020,7 +10028,7 @@ mod terminal_loss_prerequisite {
         assert_eq!(poison.winner, Some(0));
         let mut commander = fixture(2);
         commander.format = mtg_gto::game::GameFormat::Commander;
-        commander.players[1].commander_damage_received = vec![21];
+        damage(&mut commander, 0, 1, 21);
         rules::check_state_based_actions(&mut commander);
         assert!(commander.game_over);
         assert_eq!(commander.winner, Some(0));
@@ -10069,9 +10077,8 @@ mod terminal_loss_prerequisite {
                             }
                             if cause_kind == 2 || cause_kind == 3 {
                                 let source = (seat + 1) % players;
-                                state.players[seat].commander_damage_received = vec![0; players];
-                                state.players[seat].commander_damage_received[source] = 21;
-                                causes.push(LossCause::CommanderDamage { source_player: source });
+                                damage(&mut state, source, seat, 21);
+                                causes.push(LossCause::CommanderDamage { commander: mtg_gto::game::CommanderDesignation { owner: source, role: 0 } });
                             }
                             if cause_kind == 3 {
                                 rules::draw_cards(&mut state, seat, 1);
@@ -10382,12 +10389,12 @@ mod terminal_loss_prerequisite {
         use mtg_gto::game::LossCause;
         let mut state = fixture(3);
         state.format = mtg_gto::game::GameFormat::Commander;
-        state.players[0].commander_damage_received = vec![21, 22, 20];
+        for (owner, amount) in [21, 22, 20].into_iter().enumerate() { damage(&mut state, owner, 0, amount); }
         state.players[1].poison_counters = 10;
         rules::check_state_based_actions(&mut state);
         assert_eq!(state.winner, Some(2));
-        assert_eq!(facts(&state).0[0].causes, vec![LossCause::CommanderDamage { source_player: 0 },
-            LossCause::CommanderDamage { source_player: 1 }]);
+        assert_eq!(facts(&state).0[0].causes, vec![LossCause::CommanderDamage { commander: mtg_gto::game::CommanderDesignation { owner: 0, role: 0 } },
+            LossCause::CommanderDamage { commander: mtg_gto::game::CommanderDesignation { owner: 1, role: 0 } }]);
     }
 
     #[test]
@@ -11171,7 +11178,7 @@ mod common_pass_2b3b {
         commander.card_db = s.card_db.clone();
         commander.phase = Phase::PreCombatMain;
         let c = add(&mut commander, L, 0);
-        commander.players[0].commander_card_id = Some(L);
+        commander.designate_commander(c, 0).unwrap();
         zero(&mut commander, c);
         commander.objects.get_mut(&c).unwrap().temp_keywords =
             vec![KeywordAbility::Undying, KeywordAbility::Persist];
@@ -11723,8 +11730,8 @@ mod common_pass_2b3b {
         s.card_db = db;
         let ordinary = add(&mut s, L, 0);
         let commander = add(&mut s, L, 0);
-        s.players[0].commander_card_id = Some(L);
-        s.players[0].commander_object_id = Some(commander);
+
+        s.designate_commander(commander, 0).unwrap();
         rules::check_state_based_actions(&mut s);
         assert!(s.battlefield.contains(&ordinary));
         assert!(s.players[0].command_zone.contains(&commander));

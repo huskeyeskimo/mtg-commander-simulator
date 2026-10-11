@@ -647,7 +647,11 @@ fn test_terminal_loss_boundary_threshold_controls_do_not_stop_ordinary_play() {
     state.format = mtg_gto::game::GameFormat::Commander;
     state.players[0].life = 1;
     state.players[0].poison_counters = 9;
-    state.players[0].commander_damage_received = vec![20, 20];
+    for owner in 0..2 {
+        let c = state.create_card_in_zone(ids::GRIZZLY_BEARS, owner, ZoneType::Command).unwrap();
+        state.designate_commander(c, 0).unwrap();
+        state.commander_mut(owner, 0).unwrap().damage_to_player[0] = 20;
+    }
     let victim = add_creature(&mut state, ids::GRIZZLY_BEARS, 0);
     state.objects.get_mut(&victim).unwrap().damage_marked = 2;
     rules::check_state_based_actions(&mut state);

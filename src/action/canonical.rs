@@ -113,7 +113,7 @@ pub enum CanonicalAction {
 
     /// Cast commander from command zone (Commander format).
     CastCommander {
-        card_id: CardId,
+        designation: crate::game::CommanderDesignation,
         targets: Vec<CanonicalTarget>,
     },
 
@@ -360,14 +360,13 @@ fn canonicalize_with_normalization(
         }
 
         Action::CastCommander { object_id, targets } => {
-            let inst = &state.objects[object_id];
-            let card_id = inst.card_def_id;
+            let designation = state.commander_for_object(*object_id).ok_or(crate::simulation::TerminationReason::StateEncoding)?.designation;
             let canonical_targets: Vec<CanonicalTarget> = targets
                 .iter()
                 .map(|t| canonicalize_target(t, state, normalized))
                 .collect();
             CanonicalAction::CastCommander {
-                card_id,
+                designation,
                 targets: canonical_targets,
             }
         }
@@ -644,9 +643,10 @@ pub fn resolve_with_normalization(
             })
         }
 
-        CanonicalAction::CastCommander { card_id, targets } => {
-            // Find the commander in the player's command zone
-            let obj_id = find_in_command_zone(state, player, *card_id)?;
+        CanonicalAction::CastCommander { designation, targets } => {
+            if designation.owner != player || player != state.priority_player { return None; }
+            let obj_id = state.commander(designation.owner, designation.role)?.object;
+            crate::rules::commander_cast_cost(state, obj_id)?;
             let concrete_targets: Vec<Target> = targets
                 .iter()
                 .filter_map(|t| resolve_target(t, state, normalized))
@@ -654,6 +654,8 @@ pub fn resolve_with_normalization(
             if concrete_targets.len() != targets.len() {
                 return None;
             }
+            let def = state.card_db().get(state.objects.get(&obj_id)?.card_def_id)?;
+            if !crate::targeting::valid_spell_targets(state, player, def, &concrete_targets) { return None; }
             Some(Action::CastCommander {
                 object_id: obj_id,
                 targets: concrete_targets,
@@ -921,19 +923,6 @@ fn find_in_graveyard_by_index(
         .collect();
     matches.sort_by_key(|id| state.exact_object(*id).and_then(|exact| normalized.exact_to_coordinate.get(&exact)).copied());
     matches.get(instance_index).copied()
-}
-
-/// Find a card in a player's command zone by card_id.
-fn find_in_command_zone(
-    state: &GameState,
-    player: PlayerIndex,
-    card_id: CardId,
-) -> Option<ObjectId> {
-    state.players[player]
-        .command_zone
-        .iter()
-        .copied()
-        .find(|&id| state.is_card(id) && state.objects[&id].card_def_id == card_id)
 }
 
 /// Find the N-th instance of `card_id` controlled by `controller` on the battlefield.

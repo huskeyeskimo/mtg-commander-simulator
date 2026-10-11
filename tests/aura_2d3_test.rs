@@ -476,6 +476,11 @@ fn unsupported_metadata_and_cast_origins_are_explicit() {
         };
         let before = s.clone();
         rules::apply_action(&mut s, &action);
+        if case == 3 {
+            // A nondesignated command-zone card is rejected before Aura handling.
+            assert_eq!(serde_json::to_value(&s).unwrap(), serde_json::to_value(&before).unwrap());
+            continue;
+        }
         assert_eq!(
             s.invalid_gameplay_reason(),
             Some(TerminationReason::PreparedSbaFailure)
@@ -2083,8 +2088,8 @@ fn computed_aura_ingress_is_rejected_before_entry() {
 fn commander_fizzle_reports_actual_destination() {
     let (mut s, a, t) = fixture();
     s.format = mtg_gto::game::GameFormat::Commander;
-    s.players[0].commander_object_id = Some(a);
-    s.players[0].commander_card_id = Some(AURA);
+    s.designate_commander(a, 0).unwrap();
+
     cast(&mut s, a, t);
     s.objects
         .get_mut(&t)

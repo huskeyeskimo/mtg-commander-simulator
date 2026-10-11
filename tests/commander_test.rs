@@ -25,15 +25,11 @@ fn setup_commander_state(commander0: CardId, commander1: CardId) -> GameState {
     let mut state = GameState::new_commander(2);
     state.card_db = Some(Arc::new(db));
 
-    // Designate commanders
-    state.players[0].commander_card_id = Some(commander0);
-    state.players[1].commander_card_id = Some(commander1);
-
     // Put commanders in command zone and record object IDs
     let cmd0_obj = state.create_card_in_zone(commander0, 0, ZoneType::Command).unwrap();
     let cmd1_obj = state.create_card_in_zone(commander1, 1, ZoneType::Command).unwrap();
-    state.players[0].commander_object_id = Some(cmd0_obj);
-    state.players[1].commander_object_id = Some(cmd1_obj);
+    state.designate_commander(cmd0_obj, 0).unwrap();
+    state.designate_commander(cmd1_obj, 0).unwrap();
 
     // Libraries so no one decks out
     for _ in 0..30 {
@@ -72,11 +68,13 @@ fn test_standard_starting_life_is_20() {
 
 #[test]
 fn test_commander_damage_tracking_initialized() {
-    let state = GameState::new_commander(2);
-    assert_eq!(state.players[0].commander_damage_received.len(), 2);
-    assert_eq!(state.players[1].commander_damage_received.len(), 2);
-    assert_eq!(state.players[0].commander_damage_received[0], 0);
-    assert_eq!(state.players[0].commander_damage_received[1], 0);
+    let mut state = GameState::new_commander(2);
+    state.card_db = Some(Arc::new(sample::build_sample_db()));
+    for owner in 0..2 {
+        let id = state.create_card_in_zone(ids::GRIZZLY_BEARS, owner, ZoneType::Command).unwrap();
+        state.designate_commander(id, 0).unwrap();
+        assert_eq!(state.commander(owner, 0).unwrap().damage_to_player, vec![0, 0]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +227,7 @@ fn test_commander_tax_increments() {
     state.priority_player = 0;
     state.phase = Phase::PreCombatMain;
 
-    assert_eq!(state.players[0].commander_tax, 0);
+    assert_eq!(state.commander_casts(0, 0, 0), 0);
 
     // Cast commander first time
     let cmd_obj = state.players[0].command_zone[0];
@@ -240,7 +238,7 @@ fn test_commander_tax_increments() {
     rules::apply_action(&mut state, &action);
 
     assert_eq!(
-        state.players[0].commander_tax, 1,
+        state.commander_casts(0, 0, 0), 1,
         "Tax should increment after first cast"
     );
 }
@@ -255,7 +253,7 @@ fn test_commander_redirects_to_command_zone_on_death() {
 
     // Move the actual commander object from command zone to battlefield
     // (simulating a resolved CastCommander)
-    let brimaz_obj = state.players[0].commander_object_id.unwrap();
+    let brimaz_obj = state.commander(0, 0).map(|c| c.object).unwrap();
     state.move_object(brimaz_obj, ZoneType::Command, ZoneType::Battlefield);
     assert!(state.battlefield.contains(&brimaz_obj));
 
@@ -278,7 +276,7 @@ fn test_commander_redirects_to_command_zone_on_exile() {
     let mut state = setup_commander_state(ids::BRIMAZ_KING, ids::THRUN_LAST_TROLL);
 
     // Move the actual commander object to battlefield first
-    let brimaz_obj = state.players[0].commander_object_id.unwrap();
+    let brimaz_obj = state.commander(0, 0).map(|c| c.object).unwrap();
     state.move_object(brimaz_obj, ZoneType::Command, ZoneType::Battlefield);
 
     // Move Brimaz to exile (simulating Path to Exile)
@@ -322,7 +320,7 @@ fn test_commander_damage_21_loses_game() {
     let mut state = setup_commander_state(ids::BRIMAZ_KING, ids::THRUN_LAST_TROLL);
 
     // Set player 1 to have received 21 commander damage from player 0's commander
-    state.players[1].commander_damage_received[0] = 21;
+    state.commander_mut(0, 0).unwrap().damage_to_player[1] = 21;
 
     rules::check_state_based_actions(&mut state);
 
@@ -337,7 +335,7 @@ fn test_commander_damage_21_loses_game() {
 fn test_commander_damage_20_does_not_lose() {
     let mut state = setup_commander_state(ids::BRIMAZ_KING, ids::THRUN_LAST_TROLL);
 
-    state.players[1].commander_damage_received[0] = 20;
+    state.commander_mut(0, 0).unwrap().damage_to_player[1] = 20;
 
     rules::check_state_based_actions(&mut state);
 
