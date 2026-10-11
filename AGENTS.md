@@ -16,12 +16,12 @@ MTG Commander Goldfish Simulator -- a Rust-based Magic: The Gathering Commander 
 
 ```bash
 cargo build                     # Compile
-cargo test                      # Run all tests (unit + integration, ~312 tests)
+cargo test                      # Unfiltered tests, including MCCFR throughput; see qualification below
 cargo run --release --features tui --bin tui  # TUI goldfish player
 cargo run --release --bin goldfish -- --preset kinnan --trace  # CLI goldfish
 ```
 
-All tests must pass with 0 warnings before committing.
+All required qualification tests must pass with 0 warnings before committing. Routine rules-engine qualification has exactly one workload exclusion, documented below.
 
 Validation has three phases:
 
@@ -29,23 +29,43 @@ Validation has three phases:
 2. **Post-correction regression validation:** after bounded corrections, run the related integration and regression families.
 3. **Final checkpoint qualification:** before checkpoint approval, complete independent review and all required sequential full validation gates.
 
+### Rules-engine qualification
+
+Cloud Sim is the primary development environment. MCCFR pilot optimization and throughput qualification are deferred until the rules engine and Goblin Storm simulator are substantially complete. This policy authorizes excluding only the exact test `benchmark_mccfr_training_throughput` from routine rules-engine qualification. No other MCCFR test is deferred.
+
 The final gates remain mandatory, in this order:
 
 ```bash
-cargo test
-cargo test --all-features
-cargo build
-cargo build --features tui --bin tui
-cargo build --all-features
-cargo check --all-targets
-cargo check --all-features --all-targets
+cargo test --locked -- --exact --skip benchmark_mccfr_training_throughput
+cargo test --locked --all-features -- --exact --skip benchmark_mccfr_training_throughput
+cargo build --locked
+cargo build --locked --features tui --bin tui
+cargo build --locked --all-features
+cargo check --locked --all-targets
+cargo check --locked --all-features --all-targets
 ```
+
+Both default and all-features test configurations are required. Retain rules and legal-action correctness, zone transitions, triggers/APNAP, attachments, state-based actions, canonicalization, hidden-information protection, persistence, solver-facing correctness, error propagation, failed-attempt disposal, checkpoint compatibility, parallel correctness, and training statistics/numerical validity. This includes correctness tests inside MCCFR, MCTS, and search binaries. All other benchmarks remain selected, including `benchmark_engine_throughput`, `benchmark_solver_throughput`, and `benchmark_warm_start_vs_cold_start`.
+
+`--exact` applies to the libtest exclusion; there is no positional test-name filter on either full gate. Do not use broad exclusions such as `--skip mccfr` or `--skip train`, omit a whole test target, or add exclusions without separate approval. New tests remain selected by default.
+
+When changing qualification commands or toolchains, verify selection before relying on it: compare `cargo test --locked -- --list` with the first test gate above plus `--list`, and repeat with `--all-features`. The discovered test inventories must differ only by `benchmark_mccfr_training_throughput` in the `benchmark_test` target. Compare their `--ignored --list` inventories separately; those must be identical. Keep target identities and exact test names in the evidence. Listing tests compiles/discovers them; it does not constitute a passing qualification run. Preserve Cargo/libtest output and command exit status, and report passed, failed, ignored, and deliberately filtered tests separately. Do not change existing ignored-test classifications or enable ignored diagnostics/live-network tests implicitly.
+
+Preserve the excluded throughput test and its threshold unchanged. It remains available for separately requested MCCFR throughput qualification:
+
+```bash
+cargo test --locked --release --test benchmark_test benchmark_mccfr_training_throughput -- --exact --nocapture
+```
+
+Use focused tests during implementation, then relevant integration and persistence regressions, then the full correctness and compatibility gates above. Independent Astra High review must cover the final changed source, test selection, and validation evidence. Use ordinary sequential Cargo commands; no custom supervisor or reservation framework is required.
 
 Do not overlap qualifying full gates. Run other validation sequentially where shared temporary paths make concurrent execution unsafe. Require zero warnings and a clean `git diff --check`.
 
 If source changes after qualifying validation, determine which evidence was invalidated and rerun the affected gates before checkpoint approval. Independent review must cover the final changed source. Do not rerun expensive full suites solely to collect timing information when existing logs are sufficient.
 
 Preserve all existing tests, ignored-test classifications, performance thresholds, benchmark methodology, deterministic and stochastic coverage, solver methodology, and independent reviewer requirements. Do not consolidate, remove or weaken tests, or move tests into explicit diagnostics.
+
+Candidates for future bounded correctness companions include `benchmark_warm_start_vs_cold_start`, `test_training_stats`, `test_checkpoint_save_load`, `test_training_with_checkpointing`, `test_train_goldfish_parallel_more_shards_than_iterations`, and `test_commander_goldfish_training_retains_coverage`. These tests remain mandatory under this policy. Any later workload deferral requires separate approval and reviewed preservation of numerical validity, checkpoint behavior, parallel edge cases, callbacks, retained entries/visits, and other correctness assertions. Do not implement companions or defer additional tests as part of policy adoption.
 
 ## Architecture
 
