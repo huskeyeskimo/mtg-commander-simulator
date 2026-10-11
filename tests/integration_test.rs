@@ -38,7 +38,7 @@ mod ordinary_keyword_prerequisite {
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
         state.phase = Phase::PreCombatMain;
-        let id = state.create_card_in_zone(996_701, 0, ZoneType::Battlefield);
+        let id = state.create_card_in_zone(996_701, 0, ZoneType::Battlefield).unwrap();
         (state, id)
     }
 
@@ -221,7 +221,7 @@ mod ordinary_keyword_prerequisite {
                 card_types: vec![CardType::Artifact], triggered_abilities: vec![TriggeredAbility {
                     trigger: TriggerCondition::ACreatureEnters, effect: Effect::GainLife { amount: 5 },
                     description: "Observe creature entry".into() }], ..Default::default() });
-            state.create_card_in_zone(996_702, 1, ZoneType::Battlefield);
+            state.create_card_in_zone(996_702, 1, ZoneType::Battlefield).unwrap();
             let inst = state.objects.get_mut(&id).unwrap();
             inst.controller = 1;
             inst.damage_marked = 7;
@@ -392,6 +392,7 @@ mod ordinary_keyword_prerequisite {
             let mut def = db.get(996_701).unwrap().clone();
             def.card_types = vec![CardType::Enchantment];
             def.subtypes = vec![mtg_gto::card::Subtype("Aura".into())];
+            def.enchant = mtg_gto::card::EnchantRestriction::Creature;
             db.insert(def);
             state.invalidate_characteristics_cache();
             if legacy { rules::check_state_based_actions(&mut state); }
@@ -414,7 +415,7 @@ mod ordinary_keyword_prerequisite {
         state.objects.remove(&original);
         state.players[0].exile.clear();
         for _ in 0..prefix {
-            let token = state.create_card_in_zone(996_701, 0, ZoneType::Battlefield);
+            let token = state.create_card_in_zone(996_701, 0, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&token).unwrap().is_token = true;
             state.move_object(token, ZoneType::Battlefield, ZoneType::Exile);
             rules::check_state_based_actions(&mut state);
@@ -430,7 +431,7 @@ mod ordinary_keyword_prerequisite {
         let mut ids = vec![0; count];
         for role in roles {
             let definition = if role % 2 == 0 { 996_701 } else { 996_703 };
-            let id = state.create_card_in_zone(definition, 0, ZoneType::Battlefield);
+            let id = state.create_card_in_zone(definition, 0, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&id).unwrap().tapped = role % 3 == 0;
             ids[role] = id;
         }
@@ -450,7 +451,7 @@ mod ordinary_keyword_prerequisite {
             triggered_abilities: vec![TriggeredAbility { trigger: TriggerCondition::ACreatureDies,
                 effect: Effect::GainLife { amount: 1 }, description: "Watch deaths".into() }],
             ..Default::default() });
-        let watcher = state.create_card_in_zone(996_704, 1, ZoneType::Battlefield);
+        let watcher = state.create_card_in_zone(996_704, 1, ZoneType::Battlefield).unwrap();
         depart(&mut state, &[first, watcher], ZoneType::Graveyard);
         assert_eq!(state.pending_triggers.len(), 5, "two subject keywords, watcher keyword and two watched deaths");
         let group = state.pending_triggers[0].context.zone_transition.as_ref().unwrap().group_id;
@@ -635,8 +636,8 @@ fn test_2a_mana_choice_restrictions_and_failed_cast_are_atomic() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::PreCombatMain;
-    let source = state.create_card_in_zone(990801, 0, ZoneType::Battlefield);
-    let spell = state.create_card_in_zone(990802, 0, ZoneType::Hand);
+    let source = state.create_card_in_zone(990801, 0, ZoneType::Battlefield).unwrap();
+    let spell = state.create_card_in_zone(990802, 0, ZoneType::Hand).unwrap();
     let cast = Action::CastSpell { object_id: spell, targets: vec![] };
     assert!(!legal_actions(&state).contains(&cast), "choice source cannot produce black");
     let before = bincode::serialize(&state).unwrap();
@@ -682,10 +683,10 @@ fn test_2a_mana_advertised_casts_pay_across_source_matrix() {
         state.phase = Phase::PreCombatMain;
         state.players[0].mana_pool = ManaPool { black: floating_black, ..ManaPool::empty() };
         let source_ids: Vec<_> = (0..source_count)
-            .map(|index| state.create_card_in_zone(991000 + index as u64, 0, ZoneType::Battlefield))
+            .map(|index| state.create_card_in_zone(991000 + index as u64, 0, ZoneType::Battlefield).unwrap())
             .collect();
         if tapped { state.objects.get_mut(&source_ids[0]).unwrap().tapped = true; }
-        let spell = state.create_card_in_zone(991100, 0, ZoneType::Hand);
+        let spell = state.create_card_in_zone(991100, 0, ZoneType::Hand).unwrap();
         let cast = Action::CastSpell { object_id: spell, targets: vec![] };
         assert_eq!(legal_actions(&state).contains(&cast), expected, "{label}: advertised");
         let before = bincode::serialize(&state).unwrap();
@@ -720,8 +721,8 @@ fn test_2a_failed_activation_keeps_taps_life_sacrifice_and_stack_unchanged() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::PreCombatMain;
-    let land = state.create_card_in_zone(991201, 0, ZoneType::Battlefield);
-    let source = state.create_card_in_zone(991202, 0, ZoneType::Battlefield);
+    let land = state.create_card_in_zone(991201, 0, ZoneType::Battlefield).unwrap();
+    let source = state.create_card_in_zone(991202, 0, ZoneType::Battlefield).unwrap();
     let action = Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] };
     assert!(!legal_actions(&state).contains(&action));
     let before = bincode::serialize(&state).unwrap();
@@ -771,9 +772,9 @@ fn test_2a_mana_alternative_legendary_and_swamp_bonus_sources() {
         let mut state = GameState::new(2);
         state.card_db = Some(db.clone());
         state.phase = Phase::PreCombatMain;
-        state.create_card_in_zone(source_card, 0, ZoneType::Battlefield);
-        if let Some(support) = support { state.create_card_in_zone(support, 0, ZoneType::Battlefield); }
-        let spell = state.create_card_in_zone(spell_card, 0, ZoneType::Hand);
+        state.create_card_in_zone(source_card, 0, ZoneType::Battlefield).unwrap();
+        if let Some(support) = support { state.create_card_in_zone(support, 0, ZoneType::Battlefield).unwrap(); }
+        let spell = state.create_card_in_zone(spell_card, 0, ZoneType::Hand).unwrap();
         let cast = Action::CastSpell { object_id: spell, targets: vec![] };
         assert!(legal_actions(&state).contains(&cast), "source {source_card} should pay");
         rules::apply_action(&mut state, &cast);
@@ -783,8 +784,8 @@ fn test_2a_mana_alternative_legendary_and_swamp_bonus_sources() {
     let mut no_legend = GameState::new(2);
     no_legend.card_db = Some(db);
     no_legend.phase = Phase::PreCombatMain;
-    no_legend.create_card_in_zone(991302, 0, ZoneType::Battlefield);
-    let spell = no_legend.create_card_in_zone(991306, 0, ZoneType::Hand);
+    no_legend.create_card_in_zone(991302, 0, ZoneType::Battlefield).unwrap();
+    let spell = no_legend.create_card_in_zone(991306, 0, ZoneType::Hand).unwrap();
     assert!(!legal_actions(&no_legend).contains(&Action::CastSpell { object_id: spell, targets: vec![] }));
 }
 
@@ -955,19 +956,19 @@ fn test_etb_trigger_elvish_visionary() {
 
     // Give player 0 some forests and an Elvish Visionary in hand
     for _ in 0..3 {
-        state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Library).unwrap();
     }
     // Give both players some library cards to draw from
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     // Put Elvish Visionary in hand
-    let vis_id = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Hand);
+    let vis_id = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Hand).unwrap();
     // Put 2 Forests on battlefield (untapped) for mana
-    let f1 = state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield);
-    let f2 = state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield);
+    let f1 = state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield).unwrap();
+    let f2 = state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&f1) {
         inst.tapped = false;
         inst.summoning_sick = false;
@@ -1053,15 +1054,15 @@ fn test_order_triggers_surfaced_for_multiple_simultaneous_triggers() {
 
     // Give both players library cards so no one loses from empty library
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     // Put two Elvish Visionaries on the battlefield for player 0.
     // Both have "When ~ enters the battlefield, draw a card" — but we'll
     // use the trigger system directly by queuing two simultaneous triggers.
-    let vis1 = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield);
-    let vis2 = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield);
+    let vis1 = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield).unwrap();
+    let vis2 = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -1123,11 +1124,11 @@ fn test_single_trigger_auto_flushes_without_ordering() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
-    let vis = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield);
+    let vis = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -1164,7 +1165,7 @@ fn test_cleanup_requires_discard_action() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..8 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand).unwrap();
     }
 
     state.active_player = 0;
@@ -1194,7 +1195,7 @@ fn test_cleanup_allows_pass_at_seven() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..7 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand).unwrap();
     }
 
     state.active_player = 0;
@@ -1218,7 +1219,7 @@ fn test_cleanup_multiple_discards() {
 
     let mut hand_ids = Vec::new();
     for _ in 0..10 {
-        hand_ids.push(state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand));
+        hand_ids.push(state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand).unwrap());
     }
 
     state.active_player = 0;
@@ -1283,9 +1284,9 @@ fn test_2a_cleanup_discard_triggers_before_next_turn() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::Cleanup;
-    let observer = state.create_card_in_zone(90_001, 0, ZoneType::Battlefield);
+    let observer = state.create_card_in_zone(90_001, 0, ZoneType::Battlefield).unwrap();
     for _ in 0..8 {
-        state.create_card_in_zone(90_002, 0, ZoneType::Hand);
+        state.create_card_in_zone(90_002, 0, ZoneType::Hand).unwrap();
     }
     let card = state.players[0].hand[0];
     rules::apply_action(&mut state, &Action::Discard { object_id: card });
@@ -1342,10 +1343,10 @@ fn test_2a_cleanup_multiple_discards_order_and_restore() {
     state.card_db = Some(db.clone());
     state.phase = Phase::Cleanup;
     for _ in 0..2 {
-        state.create_card_in_zone(90_011, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(90_011, 0, ZoneType::Battlefield).unwrap();
     }
     for _ in 0..9 {
-        state.create_card_in_zone(90_012, 0, ZoneType::Hand);
+        state.create_card_in_zone(90_012, 0, ZoneType::Hand).unwrap();
     }
     let first = state.players[0].hand[0];
     rules::apply_action(&mut state, &Action::Discard { object_id: first });
@@ -1450,9 +1451,9 @@ fn test_2a_cleanup_auto_paths_settle_discard_trigger() {
         } else {
             Phase::EndStep
         };
-        state.create_card_in_zone(90_021, active, ZoneType::Battlefield);
+        state.create_card_in_zone(90_021, active, ZoneType::Battlefield).unwrap();
         for _ in 0..if automated { 9 } else { 8 } {
-            state.create_card_in_zone(90_022, active, ZoneType::Hand);
+            state.create_card_in_zone(90_022, active, ZoneType::Hand).unwrap();
         }
         if automated {
             rules::fast_forward_goldfish_turn(&mut state);
@@ -1481,10 +1482,10 @@ fn test_2a_cleanup_auto_paths_settle_discard_trigger() {
         };
         let controller = if goldfish { 0 } else { state.active_player };
         for _ in 0..2 {
-            state.create_card_in_zone(90_021, controller, ZoneType::Battlefield);
+            state.create_card_in_zone(90_021, controller, ZoneType::Battlefield).unwrap();
         }
         for _ in 0..8 {
-            state.create_card_in_zone(90_022, state.active_player, ZoneType::Hand);
+            state.create_card_in_zone(90_022, state.active_player, ZoneType::Hand).unwrap();
         }
         if goldfish {
             rules::fast_forward_goldfish_turn_until_copy_choice(&mut state, 0);
@@ -1528,9 +1529,9 @@ fn test_2a_cleanup_sba_death_settles_before_next_turn() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::Cleanup;
-    let creature = state.create_card_in_zone(90_031, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(90_031, 0, ZoneType::Battlefield).unwrap();
     for _ in 0..8 {
-        state.create_card_in_zone(90_032, 0, ZoneType::Hand);
+        state.create_card_in_zone(90_032, 0, ZoneType::Hand).unwrap();
     }
     let card = state.players[0].hand[0];
     rules::apply_action(&mut state, &Action::Discard { object_id: card });
@@ -1564,9 +1565,9 @@ fn test_2a_cleanup_repeats_when_trigger_refills_hand() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::Cleanup;
-    state.create_card_in_zone(90_041, 0, ZoneType::Battlefield);
-    for _ in 0..8 { state.create_card_in_zone(90_042, 0, ZoneType::Hand); }
-    state.create_card_in_zone(90_042, 0, ZoneType::Library);
+    state.create_card_in_zone(90_041, 0, ZoneType::Battlefield).unwrap();
+    for _ in 0..8 { state.create_card_in_zone(90_042, 0, ZoneType::Hand).unwrap(); }
+    state.create_card_in_zone(90_042, 0, ZoneType::Library).unwrap();
     let card = state.players[0].hand[0];
     rules::apply_action(&mut state, &Action::Discard { object_id: card });
     assert_eq!(state.players[0].hand.len(), 7);
@@ -1606,10 +1607,10 @@ fn test_2a_partial_cleanup_external_sba_and_restored_continuation() {
     let mut state = GameState::new(2);
     state.card_db = Some(db.clone());
     state.phase = Phase::Cleanup;
-    for _ in 0..2 { state.create_card_in_zone(90_051, 0, ZoneType::Battlefield); }
-    for _ in 0..2 { state.create_card_in_zone(90_052, 1, ZoneType::Battlefield); }
-    let dying = state.create_card_in_zone(90_053, 0, ZoneType::Battlefield);
-    for _ in 0..9 { state.create_card_in_zone(90_054, 0, ZoneType::Hand); }
+    for _ in 0..2 { state.create_card_in_zone(90_051, 0, ZoneType::Battlefield).unwrap(); }
+    for _ in 0..2 { state.create_card_in_zone(90_052, 1, ZoneType::Battlefield).unwrap(); }
+    let dying = state.create_card_in_zone(90_053, 0, ZoneType::Battlefield).unwrap();
+    for _ in 0..9 { state.create_card_in_zone(90_054, 0, ZoneType::Hand).unwrap(); }
     let first = state.players[0].hand[0];
     rules::apply_action(&mut state, &Action::Discard { object_id: first });
     assert_eq!(state.players[0].hand.len(), 8);
@@ -1693,8 +1694,8 @@ fn test_2a_partial_cleanup_single_trigger_external_sba() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::Cleanup;
-    state.create_card_in_zone(90_061, 0, ZoneType::Battlefield);
-    for _ in 0..9 { state.create_card_in_zone(90_062, 0, ZoneType::Hand); }
+    state.create_card_in_zone(90_061, 0, ZoneType::Battlefield).unwrap();
+    for _ in 0..9 { state.create_card_in_zone(90_062, 0, ZoneType::Hand).unwrap(); }
     let first = state.players[0].hand[0];
     rules::apply_action(&mut state, &Action::Discard { object_id: first });
     rules::check_state_based_actions(&mut state);
@@ -1735,10 +1736,10 @@ fn test_2a_tui_human_order_pause_and_resume_on_opponent_turn() {
     state.phase = Phase::Upkeep;
     state.turn_number = 2;
     for id in [90_071, 90_072] {
-        for _ in 0..2 { state.create_card_in_zone(id, 0, ZoneType::Battlefield); }
+        for _ in 0..2 { state.create_card_in_zone(id, 0, ZoneType::Battlefield).unwrap(); }
     }
-    state.create_card_in_zone(90_073, 1, ZoneType::Library);
-    state.create_card_in_zone(90_073, 0, ZoneType::Library);
+    state.create_card_in_zone(90_073, 1, ZoneType::Library).unwrap();
+    state.create_card_in_zone(90_073, 0, ZoneType::Library).unwrap();
 
     // A timeout bounds the regression even if auto_advance stops making progress.
     let (tx, rx) = mpsc::channel();
@@ -1779,8 +1780,8 @@ fn test_2a_tui_two_cleanup_discards_keep_one_placement_window() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db.clone()));
     state.phase = Phase::Cleanup;
-    state.create_card_in_zone(90_081, 0, ZoneType::Battlefield);
-    for _ in 0..9 { state.create_card_in_zone(90_082, 0, ZoneType::Hand); }
+    state.create_card_in_zone(90_081, 0, ZoneType::Battlefield).unwrap();
+    for _ in 0..9 { state.create_card_in_zone(90_082, 0, ZoneType::Hand).unwrap(); }
     let mut app = App::new(state, db);
     let first = app.cached_actions.iter().position(|a| matches!(a, Action::Discard { .. })).unwrap();
     app.execute_action(first);
@@ -1817,8 +1818,8 @@ fn test_2a_tui_human_pending_copy_order_still_pauses() {
     state.priority_player = 0;
     state.turn_number = 2;
     state.phase = Phase::Upkeep;
-    state.create_card_in_zone(90_092, 1, ZoneType::Library);
-    let spell = state.create_card_in_zone(90_091, 0, ZoneType::Hand);
+    state.create_card_in_zone(90_092, 1, ZoneType::Library).unwrap();
+    let spell = state.create_card_in_zone(90_091, 0, ZoneType::Hand).unwrap();
     rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![] });
     let snapshot = snapshot_stack_spell(&state, state.stack.last().unwrap().id).unwrap();
     let item = prepare_spell_copy(&state, &snapshot, 0, CopyTargetPolicy::Preserve).unwrap();
@@ -1852,8 +1853,8 @@ fn test_2a_interrupted_cleanup_goldfish_fast_forward_restores() {
     state.active_player = 1;
     state.priority_player = 1;
     state.phase = Phase::Cleanup;
-    state.create_card_in_zone(90_101, 1, ZoneType::Battlefield);
-    for _ in 0..9 { state.create_card_in_zone(90_102, 1, ZoneType::Hand); }
+    state.create_card_in_zone(90_101, 1, ZoneType::Battlefield).unwrap();
+    for _ in 0..9 { state.create_card_in_zone(90_102, 1, ZoneType::Hand).unwrap(); }
     let first = state.players[1].hand[0];
     rules::apply_action(&mut state, &Action::Discard { object_id: first });
     assert!(state.cleanup_discard_in_progress);
@@ -1910,11 +1911,11 @@ fn test_2a_required_cleanup_discards_reject_unrelated_direct_actions() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::Cleanup;
-    let source = state.create_card_in_zone(90_113, 0, ZoneType::Battlefield);
-    let spell = state.create_card_in_zone(90_111, 0, ZoneType::Hand);
-    let land = state.create_card_in_zone(90_112, 0, ZoneType::Hand);
-    for _ in 0..7 { state.create_card_in_zone(90_112, 0, ZoneType::Hand); }
-    let opponent_card = state.create_card_in_zone(90_112, 1, ZoneType::Hand);
+    let source = state.create_card_in_zone(90_113, 0, ZoneType::Battlefield).unwrap();
+    let spell = state.create_card_in_zone(90_111, 0, ZoneType::Hand).unwrap();
+    let land = state.create_card_in_zone(90_112, 0, ZoneType::Hand).unwrap();
+    for _ in 0..7 { state.create_card_in_zone(90_112, 0, ZoneType::Hand).unwrap(); }
+    let opponent_card = state.create_card_in_zone(90_112, 1, ZoneType::Hand).unwrap();
     let first = state.players[0].hand[2];
     rules::apply_action(&mut state, &Action::Discard { object_id: first });
     assert!(state.cleanup_discard_in_progress);
@@ -1972,10 +1973,10 @@ fn test_2a_interrupted_cleanup_manual_tui_goldfish_apnap_agree() {
     base.active_player = 1;
     base.priority_player = 1;
     base.phase = Phase::Cleanup;
-    for _ in 0..2 { base.create_card_in_zone(90_131, 1, ZoneType::Battlefield); }
-    for _ in 0..2 { base.create_card_in_zone(90_132, 0, ZoneType::Battlefield); }
-    let dying = base.create_card_in_zone(90_133, 1, ZoneType::Battlefield);
-    for _ in 0..9 { base.create_card_in_zone(90_134, 1, ZoneType::Hand); }
+    for _ in 0..2 { base.create_card_in_zone(90_131, 1, ZoneType::Battlefield).unwrap(); }
+    for _ in 0..2 { base.create_card_in_zone(90_132, 0, ZoneType::Battlefield).unwrap(); }
+    let dying = base.create_card_in_zone(90_133, 1, ZoneType::Battlefield).unwrap();
+    for _ in 0..9 { base.create_card_in_zone(90_134, 1, ZoneType::Hand).unwrap(); }
     let first = base.players[1].hand[0];
     rules::apply_action(&mut base, &Action::Discard { object_id: first });
     base.objects.get_mut(&dying).unwrap().damage_marked = 1;
@@ -2034,18 +2035,18 @@ fn test_apnap_both_players_multiple_triggers() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     let vis_p0_a =
-        state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield).unwrap();
     let vis_p0_b =
-        state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield).unwrap();
     let vis_p1_a =
-        state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 1, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 1, ZoneType::Battlefield).unwrap();
     let vis_p1_b =
-        state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 1, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 1, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -2129,8 +2130,8 @@ fn test_more_than_six_triggers_fifo_fallback() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     // Create 7 permanents with triggers for player 0
@@ -2140,7 +2141,7 @@ fn test_more_than_six_triggers_fifo_fallback() {
             sample::ids::ELVISH_VISIONARY,
             0,
             ZoneType::Battlefield,
-        ));
+        ).unwrap());
     }
 
     state.active_player = 0;
@@ -2193,14 +2194,14 @@ fn test_etb_multiple_triggers_through_natural_game_flow() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     // Put an Elvish Visionary in hand with enough forests to cast
-    let vis_id = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Hand);
-    let f1 = state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield);
-    let f2 = state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield);
+    let vis_id = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Hand).unwrap();
+    let f1 = state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield).unwrap();
+    let f2 = state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield).unwrap();
     for id in [f1, f2] {
         if let Some(inst) = state.objects.get_mut(&id) {
             inst.tapped = false;
@@ -2210,7 +2211,7 @@ fn test_etb_multiple_triggers_through_natural_game_flow() {
 
     // Put a second Elvish Visionary already on the battlefield
     let _vis_existing =
-        state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -2265,13 +2266,13 @@ fn setup_combat_state(attacker_card_ids: &[u64], blocker_card_ids: &[u64]) -> Ga
 
     // Libraries so nobody loses from decking
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
     // Player 0's creatures (attackers)
     for &card_id in attacker_card_ids {
-        let id = state.create_card_in_zone(card_id, 0, ZoneType::Battlefield);
+        let id = state.create_card_in_zone(card_id, 0, ZoneType::Battlefield).unwrap();
         if let Some(inst) = state.objects.get_mut(&id) {
             inst.tapped = false;
             inst.summoning_sick = false;
@@ -2280,7 +2281,7 @@ fn setup_combat_state(attacker_card_ids: &[u64], blocker_card_ids: &[u64]) -> Ga
 
     // Player 1's creatures (potential blockers)
     for &card_id in blocker_card_ids {
-        let id = state.create_card_in_zone(card_id, 1, ZoneType::Battlefield);
+        let id = state.create_card_in_zone(card_id, 1, ZoneType::Battlefield).unwrap();
         if let Some(inst) = state.objects.get_mut(&id) {
             inst.tapped = false;
             inst.summoning_sick = false;
@@ -2509,8 +2510,8 @@ fn test_block_abstraction_reduces_actions() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
     // Player 0 declared attackers: 4 creatures
@@ -2521,7 +2522,7 @@ fn test_block_abstraction_reduces_actions() {
         sample::ids::KALONIAN_TUSKER,
         sample::ids::LEATHERBACK_BALOTH,
     ] {
-        let id = state.create_card_in_zone(card_id, 0, ZoneType::Battlefield);
+        let id = state.create_card_in_zone(card_id, 0, ZoneType::Battlefield).unwrap();
         if let Some(inst) = state.objects.get_mut(&id) {
             inst.tapped = true; // attacking
             inst.summoning_sick = false;
@@ -2537,7 +2538,7 @@ fn test_block_abstraction_reduces_actions() {
         sample::ids::KALONIAN_TUSKER,
         sample::ids::LEATHERBACK_BALOTH,
     ] {
-        let id = state.create_card_in_zone(card_id, 1, ZoneType::Battlefield);
+        let id = state.create_card_in_zone(card_id, 1, ZoneType::Battlefield).unwrap();
         if let Some(inst) = state.objects.get_mut(&id) {
             inst.tapped = false;
             inst.summoning_sick = false;
@@ -2635,13 +2636,13 @@ fn test_player_view_basic_fields() {
 
     // Set up a basic game
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
-    state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
-    state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
-    state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Hand);
-    let _bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
+    state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
+    state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Hand).unwrap();
+    let _bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -2683,12 +2684,12 @@ fn test_player_view_hides_opponent_hand_contents() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
-    state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 1, ZoneType::Hand);
-    state.create_card_in_zone(sample::ids::COUNTERSPELL, 1, ZoneType::Hand);
-    state.create_card_in_zone(sample::ids::SERRA_ANGEL, 1, ZoneType::Hand);
+    state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 1, ZoneType::Hand).unwrap();
+    state.create_card_in_zone(sample::ids::COUNTERSPELL, 1, ZoneType::Hand).unwrap();
+    state.create_card_in_zone(sample::ids::SERRA_ANGEL, 1, ZoneType::Hand).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -2709,12 +2710,12 @@ fn test_player_view_graveyard_and_exile_visible() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
-    state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Graveyard);
-    state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Graveyard);
-    state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Exile);
+    state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Graveyard).unwrap();
+    state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Graveyard).unwrap();
+    state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Exile).unwrap();
 
     state.phase = Phase::PreCombatMain;
 
@@ -2782,12 +2783,12 @@ fn test_canonical_roundtrip_trigger_ordering() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
-    let vis1 = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield);
-    let vis2 = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield);
+    let vis1 = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield).unwrap();
+    let vis2 = state.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -2878,13 +2879,13 @@ fn test_canonical_hand_duplicate_disambiguation() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
     // Two Mountains in hand — exact duplicates
-    let m1 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand);
-    let m2 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand);
+    let m1 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand).unwrap();
+    let m2 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -2927,7 +2928,7 @@ fn test_canonical_discard_hand_duplicate_disambiguation() {
     // 8 Mountains in hand (need to discard one in cleanup)
     let mut mountain_ids = Vec::new();
     for _ in 0..8 {
-        mountain_ids.push(state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand));
+        mountain_ids.push(state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand).unwrap());
     }
 
     state.active_player = 0;
@@ -2968,19 +2969,19 @@ fn test_player_view_objects_excludes_opponent_hand() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
     // Player 1 has secret cards in hand
-    let opp_bolt = state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 1, ZoneType::Hand);
-    let opp_angel = state.create_card_in_zone(sample::ids::SERRA_ANGEL, 1, ZoneType::Hand);
+    let opp_bolt = state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 1, ZoneType::Hand).unwrap();
+    let opp_angel = state.create_card_in_zone(sample::ids::SERRA_ANGEL, 1, ZoneType::Hand).unwrap();
 
     // Player 0 has a card in hand (should be visible to themselves)
-    let my_bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Hand);
+    let my_bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Hand).unwrap();
 
     // A shared battlefield creature
-    let bf_creature = state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Battlefield);
+    let bf_creature = state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -3024,11 +3025,11 @@ fn test_player_view_objects_excludes_libraries() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
 
-    let lib0_card = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-    let lib1_card = state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+    let lib0_card = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+    let lib1_card = state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
 
     // A battlefield card for comparison
-    let bf_card = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let bf_card = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
 
     state.phase = Phase::PreCombatMain;
 
@@ -3064,8 +3065,8 @@ fn test_sba_recurrence_dies_trigger_deals_damage_to_players() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     // Put Fiery Conclusion Elemental on the battlefield with lethal damage
@@ -3073,7 +3074,7 @@ fn test_sba_recurrence_dies_trigger_deals_damage_to_players() {
         sample::ids::FIERY_CONCLUSION_ELEMENTAL,
         0,
         ZoneType::Battlefield,
-    );
+    ).unwrap();
     if let Some(inst) = state.objects.get_mut(&elem_id) {
         inst.summoning_sick = false;
         inst.damage_marked = 2; // 2 damage on 2 toughness = lethal
@@ -3132,12 +3133,12 @@ fn test_sba_loop_stable_without_triggers() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     // Put a Grizzly Bears on the battlefield with lethal damage
-    let bear_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let bear_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&bear_id) {
         inst.summoning_sick = false;
         inst.damage_marked = 2; // 2 damage on 2 toughness = lethal
@@ -3166,8 +3167,8 @@ fn test_sba_player_life_zero_ends_game() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     state.active_player = 0;
@@ -3196,12 +3197,12 @@ fn test_events_fire_for_spell_cast() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
-    let bolt_id = state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
-    let mountain = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
+    let bolt_id = state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
+    let mountain = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&mountain) {
         inst.tapped = false;
         inst.summoning_sick = false;
@@ -3258,12 +3259,12 @@ fn test_events_fire_for_damage_and_life_change() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
-    let bolt_id = state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
-    let mountain = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
+    let bolt_id = state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
+    let mountain = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&mountain) {
         inst.tapped = false;
     }
@@ -3336,9 +3337,9 @@ fn test_events_fire_for_card_draw() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
 
-    state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
+    state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
     for _ in 0..19 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     state.drain_events();
@@ -3376,7 +3377,7 @@ fn test_events_fire_for_zone_change_via_move_object() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
 
-    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     state.drain_events();
 
     state.move_object(bear, ZoneType::Battlefield, ZoneType::Graveyard);
@@ -3516,13 +3517,13 @@ fn test_replacement_order_canonical_roundtrip() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     // Put two permanents on the battlefield (sources of replacement effects)
-    let p1 = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
-    let p2 = state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Battlefield);
+    let p1 = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
+    let p2 = state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -3576,17 +3577,17 @@ fn test_sba_recurrence_in_full_game_context() {
 
     // Set up a mini-game with the test card
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     // Player 0 has Fiery Conclusion Elemental and lands.
     // Cost is {2}{W}, so we need 1 Plains (for W) and 2 Mountains (for generic).
     let elem_hand =
-        state.create_card_in_zone(sample::ids::FIERY_CONCLUSION_ELEMENTAL, 0, ZoneType::Hand);
-    let m1 = state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Battlefield);
-    let m2 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
-    let m3 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::FIERY_CONCLUSION_ELEMENTAL, 0, ZoneType::Hand).unwrap();
+    let m1 = state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Battlefield).unwrap();
+    let m2 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
+    let m3 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
     for id in [m1, m2, m3] {
         if let Some(inst) = state.objects.get_mut(&id) {
             inst.tapped = false;
@@ -3595,8 +3596,8 @@ fn test_sba_recurrence_in_full_game_context() {
     }
 
     // Player 1 has a Lightning Bolt to kill it
-    let bolt = state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 1, ZoneType::Hand);
-    let m4 = state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Battlefield);
+    let bolt = state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 1, ZoneType::Hand).unwrap();
+    let m4 = state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&m4) {
         inst.tapped = false;
         inst.summoning_sick = false;
@@ -3728,20 +3729,20 @@ fn test_cascading_sba_dies_trigger_kills_another_creature() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     // Pyroclasm Elemental: 3/1 with "when ~ dies, deal 2 damage to each creature"
     let pyro_id =
-        state.create_card_in_zone(sample::ids::PYROCLASM_ELEMENTAL, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::PYROCLASM_ELEMENTAL, 0, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&pyro_id) {
         inst.summoning_sick = false;
         inst.damage_marked = 1; // 1 damage on 1 toughness = lethal
     }
 
     // Grizzly Bears: 2/2, healthy, controlled by player 1
-    let bear_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    let bear_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&bear_id) {
         inst.summoning_sick = false;
         inst.damage_marked = 0; // healthy
@@ -3795,13 +3796,13 @@ fn test_cascading_sba_chain_of_three() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     // Pyroclasm Elemental A: 3/1, lethal damage
     let pyro_a =
-        state.create_card_in_zone(sample::ids::PYROCLASM_ELEMENTAL, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::PYROCLASM_ELEMENTAL, 0, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&pyro_a) {
         inst.summoning_sick = false;
         inst.damage_marked = 1; // lethal
@@ -3809,14 +3810,14 @@ fn test_cascading_sba_chain_of_three() {
 
     // Pyroclasm Elemental B: 3/1, healthy
     let pyro_b =
-        state.create_card_in_zone(sample::ids::PYROCLASM_ELEMENTAL, 1, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::PYROCLASM_ELEMENTAL, 1, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&pyro_b) {
         inst.summoning_sick = false;
         inst.damage_marked = 0; // healthy
     }
 
     // Grizzly Bears: 2/2, healthy
-    let bear_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    let bear_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&bear_id) {
         inst.summoning_sick = false;
         inst.damage_marked = 0;
@@ -3904,8 +3905,8 @@ fn test_greedy_strategy_handles_replacement_order() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
 
     state.active_player = 0;
@@ -4017,17 +4018,17 @@ fn test_glorious_anthem_buffs_creatures_on_battlefield() {
 
     // Library filler
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library).unwrap();
     }
 
     // Player 0 has Glorious Anthem + Savannah Lions on the battlefield
     let _anthem_id =
-        state.create_card_in_zone(sample::ids::GLORIOUS_ANTHEM, 0, ZoneType::Battlefield);
-    let lions_id = state.create_card_in_zone(sample::ids::SAVANNAH_LIONS, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::GLORIOUS_ANTHEM, 0, ZoneType::Battlefield).unwrap();
+    let lions_id = state.create_card_in_zone(sample::ids::SAVANNAH_LIONS, 0, ZoneType::Battlefield).unwrap();
 
     // Player 1 has Grizzly Bears (opponent — should NOT be buffed by Glorious Anthem)
-    let bears_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    let bears_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
 
     // Refresh continuous effects to generate anthem effects
     state.refresh_continuous_effects();
@@ -4065,13 +4066,13 @@ fn test_crusade_buffs_all_creatures() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library).unwrap();
     }
 
-    let _crusade_id = state.create_card_in_zone(sample::ids::CRUSADE, 0, ZoneType::Battlefield);
-    let lions_id = state.create_card_in_zone(sample::ids::SAVANNAH_LIONS, 0, ZoneType::Battlefield);
-    let bears_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    let _crusade_id = state.create_card_in_zone(sample::ids::CRUSADE, 0, ZoneType::Battlefield).unwrap();
+    let lions_id = state.create_card_in_zone(sample::ids::SAVANNAH_LIONS, 0, ZoneType::Battlefield).unwrap();
+    let bears_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
 
     state.refresh_continuous_effects();
 
@@ -4090,14 +4091,14 @@ fn test_humility_makes_all_creatures_1_1_and_removes_abilities() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library).unwrap();
     }
 
     // Baneslayer Angel: 5/5 Flying, First strike, Lifelink
     let angel_id =
-        state.create_card_in_zone(sample::ids::BANESLAYER_ANGEL, 0, ZoneType::Battlefield);
-    let _humility_id = state.create_card_in_zone(sample::ids::HUMILITY, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::BANESLAYER_ANGEL, 0, ZoneType::Battlefield).unwrap();
+    let _humility_id = state.create_card_in_zone(sample::ids::HUMILITY, 0, ZoneType::Battlefield).unwrap();
 
     state.refresh_continuous_effects();
 
@@ -4126,15 +4127,15 @@ fn test_multiple_anthems_stack() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library).unwrap();
     }
 
     let _anthem1 =
-        state.create_card_in_zone(sample::ids::GLORIOUS_ANTHEM, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::GLORIOUS_ANTHEM, 0, ZoneType::Battlefield).unwrap();
     let _anthem2 =
-        state.create_card_in_zone(sample::ids::GLORIOUS_ANTHEM, 0, ZoneType::Battlefield);
-    let lions_id = state.create_card_in_zone(sample::ids::SAVANNAH_LIONS, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::GLORIOUS_ANTHEM, 0, ZoneType::Battlefield).unwrap();
+    let lions_id = state.create_card_in_zone(sample::ids::SAVANNAH_LIONS, 0, ZoneType::Battlefield).unwrap();
 
     state.refresh_continuous_effects();
 
@@ -4155,13 +4156,13 @@ fn test_anthem_plus_humility_timestamp_ordering() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library).unwrap();
     }
 
-    let _anthem = state.create_card_in_zone(sample::ids::GLORIOUS_ANTHEM, 0, ZoneType::Battlefield);
-    let _humility = state.create_card_in_zone(sample::ids::HUMILITY, 0, ZoneType::Battlefield);
-    let lions_id = state.create_card_in_zone(sample::ids::SAVANNAH_LIONS, 0, ZoneType::Battlefield);
+    let _anthem = state.create_card_in_zone(sample::ids::GLORIOUS_ANTHEM, 0, ZoneType::Battlefield).unwrap();
+    let _humility = state.create_card_in_zone(sample::ids::HUMILITY, 0, ZoneType::Battlefield).unwrap();
+    let lions_id = state.create_card_in_zone(sample::ids::SAVANNAH_LIONS, 0, ZoneType::Battlefield).unwrap();
 
     state.refresh_continuous_effects();
 
@@ -4259,12 +4260,12 @@ fn test_layer_engine_effective_power_toughness() {
     state.card_db = Some(Arc::new(db));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::PLAINS, 1, ZoneType::Library).unwrap();
     }
 
     let angel_id =
-        state.create_card_in_zone(sample::ids::BANESLAYER_ANGEL, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::BANESLAYER_ANGEL, 0, ZoneType::Battlefield).unwrap();
 
     state.refresh_continuous_effects();
 
@@ -4455,11 +4456,11 @@ fn test_token_creation() {
     state.card_db = Some(Arc::new(db));
 
     // Set up Blade Splicer (creates a 3/3 Golem token on ETB)
-    let blade_splicer_id = state.create_card_in_zone(sample::ids::BLADE_SPLICER, 0, ZoneType::Hand);
+    let blade_splicer_id = state.create_card_in_zone(sample::ids::BLADE_SPLICER, 0, ZoneType::Hand).unwrap();
 
     // Give player 0 lands to cast it (costs 2W)
     for _ in 0..3 {
-        let land_id = state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Battlefield);
+        let land_id = state.create_card_in_zone(sample::ids::PLAINS, 0, ZoneType::Battlefield).unwrap();
         if let Some(inst) = state.objects.get_mut(&land_id) {
             inst.summoning_sick = false;
         }
@@ -4511,7 +4512,7 @@ fn test_token_ceases_to_exist_when_leaving_battlefield() {
     state.card_db = Some(Arc::new(db));
 
     // Test the move_object behavior for tokens (CR 111.7)
-    let token_id = state.create_card_in_zone(sample::ids::LLANOWAR_ELVES, 0, ZoneType::Battlefield);
+    let token_id = state.create_card_in_zone(sample::ids::LLANOWAR_ELVES, 0, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&token_id) {
         inst.is_token = true;
     }
@@ -4538,10 +4539,10 @@ fn test_dark_ritual_adds_mana() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
 
-    let ritual_id = state.create_card_in_zone(sample::ids::DARK_RITUAL, 0, ZoneType::Hand);
+    let ritual_id = state.create_card_in_zone(sample::ids::DARK_RITUAL, 0, ZoneType::Hand).unwrap();
 
     // Give player 0 a Swamp to cast it
-    let land_id = state.create_card_in_zone(sample::ids::SWAMP, 0, ZoneType::Battlefield);
+    let land_id = state.create_card_in_zone(sample::ids::SWAMP, 0, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&land_id) {
         inst.summoning_sick = false;
     }
@@ -4587,7 +4588,7 @@ fn test_counter_cancellation_sba() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
 
-    let bear_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let bear_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
 
     // Add counters
     if let Some(inst) = state.objects.get_mut(&bear_id) {
@@ -4621,7 +4622,7 @@ fn test_zone_change_counter_increments() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
 
-    let bear_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let bear_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
 
     let initial_count = state.objects[&bear_id].zone_change_count;
 
@@ -4723,14 +4724,14 @@ fn test_cant_block_keyword() {
 
     // Create an attacker for player 0
     let attacker_id =
-        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&attacker_id) {
         inst.summoning_sick = false;
     }
 
     // Create a blocker for player 1 — give it CantBlock
     let blocker_id =
-        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&blocker_id) {
         inst.summoning_sick = false;
         inst.temp_keywords.push(KeywordAbility::CantBlock);
@@ -4763,7 +4764,7 @@ fn test_a_creature_dies_watcher_trigger() {
     state.card_db = Some(Arc::new(db));
 
     // Create a creature that will die
-    let victim_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let victim_id = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
 
     // Deal lethal damage to the creature
     if let Some(inst) = state.objects.get_mut(&victim_id) {
@@ -5387,7 +5388,7 @@ fn test_extra_turn_through_spell_resolution() {
     state.card_db = Some(Arc::new(db));
 
     // Put Time Walk in player 0's hand
-    let tw_id = state.create_card_in_zone(9400, 0, ZoneType::Hand);
+    let tw_id = state.create_card_in_zone(9400, 0, ZoneType::Hand).unwrap();
 
     // Give player 0 enough mana (1 generic + 1 blue)
     // The engine allows paying generic with colored mana
@@ -5575,7 +5576,7 @@ fn test_goldfish_strategy_never_attacks() {
     state.phase = Phase::DeclareAttackers;
 
     // Put a creature on battlefield for player 1
-    let obj_id = state.create_card_in_zone(sample::ids::GREY_OGRE, 1, ZoneType::Battlefield);
+    let obj_id = state.create_card_in_zone(sample::ids::GREY_OGRE, 1, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&obj_id) {
         inst.summoning_sick = false;
         inst.controller = 1;
@@ -5607,7 +5608,7 @@ fn test_goldfish_strategy_never_blocks() {
     state.phase = Phase::DeclareBlockers;
 
     // Give player 0 an attacker
-    let attacker_id = state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Battlefield);
+    let attacker_id = state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&attacker_id) {
         inst.summoning_sick = false;
         inst.controller = 0;
@@ -5616,7 +5617,7 @@ fn test_goldfish_strategy_never_blocks() {
 
     // Give player 1 a potential blocker
     let blocker_id =
-        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&blocker_id) {
         inst.summoning_sick = false;
         inst.controller = 1;
@@ -5649,7 +5650,7 @@ fn test_goldfish_strategy_handles_forced_discard() {
 
     // Add extra cards to player 1's hand to exceed 7
     for _ in 0..3 {
-        let id = state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Hand);
+        let id = state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Hand).unwrap();
         if let Some(inst) = state.objects.get_mut(&id) {
             inst.controller = 1;
         }
@@ -5931,12 +5932,12 @@ fn test_tap_for_colorless_amount_mana_resolution() {
 
     // Give libraries so no one decks
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::ISLAND, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::ISLAND, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::ISLAND, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::ISLAND, 1, ZoneType::Library).unwrap();
     }
 
     // Put Sol Ring on the battlefield for player 0
-    let sol_ring_obj = state.create_card_in_zone(sample::ids::SOL_RING, 0, ZoneType::Battlefield);
+    let sol_ring_obj = state.create_card_in_zone(sample::ids::SOL_RING, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -5990,13 +5991,13 @@ fn test_kinnan_mana_bonus_with_basalt_monolith() {
 
     // Give libraries so no one decks
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::ISLAND, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::ISLAND, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::ISLAND, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::ISLAND, 1, ZoneType::Library).unwrap();
     }
 
     // Put Kinnan and Basalt Monolith on the battlefield for player 0
-    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
-    let basalt = state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
+    let basalt = state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -6067,13 +6068,13 @@ fn test_kinnan_mana_bonus_not_on_lands() {
     state.card_db = Some(Arc::new(db.clone()));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::ISLAND, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::ISLAND, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::ISLAND, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::ISLAND, 1, ZoneType::Library).unwrap();
     }
 
     // Kinnan on battlefield
-    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
-    let island = state.create_card_in_zone(sample::ids::ISLAND, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
+    let island = state.create_card_in_zone(sample::ids::ISLAND, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -6258,13 +6259,13 @@ fn test_macro_action_appears_in_legal_actions() {
 
     // Libraries
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
     // Put Basalt Monolith + Kinnan on battlefield for player 0
-    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -6289,12 +6290,12 @@ fn test_macro_action_not_available_without_registry() {
     // No combo_registry set
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
-    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -6321,12 +6322,12 @@ fn test_macro_action_not_during_combat() {
     state.combo_registry = Some(Arc::new(registry));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
-    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
 
     // During combat, not main phase — macro should not appear
     state.active_player = 0;
@@ -6356,13 +6357,13 @@ fn test_apply_macro_action_adds_mana() {
     state.combo_registry = Some(Arc::new(registry));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
     let monolith =
-        state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -6398,12 +6399,12 @@ fn test_macro_action_canonical_roundtrip() {
     state.combo_registry = Some(Arc::new(registry));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
-    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -6433,8 +6434,8 @@ fn test_combo_proximity_reward_in_heuristic() {
     state.combo_registry = Some(Arc::new(registry));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
     // Equal life, no creatures — baseline
@@ -6446,7 +6447,7 @@ fn test_combo_proximity_reward_in_heuristic() {
     );
 
     // Add Kinnan for player 0 — partial combo
-    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
     let partial_proximity =
         combo::combo_proximity_bonus(&state, 0, state.combo_registry.as_ref().unwrap());
     assert!(
@@ -6456,7 +6457,7 @@ fn test_combo_proximity_reward_in_heuristic() {
     );
 
     // Add Basalt Monolith — full combo
-    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
     let full_proximity =
         combo::combo_proximity_bonus(&state, 0, state.combo_registry.as_ref().unwrap());
     assert!(
@@ -6481,20 +6482,20 @@ fn test_macro_action_in_goldfish_game() {
     state.combo_registry = Some(Arc::new(registry));
 
     // Give player 0 combo pieces in hand and lands on battlefield
-    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Hand);
-    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Hand);
+    state.create_card_in_zone(sample::ids::BASALT_MONOLITH, 0, ZoneType::Hand).unwrap();
+    state.create_card_in_zone(sample::ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Hand).unwrap();
 
     // Provide mana sources
     for _ in 0..6 {
-        let land = state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield);
+        let land = state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&land).unwrap().tapped = false;
         state.objects.get_mut(&land).unwrap().summoning_sick = false;
     }
 
     // Libraries
     for _ in 0..40 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
     state.active_player = 0;
@@ -6747,13 +6748,13 @@ fn test_nirkana_revenant_swamp_mana_bonus() {
     state.card_db = Some(Arc::new(db.clone()));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::SWAMP, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::SWAMP, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::SWAMP, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::SWAMP, 1, ZoneType::Library).unwrap();
     }
 
     // Put Nirkana Revenant on the battlefield
-    state.create_card_in_zone(sample::ids::NIRKANA_REVENANT, 0, ZoneType::Battlefield);
-    let swamp = state.create_card_in_zone(sample::ids::SWAMP, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::NIRKANA_REVENANT, 0, ZoneType::Battlefield).unwrap();
+    let swamp = state.create_card_in_zone(sample::ids::SWAMP, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -6784,13 +6785,13 @@ fn test_nirkana_revenant_no_bonus_on_non_swamp() {
     state.card_db = Some(Arc::new(db.clone()));
 
     for _ in 0..20 {
-        state.create_card_in_zone(sample::ids::SWAMP, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::SWAMP, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::SWAMP, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::SWAMP, 1, ZoneType::Library).unwrap();
     }
 
     // Nirkana Revenant on battlefield
-    state.create_card_in_zone(sample::ids::NIRKANA_REVENANT, 0, ZoneType::Battlefield);
-    let island = state.create_card_in_zone(sample::ids::ISLAND, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::NIRKANA_REVENANT, 0, ZoneType::Battlefield).unwrap();
+    let island = state.create_card_in_zone(sample::ids::ISLAND, 0, ZoneType::Battlefield).unwrap();
 
     state.active_player = 0;
     state.priority_player = 0;
@@ -6830,7 +6831,7 @@ fn cast_goblin_storm_spell(state: &mut GameState, card: u64, controller: usize) 
         assert_eq!(def.card_types, vec![mtg_gto::card::CardType::Instant]);
     }
     state.players[controller].mana_pool.red = cost.generic + cost.red;
-    let spell = state.create_card_in_zone(card, controller, ZoneType::Hand);
+    let spell = state.create_card_in_zone(card, controller, ZoneType::Hand).unwrap();
     let action = Action::CastSpell { object_id: spell, targets: vec![] };
     assert!(legal_actions(state).contains(&action));
     rules::apply_action(state, &action);
@@ -6862,13 +6863,13 @@ fn test_battle_hymn_counts_only_controllers_creatures_at_resolution() {
     for count in [0, 1, 4] {
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(sample::build_sample_db()));
-        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
-        state.create_card_in_zone(sample::ids::SOL_RING, 1, ZoneType::Battlefield);
-        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Graveyard);
+        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
+        state.create_card_in_zone(sample::ids::SOL_RING, 1, ZoneType::Battlefield).unwrap();
+        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Graveyard).unwrap();
         let spell = cast_goblin_storm_spell(&mut state, sample::ids::BATTLE_HYMN, 1);
         // Added after casting: the effect must evaluate the board on resolution.
         for i in 0..count {
-            let creature = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+            let creature = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
             let inst = state.objects.get_mut(&creature).unwrap();
             inst.tapped = true;
             inst.is_token = i == 0;
@@ -6931,7 +6932,7 @@ fn krenko_state() -> (GameState, u64, Action) {
     state.active_player = 1;
     state.priority_player = 1;
     state.phase = Phase::PreCombatMain;
-    let id = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield);
+    let id = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield).unwrap();
     let action = Action::ActivateAbility { object_id: id, ability_index: 0, targets: vec![] };
     (state, id, action)
 }
@@ -7013,13 +7014,13 @@ fn test_krenko_counts_controlled_noncreature_goblins_on_resolution() {
         ..Default::default()
     });
     state.objects.get_mut(&id).unwrap().summoning_sick = false;
-    state.create_card_in_zone(900001, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(900001, 1, ZoneType::Graveyard);
-    state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(900001, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(900001, 1, ZoneType::Graveyard).unwrap();
+    state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
     rules::apply_action(&mut state, &action);
     assert_krenko_tokens(&state, 0);
     // This Goblin enters after activation and must still contribute to X.
-    state.create_card_in_zone(900001, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(900001, 1, ZoneType::Battlefield).unwrap();
     resolve_krenko(&mut state);
     assert_krenko_tokens(&state, 2);
 }
@@ -7039,8 +7040,8 @@ fn test_krenko_counts_current_subtypes_and_changeling() {
     use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
     let (mut state, id, action) = krenko_state();
     state.objects.get_mut(&id).unwrap().summoning_sick = false;
-    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
-    let changeling = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
+    let changeling = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&changeling).unwrap().temp_keywords.push(KeywordAbility::Changeling);
     state.continuous_effects.push(ContinuousEffect {
         source_id: bear, controller: 1, timestamp: 1, duration: Duration::UntilEndOfTurn,
@@ -7100,7 +7101,7 @@ fn test_tap_cost_rule_applies_to_other_creatures_but_not_noncreatures() {
             activated_abilities: vec![ability.clone()], ..Default::default()
         });
         state.priority_player = 1;
-        let source = state.create_card_in_zone(id, 1, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(id, 1, ZoneType::Battlefield).unwrap();
         let action = Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] };
         assert_eq!(legal_actions(&state).contains(&action), expected);
         rules::apply_action(&mut state, &action);
@@ -7130,7 +7131,7 @@ fn test_explicit_token_colors_roundtrip_and_legacy_card_defaults() {
 fn test_creature_mana_tap_cost_respects_sickness_haste_and_auto_tap() {
     use mtg_gto::mana::{Color, ManaCost};
     let (mut state, _, _) = krenko_state();
-    let elf = state.create_card_in_zone(sample::ids::LLANOWAR_ELVES, 1, ZoneType::Battlefield);
+    let elf = state.create_card_in_zone(sample::ids::LLANOWAR_ELVES, 1, ZoneType::Battlefield).unwrap();
     let action = Action::ActivateManaAbility { object_id: elf, ability_index: 0 };
     assert!(!legal_actions(&state).contains(&action));
     assert!(!state.untapped_mana_sources(1).contains(&elf));
@@ -7173,7 +7174,7 @@ fn cast_brightstone(state: &mut GameState) -> u64 {
     let def = state.card_db().get(sample::ids::BRIGHTSTONE_RITUAL).unwrap();
     assert_eq!(def.mana_cost, Some(ManaCost::new(0, 0, 0, 0, 1, 0)));
     assert_eq!(def.card_types, vec![CardType::Instant]);
-    let spell = state.create_card_in_zone(sample::ids::BRIGHTSTONE_RITUAL, 1, ZoneType::Hand);
+    let spell = state.create_card_in_zone(sample::ids::BRIGHTSTONE_RITUAL, 1, ZoneType::Hand).unwrap();
     let action = Action::CastSpell { object_id: spell, targets: vec![] };
     state.players[1].mana_pool.colorless = 1;
     assert!(!legal_actions(state).contains(&action), "Colorless cannot pay R");
@@ -7203,9 +7204,9 @@ fn test_brightstone_zero_goblins_ignores_other_zones_and_nongoblins() {
     let mut state = brightstone_state();
     for owner in 0..3 {
         for zone in [ZoneType::Hand, ZoneType::Library, ZoneType::Graveyard, ZoneType::Exile, ZoneType::Command] {
-            state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, owner, zone);
+            state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, owner, zone).unwrap();
         }
-        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, owner, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, owner, ZoneType::Battlefield).unwrap();
     }
     let spell = cast_brightstone(&mut state);
     resolve_brightstone(&mut state, spell, 0);
@@ -7214,7 +7215,7 @@ fn test_brightstone_zero_goblins_ignores_other_zones_and_nongoblins() {
 #[test]
 fn test_brightstone_counts_your_goblins() {
     let mut state = brightstone_state();
-    state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield).unwrap();
     let spell = cast_brightstone(&mut state);
     resolve_brightstone(&mut state, spell, 1);
 }
@@ -7223,7 +7224,7 @@ fn test_brightstone_counts_your_goblins() {
 fn test_brightstone_counts_goblins_of_all_opponents() {
     let mut state = brightstone_state();
     for owner in [0, 2] {
-        state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, owner, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, owner, ZoneType::Battlefield).unwrap();
     }
     let spell = cast_brightstone(&mut state);
     resolve_brightstone(&mut state, spell, 2);
@@ -7232,8 +7233,8 @@ fn test_brightstone_counts_goblins_of_all_opponents() {
 #[test]
 fn test_brightstone_counts_noncreature_goblin_permanents() {
     let mut state = brightstone_state();
-    state.create_card_in_zone(900020, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(900020, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(900020, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(900020, 1, ZoneType::Battlefield).unwrap();
     let spell = cast_brightstone(&mut state);
     resolve_brightstone(&mut state, spell, 2);
 }
@@ -7241,11 +7242,11 @@ fn test_brightstone_counts_noncreature_goblin_permanents() {
 #[test]
 fn test_brightstone_uses_battlefield_at_resolution() {
     let mut state = brightstone_state();
-    let goblin = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield);
+    let goblin = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield).unwrap();
     let spell = cast_brightstone(&mut state);
     state.move_object(goblin, ZoneType::Battlefield, ZoneType::Graveyard);
     for owner in [0, 2] {
-        state.create_card_in_zone(900020, owner, ZoneType::Battlefield);
+        state.create_card_in_zone(900020, owner, ZoneType::Battlefield).unwrap();
     }
     resolve_brightstone(&mut state, spell, 2);
 }
@@ -7254,8 +7255,8 @@ fn test_brightstone_uses_battlefield_at_resolution() {
 fn test_brightstone_reuses_current_subtypes_and_changeling_counting() {
     use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
     let mut state = brightstone_state();
-    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
-    let changeling = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 2, ZoneType::Battlefield);
+    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
+    let changeling = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 2, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&changeling).unwrap().temp_keywords.push(KeywordAbility::Changeling);
     state.continuous_effects.push(ContinuousEffect {
         source_id: bear, controller: 0, timestamp: 1, duration: Duration::UntilEndOfTurn,
@@ -7280,9 +7281,9 @@ fn chieftain_state() -> (GameState, u64, u64, u64) {
     state.active_player = 1;
     state.priority_player = 1;
     state.phase = Phase::PreCombatMain;
-    let chief = state.create_card_in_zone(sample::ids::GOBLIN_CHIEFTAIN, 1, ZoneType::Battlefield);
-    let ours = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield);
-    let theirs = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 0, ZoneType::Battlefield);
+    let chief = state.create_card_in_zone(sample::ids::GOBLIN_CHIEFTAIN, 1, ZoneType::Battlefield).unwrap();
+    let ours = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 1, ZoneType::Battlefield).unwrap();
+    let theirs = state.create_card_in_zone(sample::ids::KRENKO_MOB_BOSS, 0, ZoneType::Battlefield).unwrap();
     state.refresh_continuous_effects();
     (state, chief, ours, theirs)
 }
@@ -7299,8 +7300,8 @@ fn test_chieftain_only_buffs_other_controlled_goblin_creatures() {
     let (mut state, chief, ours, theirs) = chieftain_state();
     let def = state.card_db().get(sample::ids::GOBLIN_CHIEFTAIN).unwrap();
     assert_eq!(def.mana_cost, Some(ManaCost::new(1, 0, 0, 0, 2, 0)));
-    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
-    let artifact = state.create_card_in_zone(900030, 1, ZoneType::Battlefield);
+    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
+    let artifact = state.create_card_in_zone(900030, 1, ZoneType::Battlefield).unwrap();
     state.refresh_continuous_effects();
     assert_chieftain_creature(&state, chief, 2, true);
     assert_chieftain_creature(&state, ours, 4, true);
@@ -7343,7 +7344,7 @@ fn test_chieftain_control_change_retargets_existing_effects() {
     });
     state.active_player = 0;
     state.priority_player = 0;
-    let spell = state.create_card_in_zone(900031, 0, ZoneType::Hand);
+    let spell = state.create_card_in_zone(900031, 0, ZoneType::Hand).unwrap();
     let action = Action::CastSpell { object_id: spell, targets: vec![Target::Object(chief)] };
     // Supply the valid target directly: generic control-effect target enumeration
     // is not implemented, and is outside this continuous-effect regression.
@@ -7396,8 +7397,8 @@ fn test_chieftain_uses_layered_creature_types_and_subtypes() {
     use mtg_gto::card::{CardType, Subtype};
     use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
     let (mut state, chief, ours, _) = chieftain_state();
-    let artifact = state.create_card_in_zone(900030, 1, ZoneType::Battlefield);
-    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+    let artifact = state.create_card_in_zone(900030, 1, ZoneType::Battlefield).unwrap();
+    let bear = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
     for (target, modification) in [
         (artifact, LayerModification::AddType(CardType::Creature)),
         (bear, LayerModification::AddSubtype(Subtype("Goblin".into()))),
@@ -7417,7 +7418,7 @@ fn test_chieftain_uses_layered_creature_types_and_subtypes() {
 #[test]
 fn test_chieftain_cast_registers_effects_and_multiple_chieftains_buff_each_other() {
     let (mut state, chief, ours, _) = chieftain_state();
-    let second = state.create_card_in_zone(sample::ids::GOBLIN_CHIEFTAIN, 1, ZoneType::Hand);
+    let second = state.create_card_in_zone(sample::ids::GOBLIN_CHIEFTAIN, 1, ZoneType::Hand).unwrap();
     state.players[1].mana_pool.red = 3;
     let action = Action::CastSpell { object_id: second, targets: vec![] };
     assert!(legal_actions(&state).contains(&action));
@@ -7477,7 +7478,7 @@ fn hardening_state() -> GameState {
 #[test]
 fn test_hardening_tap_source_cannot_pay_its_own_mana_cost() {
     let mut state = hardening_state();
-    let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield).unwrap();
     let action = Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] };
     assert!(!legal_actions(&state).contains(&action));
     rules::apply_action(&mut state, &action);
@@ -7490,12 +7491,12 @@ fn test_hardening_tap_source_cannot_pay_its_own_mana_cost() {
 fn test_hardening_reserved_tap_source_allows_other_mana_and_floating_mana() {
     for floating in [false, true] {
         let mut state = hardening_state();
-        let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield).unwrap();
         let other = if floating {
             state.players[0].mana_pool.colorless = 1;
             None
         } else {
-            Some(state.create_card_in_zone(910000, 0, ZoneType::Battlefield))
+            Some(state.create_card_in_zone(910000, 0, ZoneType::Battlefield).unwrap())
         };
         let action = Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] };
         assert!(legal_actions(&state).contains(&action));
@@ -7507,7 +7508,7 @@ fn test_hardening_reserved_tap_source_allows_other_mana_and_floating_mana() {
     }
     // A source with no tap-symbol cost remains eligible to generate payment mana.
     let mut state = hardening_state();
-    let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield).unwrap();
     let action = Action::ActivateAbility { object_id: source, ability_index: 1, targets: vec![] };
     assert!(legal_actions(&state).contains(&action));
     rules::apply_action(&mut state, &action);
@@ -7519,14 +7520,14 @@ fn test_hardening_reserved_tap_source_allows_other_mana_and_floating_mana() {
 #[test]
 fn test_hardening_ritual_mana_persists_through_priority_and_resolution_not_phase_change() {
     let mut state = hardening_state();
-    let ritual = state.create_card_in_zone(910003, 0, ZoneType::Hand);
+    let ritual = state.create_card_in_zone(910003, 0, ZoneType::Hand).unwrap();
     state.players[0].mana_pool.red = 1;
     rules::apply_action(&mut state, &Action::CastSpell { object_id: ritual, targets: vec![] });
     rules::apply_action(&mut state, &Action::PassPriority);
     rules::apply_action(&mut state, &Action::PassPriority);
     assert_eq!(state.phase, Phase::PreCombatMain);
     assert_eq!(state.players[0].mana_pool.red, 5);
-    let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(910000, 0, ZoneType::Battlefield).unwrap();
     state.priority_player = 0;
     rules::apply_action(&mut state, &Action::ActivateAbility {
         object_id: source, ability_index: 1, targets: vec![],
@@ -7564,7 +7565,7 @@ fn test_hardening_mana_empties_at_combat_step_boundaries() {
     // Combat declarations advance directly in this engine, bypassing priority.
     for attack in [false, true] {
         let mut state = hardening_state();
-        let creature = state.create_card_in_zone(910001, 0, ZoneType::Battlefield);
+        let creature = state.create_card_in_zone(910001, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&creature).unwrap().summoning_sick = false;
         state.phase = Phase::DeclareAttackers;
         state.players[0].mana_pool.red = 3;
@@ -7584,8 +7585,8 @@ fn test_hardening_mana_empties_at_combat_step_boundaries() {
 fn test_hardening_resolved_haste_invalidates_cache_and_expires() {
     for activate in [false, true] {
         let mut state = hardening_state();
-        let creature = state.create_card_in_zone(910001, 0, ZoneType::Battlefield);
-        let granter = state.create_card_in_zone(910002, 0, ZoneType::Battlefield);
+        let creature = state.create_card_in_zone(910001, 0, ZoneType::Battlefield).unwrap();
+        let granter = state.create_card_in_zone(910002, 0, ZoneType::Battlefield).unwrap();
         let tap = Action::ActivateAbility { object_id: creature, ability_index: 0, targets: vec![] };
         // Warm the real cache through queries before the effect resolves.
         assert!(!state.has_keyword(creature, KeywordAbility::Haste));
@@ -7642,7 +7643,7 @@ fn targeting_state() -> GameState {
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::PreCombatMain;
     state.players[0].mana_pool.red = 10;
-    for _ in 0..3 { state.create_card_in_zone(920002, 0, ZoneType::Library); }
+    for _ in 0..3 { state.create_card_in_zone(920002, 0, ZoneType::Library).unwrap(); }
     state
 }
 
@@ -7670,14 +7671,14 @@ fn targeting_resolve(state: &mut GameState) {
 fn test_targeting_generation_keywords_and_zones() {
     use mtg_gto::layers::LayerModification::AddKeyword;
     let mut state = targeting_state();
-    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-    let ours = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
-    let theirs = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
-    let own_hex = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
-    let opp_hex = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
-    let shroud = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(920002, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(920001, 0, ZoneType::Graveyard);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+    let ours = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
+    let theirs = state.create_card_in_zone(920001, 1, ZoneType::Battlefield).unwrap();
+    let own_hex = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
+    let opp_hex = state.create_card_in_zone(920001, 1, ZoneType::Battlefield).unwrap();
+    let shroud = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(920002, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(920001, 0, ZoneType::Graveyard).unwrap();
     targeting_layer(&mut state, own_hex, AddKeyword(KeywordAbility::Hexproof));
     targeting_layer(&mut state, opp_hex, AddKeyword(KeywordAbility::Hexproof));
     targeting_layer(&mut state, shroud, AddKeyword(KeywordAbility::Shroud));
@@ -7690,8 +7691,8 @@ fn test_targeting_generation_keywords_and_zones() {
 #[test]
 fn test_targeting_no_creature_no_cast() {
     let mut state = targeting_state();
-    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-    state.create_card_in_zone(920002, 0, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+    state.create_card_in_zone(920002, 0, ZoneType::Battlefield).unwrap();
     assert!(!legal_actions(&state).iter().any(|a| matches!(a, Action::CastSpell { object_id, .. } if *object_id == spell)));
 }
 
@@ -7699,9 +7700,9 @@ fn test_targeting_no_creature_no_cast() {
 fn test_targeting_uses_layered_creature_types() {
     use mtg_gto::{card::CardType, layers::LayerModification};
     let mut state = targeting_state();
-    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-    let animated = state.create_card_in_zone(920002, 0, ZoneType::Battlefield);
-    let removed = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+    let animated = state.create_card_in_zone(920002, 0, ZoneType::Battlefield).unwrap();
+    let removed = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
     targeting_layer(&mut state, animated, LayerModification::AddType(CardType::Creature));
     targeting_layer(&mut state, removed, LayerModification::RemoveType(CardType::Creature));
     let actions = legal_actions(&state);
@@ -7712,12 +7713,12 @@ fn test_targeting_uses_layered_creature_types() {
 #[test]
 fn test_targeting_invalid_cast_has_no_mutation() {
     let mut state = targeting_state();
-    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-    let creature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
-    let artifact = state.create_card_in_zone(920002, 0, ZoneType::Battlefield);
-    let dead = state.create_card_in_zone(920001, 0, ZoneType::Graveyard);
-    let shroud = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
-    let hex = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+    let creature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
+    let artifact = state.create_card_in_zone(920002, 0, ZoneType::Battlefield).unwrap();
+    let dead = state.create_card_in_zone(920001, 0, ZoneType::Graveyard).unwrap();
+    let shroud = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
+    let hex = state.create_card_in_zone(920001, 1, ZoneType::Battlefield).unwrap();
     targeting_layer(&mut state, shroud, mtg_gto::layers::LayerModification::AddKeyword(KeywordAbility::Shroud));
     targeting_layer(&mut state, hex, mtg_gto::layers::LayerModification::AddKeyword(KeywordAbility::Hexproof));
     state.drain_events();
@@ -7729,7 +7730,7 @@ fn test_targeting_invalid_cast_has_no_mutation() {
         assert_eq!(serde_json::to_value(&state).unwrap(), before);
         assert!(state.drain_events().is_empty());
     }
-    let untargeted = state.create_card_in_zone(920004, 0, ZoneType::Hand);
+    let untargeted = state.create_card_in_zone(920004, 0, ZoneType::Hand).unwrap();
     state.drain_events();
     let before = serde_json::to_value(&state).unwrap();
     rules::apply_action(&mut state, &Action::CastSpell { object_id: untargeted, targets: vec![Target::Object(creature)] });
@@ -7740,9 +7741,9 @@ fn test_targeting_invalid_cast_has_no_mutation() {
 #[test]
 fn test_targeting_shared_target_haste_draw_and_graveyard() {
     let mut state = targeting_state();
-    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-    let other = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
-    let chosen = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+    let other = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
+    let chosen = state.create_card_in_zone(920001, 1, ZoneType::Battlefield).unwrap();
     targeting_cast(&mut state, spell, vec![Target::Object(chosen)]);
     assert_eq!(state.stack[0].targets, vec![Target::Object(chosen)]);
     assert_eq!(state.stack[0].target_generations, vec![Some(state.objects[&chosen].zone_change_count)]);
@@ -7767,8 +7768,8 @@ fn test_targeting_shared_target_haste_draw_and_graveyard() {
 fn test_targeting_departed_or_blinked_target_stops_entire_spell() {
     for returns in [false, true] {
         let mut state = targeting_state();
-        let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-        let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+        let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+        let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
         targeting_cast(&mut state, spell, vec![Target::Object(target)]);
         state.move_object(target, ZoneType::Battlefield, ZoneType::Exile);
         if returns { state.move_object(target, ZoneType::Exile, ZoneType::Battlefield); }
@@ -7787,8 +7788,8 @@ fn test_targeting_new_restrictions_stop_entire_spell() {
     for modification in [LayerModification::AddKeyword(KeywordAbility::Shroud),
         LayerModification::AddKeyword(KeywordAbility::Hexproof), LayerModification::RemoveType(CardType::Creature)] {
         let mut state = targeting_state();
-        let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-        let target = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
+        let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+        let target = state.create_card_in_zone(920001, 1, ZoneType::Battlefield).unwrap();
         targeting_cast(&mut state, spell, vec![Target::Object(target)]);
         targeting_layer(&mut state, target, modification);
         targeting_resolve(&mut state);
@@ -7803,8 +7804,8 @@ fn test_targeting_new_restrictions_stop_entire_spell() {
 fn test_targeting_control_change_and_own_hexproof_remain_legal() {
     for hexproof in [false, true] {
         let mut state = targeting_state();
-        let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-        let target = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
+        let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+        let target = state.create_card_in_zone(920001, 1, ZoneType::Battlefield).unwrap();
         targeting_cast(&mut state, spell, vec![Target::Object(target)]);
         targeting_layer(&mut state, target, mtg_gto::layers::LayerModification::ChangeController(0));
         if hexproof { targeting_layer(&mut state, target, mtg_gto::layers::LayerModification::AddKeyword(KeywordAbility::Hexproof)); }
@@ -7817,13 +7818,13 @@ fn test_targeting_control_change_and_own_hexproof_remain_legal() {
 #[test]
 fn test_targeting_legacy_simple_and_untargeted_spells() {
     let mut state = targeting_state();
-    let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
-    let buff = state.create_card_in_zone(920003, 0, ZoneType::Hand);
+    let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
+    let buff = state.create_card_in_zone(920003, 0, ZoneType::Hand).unwrap();
     targeting_cast(&mut state, buff, vec![Target::Object(target)]);
     targeting_resolve(&mut state);
     assert_eq!(state.effective_power(target), 4);
     state.priority_player = 0;
-    let draw = state.create_card_in_zone(920004, 0, ZoneType::Hand);
+    let draw = state.create_card_in_zone(920004, 0, ZoneType::Hand).unwrap();
     targeting_cast(&mut state, draw, vec![]);
     targeting_resolve(&mut state);
     assert_eq!(state.players[0].library.len(), 2);
@@ -7833,8 +7834,8 @@ fn test_targeting_legacy_simple_and_untargeted_spells() {
 #[test]
 fn test_targeting_counterspell_stack_target_remains_legal() {
     let mut state = targeting_state();
-    let draw = state.create_card_in_zone(920004, 0, ZoneType::Hand);
-    let counter = state.create_card_in_zone(920005, 0, ZoneType::Hand);
+    let draw = state.create_card_in_zone(920004, 0, ZoneType::Hand).unwrap();
+    let counter = state.create_card_in_zone(920005, 0, ZoneType::Hand).unwrap();
     targeting_cast(&mut state, draw, vec![]);
     let draw_stack_id = state.stack.last().unwrap().id;
     targeting_cast(&mut state, counter, vec![Target::StackEntry(draw_stack_id)]);
@@ -7855,10 +7856,10 @@ fn test_targeting_graveyard_cast_uses_same_contract() {
         if flashback { def.flashback_cost = Some(ManaCost::new(0, 0, 0, 0, 1, 0)); }
         else { def.escape_exile_count = Some(1); }
         db.insert(def);
-        let spell = state.create_card_in_zone(920000, 0, ZoneType::Graveyard);
-        state.create_card_in_zone(920002, 0, ZoneType::Graveyard);
+        let spell = state.create_card_in_zone(920000, 0, ZoneType::Graveyard).unwrap();
+        state.create_card_in_zone(920002, 0, ZoneType::Graveyard).unwrap();
         assert!(!legal_actions(&state).iter().any(|a| matches!(a, Action::CastFromGraveyard { object_id, .. } if *object_id == spell)));
-        let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+        let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
         let action = Action::CastFromGraveyard { object_id: spell, targets: vec![Target::Object(target)] };
         assert!(legal_actions(&state).contains(&action));
         state.drain_events();
@@ -7877,10 +7878,10 @@ fn test_targeting_graveyard_cast_uses_same_contract() {
 #[test]
 fn test_targeting_owner_graveyard_differs_from_caster() {
     let mut state = targeting_state();
-    let spell = state.create_card_in_zone(920000, 1, ZoneType::Hand);
+    let spell = state.create_card_in_zone(920000, 1, ZoneType::Hand).unwrap();
     state.players[1].hand.retain(|&id| id != spell);
     state.players[0].hand.push(spell);
-    let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let target = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
     targeting_cast(&mut state, spell, vec![Target::Object(target)]);
     targeting_resolve(&mut state);
     assert!(state.players[0].graveyard.is_empty());
@@ -7899,8 +7900,8 @@ fn test_targeting_incompatible_composite_is_not_cast_targetless() {
         Effect::LoseLife { amount: 1, target: TargetSpec::Opponent },
     ]));
     db.insert(def);
-    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-    state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+    state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
     assert!(!legal_actions(&state).iter().any(|a| matches!(a, Action::CastSpell { object_id, .. } if *object_id == spell)));
 }
 
@@ -7915,11 +7916,11 @@ fn test_targeting_composite_each_creature_keeps_untargeted_recipients() {
         Effect::Multiple(vec![Effect::DealDamage { amount: 1, target: TargetSpec::EachCreature }]),
     ]));
     db.insert(def);
-    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-    let chosen = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
-    let other = state.create_card_in_zone(920001, 1, ZoneType::Battlefield);
-    let animated = state.create_card_in_zone(920002, 0, ZoneType::Battlefield);
-    let noncreature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+    let chosen = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
+    let other = state.create_card_in_zone(920001, 1, ZoneType::Battlefield).unwrap();
+    let animated = state.create_card_in_zone(920002, 0, ZoneType::Battlefield).unwrap();
+    let noncreature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
     targeting_layer(&mut state, other, LayerModification::AddKeyword(KeywordAbility::Shroud));
     targeting_layer(&mut state, animated, LayerModification::AddType(CardType::Creature));
     targeting_layer(&mut state, noncreature, LayerModification::RemoveType(CardType::Creature));
@@ -7944,7 +7945,7 @@ fn test_targeting_composite_controller_is_not_targeted_opponent() {
         Effect::Multiple(vec![Effect::LoseLife { amount: 2, target: TargetSpec::Controller }]),
     ]));
     db.insert(def);
-    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
     targeting_cast(&mut state, spell, vec![Target::Player(1)]);
     targeting_resolve(&mut state);
     assert_eq!(state.players[1].life, 17);
@@ -7963,8 +7964,8 @@ fn test_targeting_composite_no_target_damage_keeps_each_player_semantics() {
         Effect::DealDamage { amount: 1, target: TargetSpec::NoTarget },
     ]));
     db.insert(def);
-    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-    let creature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+    let creature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
     targeting_cast(&mut state, spell, vec![Target::Object(creature)]);
     targeting_resolve(&mut state);
     assert!(state.has_keyword(creature, KeywordAbility::Haste));
@@ -7984,9 +7985,9 @@ fn test_targeting_composite_untargeted_graveyard_effect_does_not_inherit_target(
         Effect::ReturnToTopOfLibrary { target: TargetSpec::NoTarget },
     ]));
     db.insert(def);
-    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand);
-    let chosen = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
-    let unrelated = state.create_card_in_zone(920001, 0, ZoneType::Graveyard);
+    let spell = state.create_card_in_zone(920000, 0, ZoneType::Hand).unwrap();
+    let chosen = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
+    let unrelated = state.create_card_in_zone(920001, 0, ZoneType::Graveyard).unwrap();
     let generation = state.objects[&chosen].zone_change_count;
     let library = state.players[0].library.clone();
     targeting_cast(&mut state, spell, vec![Target::Object(chosen)]);
@@ -8007,9 +8008,9 @@ fn stack_target_state(offset: u64) -> (GameState, u64, u64, u64) {
     let mut state = targeting_state();
     state.next_stack_id += offset;
     state.next_object_id += offset;
-    let lower = state.create_card_in_zone(920004, 0, ZoneType::Hand);
-    let upper = state.create_card_in_zone(920004, 0, ZoneType::Hand);
-    let counter = state.create_card_in_zone(920005, 0, ZoneType::Hand);
+    let lower = state.create_card_in_zone(920004, 0, ZoneType::Hand).unwrap();
+    let upper = state.create_card_in_zone(920004, 0, ZoneType::Hand).unwrap();
+    let counter = state.create_card_in_zone(920005, 0, ZoneType::Hand).unwrap();
     targeting_cast(&mut state, lower, vec![]);
     targeting_cast(&mut state, upper, vec![]);
     (state, lower, upper, counter)
@@ -8143,14 +8144,14 @@ fn test_stack_target_stale_on_resolution_does_not_counter_another_spell() {
 fn test_stack_target_does_not_replace_permanent_or_player_targets() {
     use mtg_gto::{card::TargetSpec, targeting::target_is_legal};
     let (mut state, _, _, _) = stack_target_state(0);
-    let creature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(920001, 0, ZoneType::Battlefield).unwrap();
     let stack_id = state.stack[0].id;
     assert!(target_is_legal(&state, 0, &TargetSpec::AnyCreature, &Target::Object(creature)));
     assert!(target_is_legal(&state, 0, &TargetSpec::AnyPlayer, &Target::Player(1)));
     assert!(!target_is_legal(&state, 0, &TargetSpec::AnyCreature, &Target::StackEntry(stack_id)));
     assert!(!target_is_legal(&state, 0, &TargetSpec::AnyPlayer, &Target::StackEntry(stack_id)));
     for target in [Target::Object(creature), Target::Player(1)] {
-        let action = Action::CastSpell { object_id: state.create_card_in_zone(920004, 0, ZoneType::Hand), targets: vec![target] };
+        let action = Action::CastSpell { object_id: state.create_card_in_zone(920004, 0, ZoneType::Hand).unwrap(), targets: vec![target] };
         assert_eq!(resolve(&canonicalize(&action, &state).unwrap(), &state, 0).unwrap(), Some(action));
     }
 }
@@ -8288,13 +8289,13 @@ fn settlement_fixture(effect: mtg_gto::card::Effect) -> GameState {
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::PreCombatMain;
     for _ in 0..10 {
-        state.create_card_in_zone(990003, 0, ZoneType::Library);
+        state.create_card_in_zone(990003, 0, ZoneType::Library).unwrap();
     }
     state
 }
 
 fn settlement_resolve(state: &mut GameState) -> u64 {
-    let spell = state.create_card_in_zone(990001, 0, ZoneType::Hand);
+    let spell = state.create_card_in_zone(990001, 0, ZoneType::Hand).unwrap();
     rules::apply_action(
         state,
         &Action::CastSpell {
@@ -8315,7 +8316,7 @@ fn test_2a_multiple_children_finish_before_draw_trigger_placement() {
         Effect::DrawCards { count: 1 },
         Effect::GainLife { amount: 3 },
     ]));
-    let observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield);
+    let observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield).unwrap();
     let spell = settlement_resolve(&mut state);
     let events = state.drain_events();
     let later_effect = events
@@ -8351,7 +8352,7 @@ fn test_2a_successive_draw_events_wait_and_remain_two_occurrences() {
         Effect::DrawCards { count: 1 },
         Effect::DrawCards { count: 1 },
     ]));
-    let observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield);
+    let observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield).unwrap();
     settlement_resolve(&mut state);
     assert_eq!(state.pending_triggers.len(), 2);
     assert!(state
@@ -8395,7 +8396,7 @@ fn test_2a_seven_pending_exposes_existing_ordering_limit() {
         })
         .collect();
     db.insert(observer);
-    state.create_card_in_zone(990002, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(990002, 1, ZoneType::Battlefield).unwrap();
     settlement_resolve(&mut state);
     assert_eq!(state.pending_triggers.len(), 7);
     assert!(state.stack.is_empty());
@@ -8413,12 +8414,12 @@ fn test_2a_seven_pending_exposes_existing_ordering_limit() {
 fn test_2a_resolution_and_sba_triggers_share_later_placement_window() {
     use mtg_gto::card::Effect;
     let mut state = settlement_fixture(Effect::DrawCards { count: 1 });
-    let draw_observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield);
-    let spell = state.create_card_in_zone(990001, 0, ZoneType::Hand);
+    let draw_observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield).unwrap();
+    let spell = state.create_card_in_zone(990001, 0, ZoneType::Hand).unwrap();
     rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![] });
     // Casting now settles too. Construct the unstable resolution fixture only
     // afterward so this test still isolates resolution's shared SBA window.
-    let doomed = state.create_card_in_zone(990004, 0, ZoneType::Battlefield);
+    let doomed = state.create_card_in_zone(990004, 0, ZoneType::Battlefield).unwrap();
     state.effective_toughness(doomed); // warm the characteristic cache
     state.drain_events();
     rules::apply_action(&mut state, &Action::PassPriority);
@@ -8454,7 +8455,7 @@ fn test_2a_deferred_source_survives_departure_and_state_roundtrips() {
         Effect::DrawCards { count: 1 },
         Effect::DestroyAll,
     ]));
-    let observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield);
+    let observer = state.create_card_in_zone(990002, 1, ZoneType::Battlefield).unwrap();
     settlement_resolve(&mut state);
     assert!(!state.battlefield.contains(&observer));
     assert!(state.stack.iter().any(|entry| matches!(entry.source,
@@ -8535,10 +8536,10 @@ fn test_2a_restored_copy_completion_keeps_sba_triggers_deferred() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::PreCombatMain;
-    let source = state.create_card_in_zone(990202, 0, ZoneType::Battlefield);
-    let persist = state.create_card_in_zone(990203, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(990204, 0, ZoneType::Battlefield);
-    let spell = state.create_card_in_zone(990201, 0, ZoneType::Hand);
+    let source = state.create_card_in_zone(990202, 0, ZoneType::Battlefield).unwrap();
+    let persist = state.create_card_in_zone(990203, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(990204, 0, ZoneType::Battlefield).unwrap();
+    let spell = state.create_card_in_zone(990201, 0, ZoneType::Hand).unwrap();
     rules::apply_action(
         &mut state,
         &Action::CastSpell {
@@ -8644,12 +8645,12 @@ fn test_2a_fast_forward_preserves_apnap_for_pending_window() {
     state.phase = Phase::PreCombatMain;
     for player in 0..3 {
         for _ in 0..20 {
-            state.create_card_in_zone(990303, player, ZoneType::Library);
+            state.create_card_in_zone(990303, player, ZoneType::Library).unwrap();
         }
     }
-    let observer2 = state.create_card_in_zone(990302, 2, ZoneType::Battlefield);
-    let observer1 = state.create_card_in_zone(990302, 1, ZoneType::Battlefield);
-    let spell = state.create_card_in_zone(990301, 0, ZoneType::Hand);
+    let observer2 = state.create_card_in_zone(990302, 2, ZoneType::Battlefield).unwrap();
+    let observer1 = state.create_card_in_zone(990302, 1, ZoneType::Battlefield).unwrap();
+    let spell = state.create_card_in_zone(990301, 0, ZoneType::Hand).unwrap();
     rules::apply_action(
         &mut state,
         &Action::CastSpell {
@@ -8720,9 +8721,9 @@ fn test_2a_draw_step_preserves_mandatory_trigger_chooser() {
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::Upkeep;
     state.turn_number = 2;
-    state.create_card_in_zone(990402, 0, ZoneType::Library);
-    state.create_card_in_zone(990401, 1, ZoneType::Battlefield);
-    state.create_card_in_zone(990401, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(990402, 0, ZoneType::Library).unwrap();
+    state.create_card_in_zone(990401, 1, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(990401, 1, ZoneType::Battlefield).unwrap();
     rules::apply_action(&mut state, &Action::PassPriority);
     rules::apply_action(&mut state, &Action::PassPriority);
     assert_eq!(state.phase, Phase::Draw);
@@ -8764,7 +8765,7 @@ fn test_2a_land_play_collects_self_etb_and_landfall_before_choice() {
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::PreCombatMain;
     state.players[0].land_plays_remaining = 1;
-    let land = state.create_card_in_zone(990501, 0, ZoneType::Hand);
+    let land = state.create_card_in_zone(990501, 0, ZoneType::Hand).unwrap();
     rules::apply_action(&mut state, &Action::PlayLand { object_id: land });
     assert_eq!(state.pending_triggers.len(), 2);
     assert!(state.stack.is_empty());
@@ -8777,7 +8778,7 @@ fn test_2a_land_play_collects_self_etb_and_landfall_before_choice() {
     graveyard_state.card_db = state.card_db.clone();
     graveyard_state.phase = Phase::PreCombatMain;
     graveyard_state.players[0].land_plays_remaining = 1;
-    let graveyard_land = graveyard_state.create_card_in_zone(990501, 0, ZoneType::Graveyard);
+    let graveyard_land = graveyard_state.create_card_in_zone(990501, 0, ZoneType::Graveyard).unwrap();
     rules::apply_action(
         &mut graveyard_state,
         &Action::PlayLandFromGraveyard {
@@ -8863,8 +8864,8 @@ fn sba_window_events(state: &mut GameState, creature: u64) -> Vec<&'static str> 
 fn test_2a_shared_sba_stabilizes_before_placing_persist_etb() {
     for land_play in [false, true] {
         let mut state = sba_window_fixture();
-        let creature = state.create_card_in_zone(990602, 0, ZoneType::Battlefield);
-        let land = state.create_card_in_zone(990601, 0, ZoneType::Hand);
+        let creature = state.create_card_in_zone(990602, 0, ZoneType::Battlefield).unwrap();
+        let land = state.create_card_in_zone(990601, 0, ZoneType::Hand).unwrap();
         if land_play {
             rules::apply_action(&mut state, &Action::PlayLand { object_id: land });
         } else {
@@ -8897,8 +8898,8 @@ fn test_2a_sba_multiple_passes_keep_all_occurrences_pending_for_choice() {
     db.insert(CardDef { id: 990605, name: "Cascade dependent".into(),
         card_types: vec![CardType::Creature], power: Some(1), toughness: Some(0),
         triggered_abilities: vec![dies], ..Default::default() });
-    let lord = state.create_card_in_zone(990604, 0, ZoneType::Battlefield);
-    let dependent = state.create_card_in_zone(990605, 0, ZoneType::Battlefield);
+    let lord = state.create_card_in_zone(990604, 0, ZoneType::Battlefield).unwrap();
+    let dependent = state.create_card_in_zone(990605, 0, ZoneType::Battlefield).unwrap();
     state.refresh_continuous_effects();
     assert_eq!(state.effective_toughness(dependent), 1);
     state.objects.get_mut(&lord).unwrap().damage_marked = 1;
@@ -8920,8 +8921,8 @@ fn test_2a_sba_multiple_passes_keep_all_occurrences_pending_for_choice() {
 #[test]
 fn test_2a_enclosing_resolution_retains_sba_placement_deferral() {
     let mut state = sba_window_fixture();
-    let creature = state.create_card_in_zone(990602, 0, ZoneType::Battlefield);
-    let spell = state.create_card_in_zone(990603, 0, ZoneType::Hand);
+    let creature = state.create_card_in_zone(990602, 0, ZoneType::Battlefield).unwrap();
+    let spell = state.create_card_in_zone(990603, 0, ZoneType::Hand).unwrap();
     rules::apply_action(
         &mut state,
         &Action::CastSpell {
@@ -8978,8 +8979,8 @@ fn boundary_2b3a_game() -> GameState {
 #[test]
 fn test_2b3a_equip_settles_before_priority_and_legal_actions() {
     let mut state = boundary_2b3a_game();
-    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
-    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield).unwrap();
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
     rules::apply_action(&mut state, &Action::Equip { equipment_id: equipment, target_id: victim });
     assert!(state.battlefield.contains(&victim));
     assert_eq!(state.stack.len(), 1);
@@ -8998,7 +8999,7 @@ fn test_2b3a_equip_settles_before_priority_and_legal_actions() {
 #[test]
 fn test_2b3a_loyalty_cost_settles_after_ability_is_stacked() {
     let mut state = boundary_2b3a_game();
-    let walker = state.create_card_in_zone(995003, 0, ZoneType::Battlefield);
+    let walker = state.create_card_in_zone(995003, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&walker).unwrap().loyalty_counters = 1;
     rules::apply_action(&mut state, &Action::ActivateLoyalty { object_id: walker, ability_index: 0 });
     assert!(state.players[0].graveyard.contains(&walker));
@@ -9009,8 +9010,8 @@ fn test_2b3a_loyalty_cost_settles_after_ability_is_stacked() {
 #[test]
 fn test_2b3a_self_sacrifice_cost_settles_dependents_after_payment() {
     let mut state = boundary_2b3a_game();
-    let source = state.create_card_in_zone(995004, 0, ZoneType::Battlefield);
-    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(995004, 0, ZoneType::Battlefield).unwrap();
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&victim).unwrap().temp_toughness_mod = -1;
     state.refresh_continuous_effects();
     assert_eq!(state.effective_toughness(victim), 1);
@@ -9025,7 +9026,7 @@ fn test_2b3a_self_sacrifice_cost_settles_dependents_after_payment() {
 fn test_2b3a_life_cost_settles_loss_before_return() {
     for life in [1, 2] {
         let mut state = boundary_2b3a_game();
-        let source = state.create_card_in_zone(995004, 0, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(995004, 0, ZoneType::Battlefield).unwrap();
         state.players[0].life = life;
         rules::apply_action(&mut state, &Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] });
         assert_eq!(state.players[0].life, life - 1);
@@ -9062,10 +9063,10 @@ fn test_2b3a_all_cast_zones_settle_cast_side_life_changes() {
             keywords: vec![KeywordAbility::Extort], triggered_abilities: vec![TriggeredAbility {
                 trigger: TriggerCondition::YouCastSpell, effect: Effect::GainLife { amount: 1 }, description: "cast".into()
             }], ..Default::default() });
-        state.create_card_in_zone(995006, 0, ZoneType::Battlefield);
-        let lost_permanent = state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
+        state.create_card_in_zone(995006, 0, ZoneType::Battlefield).unwrap();
+        let lost_permanent = state.create_card_in_zone(995001, 1, ZoneType::Battlefield).unwrap();
         state.players[1].life = if losing { 1 } else { 2 };
-        let spell = state.create_card_in_zone(995005, 0, zone);
+        let spell = state.create_card_in_zone(995005, 0, zone).unwrap();
         if zone == ZoneType::Command {
             state.format = mtg_gto::game::GameFormat::Commander;
             state.players[0].commander_card_id = Some(995005);
@@ -9117,9 +9118,9 @@ fn test_2b3a_attack_consequences_settle_before_ordering_and_progression() {
             effect: Effect::GainLife { amount: 1 }, description: "attack".into() }).collect(),
         ..Default::default() });
     state.phase = Phase::DeclareAttackers;
-    let attacker = state.create_card_in_zone(995005, 0, ZoneType::Battlefield);
-    let lord = state.create_card_in_zone(995004, 1, ZoneType::Battlefield);
-    let dependent = state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
+    let attacker = state.create_card_in_zone(995005, 0, ZoneType::Battlefield).unwrap();
+    let lord = state.create_card_in_zone(995004, 1, ZoneType::Battlefield).unwrap();
+    let dependent = state.create_card_in_zone(995001, 1, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&dependent).unwrap().temp_toughness_mod = -1;
     state.refresh_continuous_effects();
     assert_eq!(state.effective_toughness(dependent), 1);
@@ -9147,8 +9148,8 @@ fn test_2b3a_multiple_children_do_not_settle_between_toughness_changes() {
             Effect::SetPowerToughness { power: 1, toughness: 0, until_eot: true, target: TargetSpec::AnyCreature },
             Effect::Buff { power: 0, toughness: 1, until_eot: true },
         ])), ..Default::default() });
-    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
-    let spell = state.create_card_in_zone(995005, 0, ZoneType::Hand);
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
+    let spell = state.create_card_in_zone(995005, 0, ZoneType::Hand).unwrap();
     rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![Target::Object(victim)] });
     for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
     assert!(state.battlefield.contains(&victim), "zero only between effect children");
@@ -9162,8 +9163,8 @@ fn test_2b3a_draw_step_settles_loss_before_priority() {
         let mut state = boundary_2b3a_game();
         state.phase = Phase::Upkeep;
         state.turn_number = 2;
-        let permanent = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
-        let drawn = if failed { None } else { Some(state.create_card_in_zone(995001, 0, ZoneType::Library)) };
+        let permanent = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
+        let drawn = if failed { None } else { Some(state.create_card_in_zone(995001, 0, ZoneType::Library).unwrap()) };
         for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
         assert_eq!(state.phase, Phase::Draw);
         assert!(state.battlefield.contains(&permanent));
@@ -9190,7 +9191,7 @@ fn test_2b3a_resolution_completion_restores_live_priority() {
         spell_effect: Some(Effect::LoseLife { amount: 1, target: TargetSpec::Controller }),
         ..Default::default() });
     state.players[0].life = life;
-    let spell = state.create_card_in_zone(995005, 0, ZoneType::Hand);
+    let spell = state.create_card_in_zone(995005, 0, ZoneType::Hand).unwrap();
     rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![] });
     for _ in 0..3 { rules::apply_action(&mut state, &Action::PassPriority); }
     assert_eq!(state.players[0].life, life - 1);
@@ -9210,8 +9211,8 @@ fn test_2b3a_resolution_completion_restores_live_priority() {
 #[test]
 fn test_2b3a_equip_roundtrips_before_action_and_counted_solver_boundary() {
     let mut state = boundary_2b3a_game();
-    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
-    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield).unwrap();
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
     let action = Action::Equip { equipment_id: equipment, target_id: victim };
     let mut snapshot = state.clone();
     snapshot.restore(state.snapshot()).unwrap();
@@ -9244,8 +9245,8 @@ fn test_2b3a_failed_payment_does_not_settle_or_mutate() {
     let mut equipment = db.get(995002).unwrap().clone();
     equipment.equip_cost = Some(mtg_gto::mana::ManaCost::new(1, 0, 0, 0, 0, 0));
     db.insert(equipment);
-    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
-    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield).unwrap();
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&victim).unwrap().temp_toughness_mod = -1;
     state.invalidate_characteristics_cache();
     let before = bincode::serialize(&state).unwrap();
@@ -9263,8 +9264,8 @@ fn test_2b3a_partial_cleanup_does_not_enter_action_epilogue() {
     db.insert(victim_def);
     state.phase = Phase::Cleanup;
     state.cleanup_discard_in_progress = true;
-    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
-    for _ in 0..9 { state.create_card_in_zone(995002, 0, ZoneType::Hand); }
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
+    for _ in 0..9 { state.create_card_in_zone(995002, 0, ZoneType::Hand).unwrap(); }
     let first = state.players[0].hand[0];
     rules::apply_action(&mut state, &Action::Discard { object_id: first });
     assert!(state.battlefield.contains(&victim));
@@ -9295,8 +9296,8 @@ fn test_2b3a_equip_death_triggers_order_only_after_settlement() {
     victim_def.triggered_abilities = (0..2).map(|_| TriggeredAbility { trigger: TriggerCondition::Dies,
         effect: Effect::GainLife { amount: 1 }, description: "death".into() }).collect();
     db.insert(victim_def);
-    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
-    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield).unwrap();
+    let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
     rules::apply_action(&mut state, &Action::Equip { equipment_id: equipment, target_id: victim });
     assert!(state.battlefield.contains(&victim));
     assert_eq!(state.stack.len(), 1);
@@ -9328,7 +9329,7 @@ fn test_2b3a_concession_during_ordering_resumes_on_live_player() {
             trigger: TriggerCondition::BeginningOfUpkeep, effect: Effect::GainLife { amount: 1 },
             description: "order".into() }).collect(), ..Default::default() });
     for player in [0, 1] {
-        let source = state.create_card_in_zone(995005, player, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(995005, player, ZoneType::Battlefield).unwrap();
         for index in 0..2 { queue_test_trigger(&mut state, source, index, player); }
     }
     state.trigger_order_resume = Some(mtg_gto::game::TriggerOrderResume::Player(0));
@@ -9351,17 +9352,17 @@ fn test_2b3a_concession_during_ordering_resumes_on_live_player() {
 fn test_2b3a_tui_equip_uses_shared_settlement_before_cached_actions() {
     for hold_priority in [false, true] {
         let mut state = boundary_2b3a_game();
-        let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield);
-        let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+        let equipment = state.create_card_in_zone(995002, 0, ZoneType::Battlefield).unwrap();
+        let victim = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
         // A surviving candidate gives the UI a decision after resolution.
-        state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
         if hold_priority {
             Arc::make_mut(state.card_db.as_mut().unwrap()).insert(mtg_gto::card::CardDef {
                 id: 995005, name: "UI response".into(), card_types: vec![mtg_gto::card::CardType::Instant],
                 mana_cost: Some(mtg_gto::mana::ManaCost::zero()),
                 spell_effect: Some(mtg_gto::card::Effect::GainLife { amount: 1 }), ..Default::default()
             });
-            state.create_card_in_zone(995005, 0, ZoneType::Hand);
+            state.create_card_in_zone(995005, 0, ZoneType::Hand).unwrap();
         }
         let db = state.card_db().clone();
         let mut app = mtg_gto::tui::App::new(state, db);
@@ -9405,9 +9406,9 @@ fn test_2b3a_cast_invalidates_cached_hand_and_graveyard_toughness() {
         let mut state = boundary_2b3a_dynamic_game(if zone == ZoneType::Hand {
             DynamicValue::CardsInHand
         } else { DynamicValue::CardTypesInGraveyards });
-        let victim = state.create_card_in_zone(995201, 0, ZoneType::Battlefield);
-        let target = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
-        let spell = state.create_card_in_zone(995202, 0, zone);
+        let victim = state.create_card_in_zone(995201, 0, ZoneType::Battlefield).unwrap();
+        let target = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
+        let spell = state.create_card_in_zone(995202, 0, zone).unwrap();
         assert_eq!(state.effective_toughness(victim), 1); // warm cache before payment
         let targets = vec![Target::Object(target)];
         let action = if zone == ZoneType::Hand {
@@ -9425,11 +9426,11 @@ fn test_2b3a_cast_invalidates_cached_hand_and_graveyard_toughness() {
 fn test_2b3a_spell_copy_resolution_invalidates_cached_tapped_toughness() {
     use mtg_gto::card::DynamicValue;
     let mut state = boundary_2b3a_dynamic_game(DynamicValue::TappedCreaturesControlled);
-    let victim = state.create_card_in_zone(995201, 0, ZoneType::Battlefield);
-    let target = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(995201, 0, ZoneType::Battlefield).unwrap();
+    let target = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&target).unwrap().tapped = true;
     state.invalidate_characteristics_cache();
-    let spell = state.create_card_in_zone(995202, 0, ZoneType::Hand);
+    let spell = state.create_card_in_zone(995202, 0, ZoneType::Hand).unwrap();
     rules::apply_action(&mut state, &Action::CastSpell { object_id: spell,
         targets: vec![Target::Object(target)] });
     let original = state.stack[0].id;
@@ -9453,8 +9454,8 @@ fn test_2b3a_untap_settles_at_upkeep_before_priority_and_trigger_order() {
         .into_iter().map(|trigger| TriggeredAbility { trigger,
             effect: Effect::GainLife { amount: 1 }, description: "boundary".into() }).collect();
     db.insert(def);
-    let victim = state.create_card_in_zone(995201, 0, ZoneType::Battlefield);
-    let target = state.create_card_in_zone(995001, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(995201, 0, ZoneType::Battlefield).unwrap();
+    let target = state.create_card_in_zone(995001, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&target).unwrap().tapped = true;
     state.invalidate_characteristics_cache();
     assert_eq!(state.effective_toughness(victim), 1);
@@ -9535,8 +9536,8 @@ fn boundary_2b3a_review_wither_combat(first_strike: bool) {
     let mut blocker_def = db.get(995001).unwrap().clone();
     blocker_def.power = Some(0);
     db.insert(blocker_def);
-    let attacker = state.create_card_in_zone(996001, 0, ZoneType::Battlefield);
-    let blocker = state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
+    let attacker = state.create_card_in_zone(996001, 0, ZoneType::Battlefield).unwrap();
+    let blocker = state.create_card_in_zone(995001, 1, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&attacker).unwrap().summoning_sick = false;
     state.objects.get_mut(&blocker).unwrap().summoning_sick = false;
     let attack = Action::DeclareAttackers { attackers: vec![attacker] };
@@ -9579,12 +9580,12 @@ fn test_2b3a_review_draw_loss_ordering_restores_live_priority_in_all_roundtrips(
         trigger: TriggerCondition::Dies, effect: Effect::GainLife { amount: 1 },
         description: "draw-loss boundary".into() }).collect();
     db.insert(victim);
-    state.create_card_in_zone(995004, 0, ZoneType::Battlefield);
-    let dependent = state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(995004, 0, ZoneType::Battlefield).unwrap();
+    let dependent = state.create_card_in_zone(995001, 1, ZoneType::Battlefield).unwrap();
     state.refresh_continuous_effects();
     assert_eq!(state.effective_toughness(dependent), 1);
     if !failed {
-        state.create_card_in_zone(995001, 0, ZoneType::Library);
+        state.create_card_in_zone(995001, 0, ZoneType::Library).unwrap();
         state.objects.get_mut(&dependent).unwrap().temp_toughness_mod = -1;
         state.invalidate_characteristics_cache();
     }
@@ -9636,9 +9637,9 @@ fn test_2b3a_review_last_chooser_concession_finishes_attack_continuation() {
         trigger: TriggerCondition::Dies, effect: Effect::GainLife { amount: 1 },
         description: "attack boundary".into() }).collect();
     db.insert(victim);
-    let attacker = state.create_card_in_zone(996002, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(995004, 1, ZoneType::Battlefield);
-    state.create_card_in_zone(995001, 1, ZoneType::Battlefield);
+    let attacker = state.create_card_in_zone(996002, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(995004, 1, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(995001, 1, ZoneType::Battlefield).unwrap();
     state.refresh_continuous_effects();
     state.objects.get_mut(&attacker).unwrap().summoning_sick = false;
     let attack = Action::DeclareAttackers { attackers: vec![attacker] };
@@ -9679,9 +9680,9 @@ fn test_2b3a_review_last_chooser_concession_finishes_resolution_continuation() {
     db.insert(CardDef { id: 996004, name: "Boundary draw spell".into(),
         card_types: vec![CardType::Sorcery], mana_cost: Some(mtg_gto::mana::ManaCost::zero()),
         spell_effect: Some(Effect::DrawCards { count: 1 }), ..Default::default() });
-    state.create_card_in_zone(996003, 1, ZoneType::Battlefield);
-    state.create_card_in_zone(995001, 0, ZoneType::Library);
-    let spell = state.create_card_in_zone(996004, 0, ZoneType::Hand);
+    state.create_card_in_zone(996003, 1, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(995001, 0, ZoneType::Library).unwrap();
+    let spell = state.create_card_in_zone(996004, 0, ZoneType::Hand).unwrap();
     let cast = Action::CastSpell { object_id: spell, targets: vec![] };
     assert!(legal_actions(&state).contains(&cast));
     rules::apply_action(&mut state, &cast);
@@ -9727,9 +9728,9 @@ fn boundary_2b3a_tutor_ordering_window(victim_controller: usize) -> (GameState, 
             Effect::SearchLibrary { destination: ZoneType::Hand,
                 subtype_filter: vec![Subtype("Forest".into())] },
         ])), ..Default::default() });
-    let victim = state.create_card_in_zone(997001, victim_controller, ZoneType::Battlefield);
-    let forest = state.create_card_in_zone(997002, 0, ZoneType::Library);
-    let spell = state.create_card_in_zone(997003, 0, ZoneType::Hand);
+    let victim = state.create_card_in_zone(997001, victim_controller, ZoneType::Battlefield).unwrap();
+    let forest = state.create_card_in_zone(997002, 0, ZoneType::Library).unwrap();
+    let spell = state.create_card_in_zone(997003, 0, ZoneType::Hand).unwrap();
     let cast = Action::CastSpell { object_id: spell, targets: vec![Target::Object(victim)] };
     assert!(legal_actions(&state).contains(&cast));
     rules::apply_action(&mut state, &cast);
@@ -9856,7 +9857,7 @@ mod terminal_loss_prerequisite {
     fn multiple_failed_draw_finishes_later_legal_child() {
         let mut state = fixture(2);
         let before_life = state.players[0].life;
-        let spell = state.create_card_in_zone(998_102, 0, ZoneType::Hand);
+        let spell = state.create_card_in_zone(998_102, 0, ZoneType::Hand).unwrap();
         let cast = Action::CastSpell { object_id: spell, targets: vec![] };
         assert!(legal_actions(&state).contains(&cast));
         rules::apply_action(&mut state, &cast);
@@ -9876,13 +9877,13 @@ mod terminal_loss_prerequisite {
     #[test]
     fn continuing_loss_preserves_cross_owned_objects_stack_and_pending() {
         let mut state = fixture(3);
-        let owned_by_loser = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield);
+        let owned_by_loser = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&owned_by_loser).unwrap().controller = 1;
-        let controlled_by_loser = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield);
+        let controlled_by_loser = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&controlled_by_loser).unwrap().controller = 0;
-        let token = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield);
+        let token = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&token).unwrap().is_token = true;
-        let stacked = state.create_card_in_zone(998_102, 0, ZoneType::Stack);
+        let stacked = state.create_card_in_zone(998_102, 0, ZoneType::Stack).unwrap();
         state.stack.push(StackEntry { id: 1, source: StackSource::Spell(stacked),
             controller: 0, targets: vec![], target_generations: vec![] });
         queue_test_trigger(&mut state, controlled_by_loser, 0, 0);
@@ -9937,8 +9938,8 @@ mod terminal_loss_prerequisite {
     #[test]
     fn supported_terminal_stops_before_elimination_or_creature_cleanup() {
         let mut state = fixture(2);
-        let controlled_by_loser = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield);
-        let zero_toughness = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield);
+        let controlled_by_loser = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield).unwrap();
+        let zero_toughness = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&zero_toughness).unwrap().temp_toughness_mod = -2;
         state.players[1].life = 0;
         let before_objects = serde_json::to_value(&state.objects).unwrap();
@@ -10106,7 +10107,7 @@ mod terminal_loss_prerequisite {
             assert_eq!(candidate.loss_boundary.pending_failed_draws, vec![0, 1]);
             assert_eq!(candidate.visible_state(0).pending_failed_draws, &[0, 1]);
             assert_eq!(candidate.visible_state(2).pending_failed_draws, &[0, 1]);
-            let card = candidate.create_card_in_zone(998_101, 1, ZoneType::Library);
+            let card = candidate.create_card_in_zone(998_101, 1, ZoneType::Library).unwrap();
             rules::draw_cards(&mut candidate, 1, 1);
             assert!(candidate.players[1].hand.contains(&card));
             assert_eq!(candidate.loss_boundary.pending_failed_draws, vec![0, 1],
@@ -10129,7 +10130,7 @@ mod terminal_loss_prerequisite {
         use mtg_gto::rules::{begin_terminal_copy_batch, prepare_spell_copy,
             snapshot_stack_spell, CopyBatchOutcome, CopyTargetPolicy};
         let mut state = fixture(2);
-        let spell = state.create_card_in_zone(998_102, 0, ZoneType::Hand);
+        let spell = state.create_card_in_zone(998_102, 0, ZoneType::Hand).unwrap();
         rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![] });
         let source = snapshot_stack_spell(&state, state.stack[0].id).unwrap();
         let item = prepare_spell_copy(&state, &source, 0, CopyTargetPolicy::Preserve).unwrap();
@@ -10195,7 +10196,7 @@ mod terminal_loss_prerequisite {
     fn stopped_boundaries_freeze_supplied_actions_triggers_and_fast_forward() {
         for terminal in [true, false] {
             let mut state = fixture(if terminal { 2 } else { 3 });
-            let source = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield);
+            let source = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield).unwrap();
             queue_test_trigger(&mut state, source, 0, 0);
             queue_test_trigger(&mut state, source, 0, 0);
             state.trigger_order_resume = Some(mtg_gto::game::TriggerOrderResume::AfterAttackers);
@@ -10240,7 +10241,7 @@ mod terminal_loss_prerequisite {
             cleanup.phase = Phase::Cleanup;
             cleanup.cleanup_discard_in_progress = true;
             rules::draw_cards(&mut cleanup, 0, 1);
-            for _ in 0..8 { cleanup.create_card_in_zone(998_101, 0, ZoneType::Hand); }
+            for _ in 0..8 { cleanup.create_card_in_zone(998_101, 0, ZoneType::Hand).unwrap(); }
             let discard = cleanup.players[0].hand[0];
             let global_turn = cleanup.turn_number;
             rules::apply_action(&mut cleanup, &Action::Discard { object_id: discard });
@@ -10294,18 +10295,18 @@ mod terminal_loss_prerequisite {
                 sacrifice_cost: None, life_cost: 0,
                 effect: Effect::GainLife { amount: 3 }, description: "preserved ability".into() });
             db.insert(subject);
-            let loser_owned = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield);
+            let loser_owned = state.create_card_in_zone(998_101, 0, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&loser_owned).unwrap().controller = 1;
-            let loser_controlled = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield);
+            let loser_controlled = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&loser_controlled).unwrap().controller = 0;
-            let dead_survivor = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield);
+            let dead_survivor = state.create_card_in_zone(998_101, 1, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&dead_survivor).unwrap().damage_marked = 2;
             for zone in [ZoneType::Hand, ZoneType::Library, ZoneType::Graveyard, ZoneType::Exile, ZoneType::Command] {
-                state.create_card_in_zone(998_101, 0, zone);
+                state.create_card_in_zone(998_101, 0, zone).unwrap();
             }
-            let token = state.create_card_in_zone(998_101, 0, ZoneType::Graveyard);
+            let token = state.create_card_in_zone(998_101, 0, ZoneType::Graveyard).unwrap();
             state.objects.get_mut(&token).unwrap().is_token = true;
-            let stacked = state.create_card_in_zone(998_102, 0, ZoneType::Stack);
+            let stacked = state.create_card_in_zone(998_102, 0, ZoneType::Stack).unwrap();
             state.stack.push(StackEntry { id: 1, source: StackSource::Spell(stacked),
                 controller: 0, targets: vec![], target_generations: vec![] });
             state.stack.push(StackEntry { id: 2, source: StackSource::ActivatedAbility {
@@ -10455,6 +10456,7 @@ mod common_pass_2b3b {
             name: "Common Aura".into(),
             card_types: vec![CardType::Enchantment],
             subtypes: vec![mtg_gto::card::Subtype("Aura".into())],
+            enchant: mtg_gto::card::EnchantRestriction::Creature,
             triggered_abilities: vec![TriggeredAbility {
                 trigger: TriggerCondition::LeavesBattlefield,
                 effect: Effect::GainLife { amount: 1 },
@@ -10475,7 +10477,8 @@ mod common_pass_2b3b {
         s
     }
     fn add(s: &mut GameState, card: u64, owner: usize) -> u64 {
-        s.create_card_in_zone(card, owner, ZoneType::Battlefield)
+        if s.card_db().get(card).unwrap().is_aura() { return super::aura_fixture_storage(s, card, owner); }
+        s.create_card_in_zone(card, owner, ZoneType::Battlefield).unwrap()
     }
     fn zero(s: &mut GameState, id: u64) {
         s.objects.get_mut(&id).unwrap().temp_toughness_mod = -2;
@@ -10891,7 +10894,7 @@ mod common_pass_2b3b {
         let a = add(&mut s, L, 0);
         let b = add(&mut s, L, 1);
         s.objects.get_mut(&b).unwrap().controller = 0;
-        let linked = s.create_card_in_zone(C, 0, ZoneType::Exile);
+        let linked = s.create_card_in_zone(C, 0, ZoneType::Exile).unwrap();
         s.objects.get_mut(&linked).unwrap().exiled_by = Some(a);
         rules::check_state_based_actions(&mut s);
         assert!(
@@ -11279,7 +11282,7 @@ mod common_pass_2b3b {
                     }
                     // No departure from the correction subject means no linked
                     // followup. Its linked card need not have generation room.
-                    let linked = s.create_card_in_zone(C, 0, ZoneType::Exile);
+                    let linked = s.create_card_in_zone(C, 0, ZoneType::Exile).unwrap();
                     s.objects.get_mut(&linked).unwrap().exiled_by = Some(correction);
                     s.objects.get_mut(&linked).unwrap().zone_change_count = u32::MAX;
                     let mover = if with_mover {
@@ -11350,7 +11353,7 @@ mod common_pass_2b3b {
                 1 => s.next_zone_event_group_id = u64::MAX,
                 2 => s.objects.get_mut(&protected).unwrap().owner = 100,
                 3 => {
-                    let linked = s.create_card_in_zone(C, 0, ZoneType::Exile);
+                    let linked = s.create_card_in_zone(C, 0, ZoneType::Exile).unwrap();
                     let inst = s.objects.get_mut(&linked).unwrap();
                     inst.exiled_by = Some(protected);
                     inst.zone_change_count = u32::MAX;
@@ -11559,7 +11562,7 @@ mod common_pass_2b3b {
         let a = add(&mut s, L, 0);
         add(&mut s, L, 0);
         s.combat.attackers.push(a);
-        let land = s.create_card_in_zone(E, 0, ZoneType::Hand); // invalid land action is not used to settle
+        let land = s.create_card_in_zone(E, 0, ZoneType::Hand).unwrap(); // invalid land action is not used to settle
         let _ = land;
         rules::check_state_based_actions(&mut s);
         let before = bincode::serialize(&s).unwrap();
@@ -11654,7 +11657,7 @@ mod common_pass_2b3b {
         let mut s = fixture();
         let linked_source = add(&mut s, L, 0);
         let empty_source = add(&mut s, L, 0);
-        let exiled = s.create_card_in_zone(C, 0, ZoneType::Exile);
+        let exiled = s.create_card_in_zone(C, 0, ZoneType::Exile).unwrap();
         s.objects.get_mut(&exiled).unwrap().exiled_by = Some(linked_source);
         rules::check_state_based_actions(&mut s);
         assert!(s.battlefield.contains(&empty_source));
@@ -11664,7 +11667,7 @@ mod common_pass_2b3b {
         let a = add(&mut s, L, 0);
         let b = add(&mut s, L, 0);
         for source in [a, b] {
-            let exiled = s.create_card_in_zone(C, 0, ZoneType::Exile);
+            let exiled = s.create_card_in_zone(C, 0, ZoneType::Exile).unwrap();
             s.objects.get_mut(&exiled).unwrap().exiled_by = Some(source);
         }
         rules::check_state_based_actions(&mut s);
@@ -11807,7 +11810,7 @@ mod common_pass_2b3b {
         let a = add(&mut s, L, 0);
         add(&mut s, L, 0);
         s.combat.attackers.push(a);
-        let land = s.create_card_in_zone(995_309, 0, ZoneType::Hand);
+        let land = s.create_card_in_zone(995_309, 0, ZoneType::Hand).unwrap();
         let action = Action::PlayLand { object_id: land };
         let legal = legal_actions(&s);
         assert_eq!(
@@ -11819,4 +11822,19 @@ mod common_pass_2b3b {
         assert_eq!(s.players[0].graveyard.len(), 0);
         assert!(legal_actions(&s).is_empty());
     }
+}
+
+// Deliberate fixture storage construction, never a gameplay admission path.
+// Callers establish valid exact links with prepare_attach/commit_attach, or
+// explicitly construct malformed/orphan state to preserve rejection/pass tests.
+fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
+    assert!(owner < state.players.len());
+    let def = state.card_db().get(card).unwrap();
+    assert!(def.is_aura());
+    assert_eq!(def.enchant, mtg_gto::card::EnchantRestriction::Creature);
+    let id = state.new_object_id();
+    state.objects.insert(id, mtg_gto::card::CardInstance::new(id, card, owner));
+    state.battlefield.push(id);
+    state.invalidate_characteristics_cache();
+    id
 }

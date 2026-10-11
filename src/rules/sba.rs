@@ -205,7 +205,7 @@ fn isolated_twins(state: &GameState, candidates: &[ObjectId]) -> bool {
                     source_id, context, ..
                 } => ids.contains(source_id) || context_mentions(context, &ids),
                 StackSource::SpellCopy { .. } => false,
-                StackSource::EquipAbility { source, .. } => ids.contains(&source.id),
+                StackSource::EquipAbility { source, .. } | StackSource::AuraSpell { source, .. } => ids.contains(&source.id),
             }
     })
 }
@@ -252,7 +252,7 @@ fn prepare_token_cessations(
     }
     let mut physical_stack = BTreeMap::<ObjectId, Vec<usize>>::new();
     for entry in &state.stack {
-        if let StackSource::Spell(id) = entry.source {
+        if let Some(id) = entry.source.physical_object() {
             physical_stack.entry(id).or_default().push(entry.controller);
         }
     }
@@ -263,7 +263,7 @@ fn prepare_token_cessations(
         .as_ref()
         .and_then(|pending| pending.resolving_entry())
     {
-        if let StackSource::Spell(id) = entry.source {
+        if let Some(id) = entry.source.physical_object() {
             physical_stack.entry(id).or_default().push(entry.controller);
         }
     }
@@ -349,10 +349,14 @@ struct PreparedPass {
     cancellations: Vec<(ExactObjectRef, i32)>,
     orphan_equipment: Vec<(ExactObjectRef, ExactObjectRef)>,
     token_cessations: Vec<PreparedTokenCessation>,
+    movement_refresh: Option<crate::game::PreparedContinuousRefresh>,
+    detach_refreshes: Vec<Option<crate::game::PreparedContinuousRefresh>>,
+    final_refresh: Option<crate::game::PreparedContinuousRefresh>,
 }
 
 fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> {
     crate::targeting::validate_pending_equips(state).map_err(|_| PreparedPassFailure::StateEncoding)?;
+    crate::targeting::validate_pending_auras(state).map_err(|_| PreparedPassFailure::StateEncoding)?;
     let fail = PreparedPassFailure::Transition;
     let db = state
         .card_db
@@ -405,10 +409,26 @@ fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> 
         if chars.card_types.contains(&CardType::Planeswalker) && inst.loyalty_counters == 0 {
             causes.push(SbaCause::ZeroLoyalty);
         }
-        if def.is_aura()
-            && state.attachment_target(object).is_none()
-        {
-            causes.push(SbaCause::OrphanAura);
+        let currently_aura = chars.card_types.contains(&CardType::Enchantment)
+            && chars.subtypes.iter().any(|s| s.0 == "Aura");
+        if currently_aura {
+            match chars.enchant {
+                crate::card::ComputedEnchant::Restriction(crate::card::EnchantRestriction::Missing) => return Err(PreparedPassFailure::StateEncoding),
+                crate::card::ComputedEnchant::Restriction(crate::card::EnchantRestriction::Unsupported) => return Err(fail(TransitionError::UnsupportedPath)),
+                _ => {}
+            }
+            let target = state.attachment_target(object);
+            if target.is_none() || (chars.enchant == crate::card::ComputedEnchant::Restriction(crate::card::EnchantRestriction::Creature)
+                && target.is_some_and(|target| !state.is_creature(target.id))) {
+                causes.push(SbaCause::OrphanAura);
+            }
+        }
+        if let Some(link) = inst.attachment_link().filter(|link| link.kind == crate::card::AttachmentKind::Aura) {
+            if !currently_aura || chars.card_types.contains(&CardType::Creature) {
+                // Animation or subtype loss detaches in this frozen pass. A
+                // still-Aura orphan is moved by the subsequent pass.
+                orphan_equipment.push((object, link.target));
+            }
         }
         if !causes.is_empty() {
             nominal.insert(id, (object, causes));
@@ -478,11 +498,30 @@ fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> 
     if !movements.has_movers() && token_cessations.is_empty() && movements.prevented_mandatory {
         return Err(PreparedPassFailure::PreventedMandatoryMovement);
     }
+    let progress = movements.has_movers() || !cancellations.is_empty()
+        || !orphan_equipment.is_empty() || !token_cessations.is_empty();
+    let mut movement_refresh = None;
+    let mut detach_refreshes = Vec::new();
+    let mut final_refresh = None;
+    if progress {
+        let mut projection = crate::game::RefreshProjection::new(state);
+        movement_refresh = movements.project(state, &mut projection)?;
+        for &(source, target) in &orphan_equipment {
+            detach_refreshes.push(if projection.detach(state, source, target) {
+                Some(projection.refresh(state)?)
+            } else { None });
+        }
+        for token in &token_cessations { projection.cease(token.object.id); }
+        final_refresh = Some(projection.refresh(state)?);
+    }
     Ok(PreparedPass {
         movements,
         cancellations,
         orphan_equipment,
         token_cessations,
+        movement_refresh,
+        detach_refreshes,
+        final_refresh,
     })
 }
 
@@ -493,7 +532,7 @@ fn commit_pass(state: &mut GameState, pass: PreparedPass) -> Result<(), Transiti
         return Err(TransitionError::UnsupportedPath);
     }
     // Revalidate and capture from S before frozen nonmovement corrections.
-    pass.movements.commit(state)?;
+    pass.movements.commit(state, pass.movement_refresh)?;
     for (object, cancel) in pass.cancellations {
         if let Some(inst) = state
             .objects
@@ -504,11 +543,11 @@ fn commit_pass(state: &mut GameState, pass: PreparedPass) -> Result<(), Transiti
             inst.minus_counters -= cancel;
         }
     }
-    for (object, expected_target) in pass.orphan_equipment {
-        state.detach_exact(object, expected_target);
+    for ((object, expected_target), refresh) in pass.orphan_equipment.into_iter().zip(pass.detach_refreshes) {
+        if let Some(refresh) = refresh { state.detach_exact_prepared(object, expected_target, refresh); }
     }
     commit_token_cessations(state, &pass.token_cessations);
-    state.refresh_continuous_effects();
+    pass.final_refresh.unwrap().commit(state);
     state.refresh_replacement_effects();
     state.invalidate_characteristics_cache();
     Ok(())
@@ -580,6 +619,21 @@ mod common_pass_tests {
     use crate::game::{CardDatabase, Phase};
     use crate::layers::{ContinuousEffect, Duration, LayerModification};
     use std::sync::Arc;
+
+// Deliberate fixture storage construction, never a gameplay admission path.
+// Callers establish valid exact links with prepare_attach/commit_attach, or
+// explicitly construct malformed/orphan state to preserve rejection/pass tests.
+fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
+    assert!(owner < state.players.len());
+    let def = state.card_db().get(card).unwrap();
+    assert!(def.is_aura());
+    assert_eq!(def.enchant, crate::card::EnchantRestriction::Creature);
+    let id = state.new_object_id();
+    state.objects.insert(id, crate::card::CardInstance::new(id, card, owner));
+    state.battlefield.push(id);
+    state.invalidate_characteristics_cache();
+    id
+}
     fn fixture() -> GameState {
         let mut db = CardDatabase::new();
         db.insert(CardDef {
@@ -604,6 +658,7 @@ mod common_pass_tests {
                 name: name.into(),
                 card_types: vec![ty],
                 subtypes: vec![Subtype(subtype.into())],
+                enchant: if subtype == "Aura" { crate::card::EnchantRestriction::Creature } else { crate::card::EnchantRestriction::Missing },
                 ..Default::default()
             });
         }
@@ -615,16 +670,16 @@ mod common_pass_tests {
     #[test]
     fn private_one_pass_freezes_aura_equipment_and_counter_membership() {
         let mut s = fixture();
-        let subject = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let subject = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
         s.objects.get_mut(&subject).unwrap().damage_marked = 2;
-        let orphan = s.create_card_in_zone(2, 0, ZoneType::Battlefield);
-        let aura = s.create_card_in_zone(2, 0, ZoneType::Battlefield);
+        let orphan = aura_fixture_storage(&mut s, 2, 0);
+        let aura = aura_fixture_storage(&mut s, 2, 0);
         s.set_malformed_attachment_fixture(aura, Some(crate::card::AttachmentLink { source_generation: s.objects[&aura].zone_change_count, target: crate::card::ExactObjectRef { id: subject, generation: 0 }, kind: if s.card_db().get(s.objects[&aura].card_def_id).is_some_and(|def| def.is_aura()) { crate::card::AttachmentKind::Aura } else { crate::card::AttachmentKind::Equipment }, timestamp: 0 }));
-        let existing = s.create_card_in_zone(3, 0, ZoneType::Battlefield);
+        let existing = s.create_card_in_zone(3, 0, ZoneType::Battlefield).unwrap();
         s.set_malformed_attachment_fixture(existing, Some(crate::card::AttachmentLink { source_generation: s.objects[&existing].zone_change_count, target: crate::card::ExactObjectRef { id: 900, generation: 0 }, kind: if s.card_db().get(s.objects[&existing].card_def_id).is_some_and(|def| def.is_aura()) { crate::card::AttachmentKind::Aura } else { crate::card::AttachmentKind::Equipment }, timestamp: 0 }));
-        let equip = s.create_card_in_zone(3, 0, ZoneType::Battlefield);
+        let equip = s.create_card_in_zone(3, 0, ZoneType::Battlefield).unwrap();
         s.set_malformed_attachment_fixture(equip, Some(crate::card::AttachmentLink { source_generation: s.objects[&equip].zone_change_count, target: crate::card::ExactObjectRef { id: subject, generation: 0 }, kind: if s.card_db().get(s.objects[&equip].card_def_id).is_some_and(|def| def.is_aura()) { crate::card::AttachmentKind::Aura } else { crate::card::AttachmentKind::Equipment }, timestamp: 0 }));
-        let counter = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let counter = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
         s.objects.get_mut(&counter).unwrap().plus_counters = 2;
         s.objects.get_mut(&counter).unwrap().minus_counters = 1;
         let pass = prepare_pass(&s).unwrap();
@@ -648,8 +703,8 @@ mod common_pass_tests {
     #[test]
     fn equipment_detach_only_progress_precedes_later_zero_toughness_pass() {
         let mut state = fixture();
-        let target = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
-        let source = state.create_card_in_zone(3, 0, ZoneType::Battlefield);
+        let target = state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+        let source = state.create_card_in_zone(3, 0, ZoneType::Battlefield).unwrap();
         let prepared = state.prepare_attach(state.exact_object(source).unwrap(), state.exact_object(target).unwrap(), crate::card::AttachmentContext::Established).unwrap();
         state.commit_attach(prepared).unwrap();
         state.objects.get_mut(&target).unwrap().temp_toughness_mod = -2;
@@ -681,9 +736,9 @@ mod common_pass_tests {
     #[test]
     fn aura_departure_consequence_moves_in_two_later_frozen_groups() {
         let mut state = fixture();
-        let target = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
-        let aura = state.create_card_in_zone(2, 0, ZoneType::Battlefield);
-        let child = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let target = state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+        let aura = aura_fixture_storage(&mut state, 2, 0);
+        let child = state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
         let prepared = state.prepare_attach(state.exact_object(aura).unwrap(), state.exact_object(target).unwrap(), crate::card::AttachmentContext::Established).unwrap();
         state.commit_attach(prepared).unwrap();
         state.objects.get_mut(&target).unwrap().damage_marked = 2;
@@ -707,7 +762,7 @@ mod common_pass_tests {
     fn private_stabilization_before_placement_and_restore_has_no_planner_state() {
         let mut s = fixture();
         for _ in 0..2 {
-            let id = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+            let id = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
             s.objects.get_mut(&id).unwrap().damage_marked = 2;
         }
         s.trigger_placement_deferred = true;
@@ -726,10 +781,10 @@ mod common_pass_tests {
     #[test]
     fn private_three_pass_layered_cascade_recomputes_only_between_passes() {
         let mut s = fixture();
-        let first = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
-        let second = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
-        let a = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
-        let b = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let first = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+        let second = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+        let a = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+        let b = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
         s.objects.get_mut(&first).unwrap().damage_marked = 2;
         for id in [second, a, b] {
             s.objects.get_mut(&id).unwrap().temp_toughness_mod = -2;
@@ -772,7 +827,7 @@ mod common_pass_tests {
     #[test]
     fn private_historical_keyword_lki_precedes_cancellation_without_duplicates() {
         let mut s = fixture();
-        let id = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let id = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
         let inst = s.objects.get_mut(&id).unwrap();
         inst.plus_counters = 1;
         inst.minus_counters = 1;
@@ -791,7 +846,7 @@ mod common_pass_tests {
         assert_eq!((before.plus_counters, before.minus_counters), (1, 1));
     }
     fn resident(s: &mut GameState, zone: ZoneType) -> ObjectId {
-        let id = s.create_card_in_zone(1, 0, zone);
+        let id = s.create_card_in_zone(1, 0, zone).unwrap();
         s.objects.get_mut(&id).unwrap().is_token = true;
         id
     }
@@ -848,7 +903,7 @@ mod common_pass_tests {
         assert!(s.pending_triggers.is_empty());
         assert_eq!(s.next_zone_event_group_id, u64::MAX);
         assert_eq!(s.next_object_id, allocator);
-        let fresh = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let fresh = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
         assert!(!ids.contains(&fresh));
     }
 
@@ -858,13 +913,13 @@ mod common_pass_tests {
             for malformed in 0..9 {
                 let mut s = fixture();
                 let token = resident(&mut s, ZoneType::Exile);
-                let mover = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+                let mover = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
                 s.objects.get_mut(&mover).unwrap().damage_marked = 2;
-                let counter = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+                let counter = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
                 let inst = s.objects.get_mut(&counter).unwrap();
                 inst.plus_counters = 2;
                 inst.minus_counters = 1;
-                let equipment = s.create_card_in_zone(3, 0, ZoneType::Battlefield);
+                let equipment = s.create_card_in_zone(3, 0, ZoneType::Battlefield).unwrap();
                 s.set_malformed_attachment_fixture(equipment, Some(crate::card::AttachmentLink { source_generation: s.objects[&equipment].zone_change_count, target: crate::card::ExactObjectRef { id: 900, generation: 0 }, kind: if s.card_db().get(s.objects[&equipment].card_def_id).is_some_and(|def| def.is_aura()) { crate::card::AttachmentKind::Aura } else { crate::card::AttachmentKind::Equipment }, timestamp: 0 }));
                 match malformed {
                     0 => s.objects.get_mut(&token).unwrap().object_id = 900,
@@ -957,7 +1012,7 @@ mod common_pass_tests {
         use crate::replacement::{ReplacementAction, ReplacementEffect, ReplacementEventKind};
         let mut s = fixture();
         let id = resident(&mut s, ZoneType::Graveyard);
-        let mover = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let mover = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
         s.objects.get_mut(&mover).unwrap().temp_toughness_mod = -2;
         s.replacement_effects.push(ReplacementEffect {
             source_id: mover,
@@ -1023,7 +1078,7 @@ mod common_pass_tests {
     fn cessation_refreshes_graveyard_source_effect_before_next_pass() {
         let mut s = fixture();
         let source = resident(&mut s, ZoneType::Graveyard);
-        let child = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let child = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
         s.objects.get_mut(&child).unwrap().temp_toughness_mod = -2;
         s.continuous_effects.push(ContinuousEffect {
             source_id: source,
@@ -1069,13 +1124,13 @@ mod common_pass_tests {
                         ..Default::default()
                     });
                     for _ in 0..watchers {
-                        s.create_card_in_zone(4, 0, ZoneType::Battlefield);
+                        s.create_card_in_zone(4, 0, ZoneType::Battlefield).unwrap();
                     }
                     let mut ids: Vec<_> = (0..count)
                         .map(|_| resident(&mut s, ZoneType::Battlefield))
                         .collect();
                     if mixed {
-                        ids.push(s.create_card_in_zone(1, 0, ZoneType::Battlefield));
+                        ids.push(s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap());
                     }
                     let requests: Vec<_> = ids
                         .iter()

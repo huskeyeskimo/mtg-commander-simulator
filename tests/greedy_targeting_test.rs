@@ -44,7 +44,7 @@ fn game(effect: Effect, player: usize) -> (GameState, u64) {
     state.priority_player = player;
     state.phase = Phase::PreCombatMain;
     state.turn_number = 2;
-    let spell = state.create_card_in_zone(SPELL, player, ZoneType::Hand);
+    let spell = state.create_card_in_zone(SPELL, player, ZoneType::Hand).unwrap();
     (state, spell)
 }
 
@@ -79,8 +79,8 @@ fn destructive_effect_prefers_opponents_currently_controlled_permanent() {
         }, player);
         let opponent = 1 - player;
         // The own creature is last, so enumeration order alone selects it.
-        let enemy = state.create_card_in_zone(CREATURE, opponent, ZoneType::Battlefield);
-        state.create_card_in_zone(OTHER_CREATURE, player, ZoneType::Battlefield);
+        let enemy = state.create_card_in_zone(CREATURE, opponent, ZoneType::Battlefield).unwrap();
+        state.create_card_in_zone(OTHER_CREATURE, player, ZoneType::Battlefield).unwrap();
         assert_greedy_cast(&state, spell, player, Target::Object(enemy));
     }
 }
@@ -95,8 +95,8 @@ fn useful_keyword_prefers_own_permanent_even_with_untargeted_composite_child() {
             Effect::DealDamage { amount: 1, target: TargetSpec::EachCreature },
         ]);
         let (mut state, spell) = game(effect, player);
-        let own = state.create_card_in_zone(CREATURE, player, ZoneType::Battlefield);
-        state.create_card_in_zone(OTHER_CREATURE, 1 - player, ZoneType::Battlefield);
+        let own = state.create_card_in_zone(CREATURE, player, ZoneType::Battlefield).unwrap();
+        state.create_card_in_zone(OTHER_CREATURE, 1 - player, ZoneType::Battlefield).unwrap();
         assert_greedy_cast(&state, spell, player, Target::Object(own));
     }
 }
@@ -132,8 +132,8 @@ fn ambiguous_targeted_effect_remains_legal_and_canonical() {
             keyword: KeywordAbility::Haste, target: TargetSpec::AnyCreature,
         },
     ]), 1);
-    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(OTHER_CREATURE, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(OTHER_CREATURE, 1, ZoneType::Battlefield).unwrap();
     let chosen = GreedyStrategy.choose_action(&state, 1).unwrap();
     assert!(matches!(chosen, Action::CastSpell { .. }));
     assert!(legal_actions(&state).contains(&chosen));

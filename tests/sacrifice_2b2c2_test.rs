@@ -82,7 +82,7 @@ fn run_targeted_effect(state: &mut GameState, player: usize, target: usize, effe
     state.card_db = Some(Arc::new(db));
     state.phase = mtg_gto::game::Phase::PreCombatMain;
     state.priority_player = player;
-    let source = state.create_card_in_zone(source_id, player, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(source_id, player, ZoneType::Battlefield).unwrap();
     apply_action(
         state,
         &Action::ActivateAbility {
@@ -187,7 +187,7 @@ fn each_opponent_seat_rotations_counts_and_lost_players() {
                         .map(|p| {
                             (0..p)
                                 .map(|_| {
-                                    state.create_card_in_zone(CREATURE, p, ZoneType::Battlefield)
+                                    state.create_card_in_zone(CREATURE, p, ZoneType::Battlefield).unwrap()
                                 })
                                 .collect()
                         })
@@ -253,7 +253,7 @@ fn each_opponent_already_lost_resume_rejects_before_sacrifice() {
                     state.phase = mtg_gto::game::Phase::PreCombatMain;
                     for player in 0..players {
                         for _ in 0..player {
-                            state.create_card_in_zone(CREATURE, player, ZoneType::Battlefield);
+                            state.create_card_in_zone(CREATURE, player, ZoneType::Battlefield).unwrap();
                         }
                     }
                     let source_id = 994_103;
@@ -270,7 +270,7 @@ fn each_opponent_already_lost_resume_rejects_before_sacrifice() {
                         }], ..Default::default()
                     });
                     state.card_db = Some(Arc::new(db));
-                    let source = state.create_card_in_zone(source_id, controller, ZoneType::Battlefield);
+                    let source = state.create_card_in_zone(source_id, controller, ZoneType::Battlefield).unwrap();
                     state.players[(controller + 2) % players].has_lost = true;
                     let proposed = Action::ActivateAbility {
                         object_id: source, ability_index: 0, targets: vec![]
@@ -300,8 +300,8 @@ fn each_opponent_already_lost_resume_rejects_before_sacrifice() {
 fn each_effective_selection_owner_destinations_and_stable_ties() {
     let mut state = game(4);
     state.active_player = 3;
-    let own = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let stolen = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let own = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let stolen = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     layer(&mut state, stolen, LayerModification::ChangeController(1));
     layer(&mut state, stolen, LayerModification::SetPT(0, 2));
     state
@@ -310,22 +310,22 @@ fn each_effective_selection_owner_destinations_and_stable_ties() {
         .unwrap()
         .temp_keywords
         .push(KeywordAbility::Indestructible);
-    let given = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield);
+    let given = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield).unwrap();
     layer(&mut state, given, LayerModification::ChangeController(0));
-    let animated = state.create_card_in_zone(ARTIFACT, 2, ZoneType::Battlefield);
+    let animated = state.create_card_in_zone(ARTIFACT, 2, ZoneType::Battlefield).unwrap();
     layer(
         &mut state,
         animated,
         LayerModification::AddType(CardType::Creature),
     );
-    let deanimated = state.create_card_in_zone(CREATURE, 3, ZoneType::Battlefield);
+    let deanimated = state.create_card_in_zone(CREATURE, 3, ZoneType::Battlefield).unwrap();
     layer(
         &mut state,
         deanimated,
         LayerModification::RemoveType(CardType::Creature),
     );
-    let tie_a = state.create_card_in_zone(CREATURE, 3, ZoneType::Battlefield);
-    let tie_b = state.create_card_in_zone(CREATURE, 3, ZoneType::Battlefield);
+    let tie_a = state.create_card_in_zone(CREATURE, 3, ZoneType::Battlefield).unwrap();
+    let tie_b = state.create_card_in_zone(CREATURE, 3, ZoneType::Battlefield).unwrap();
     each(&mut state, 0, 1);
     assert_eq!(state.players[0].graveyard, vec![stolen]);
     assert_eq!(state.players[2].graveyard, vec![animated]);
@@ -365,11 +365,11 @@ fn each_common_prestate_lord_selects_before_any_movement() {
         ..Default::default()
     });
     state.card_db = Some(Arc::new(db));
-    let lord = state.create_card_in_zone(994_105, 1, ZoneType::Battlefield);
+    let lord = state.create_card_in_zone(994_105, 1, ZoneType::Battlefield).unwrap();
     // The lord's control layer disappears when its source departs. Both the
     // controller and power of this candidate must be read before that happens.
-    let a = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield);
+    let a = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield).unwrap();
     let timestamp = state.new_timestamp();
     state.continuous_effects.push(ContinuousEffect {
         source_id: lord,
@@ -413,8 +413,8 @@ fn each_replacements_prevention_tokens_and_commanders() {
         ZoneType::Battlefield,
     ] {
         let mut state = game(3);
-        let a = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
-        let b = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield);
+        let a = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
+        let b = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield).unwrap();
         replacement(
             &mut state,
             if zone == ZoneType::Battlefield {
@@ -459,7 +459,7 @@ fn each_replacements_prevention_tokens_and_commanders() {
     let mut state = game(4);
     let tokens: Vec<_> = (1..4)
         .map(|p| {
-            let id = state.create_card_in_zone(CREATURE, p, ZoneType::Battlefield);
+            let id = state.create_card_in_zone(CREATURE, p, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&id).unwrap().is_token = true;
             id
         })
@@ -485,7 +485,7 @@ fn each_replacements_prevention_tokens_and_commanders() {
     state.card_db = game(3).card_db;
     let ids: Vec<_> = (1..3)
         .map(|p| {
-            let id = state.create_card_in_zone(CREATURE, p, ZoneType::Battlefield);
+            let id = state.create_card_in_zone(CREATURE, p, ZoneType::Battlefield).unwrap();
             state.players[p].commander_object_id = Some(id);
             id
         })
@@ -511,17 +511,17 @@ fn each_replacements_prevention_tokens_and_commanders() {
 fn each_departing_cross_player_and_stolen_observers_common_group() {
     let mut state = game(4);
     state.active_player = 3;
-    let watcher = state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield);
-    let survivor = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let stolen_watcher = state.create_card_in_zone(WATCHER, 3, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield).unwrap();
+    let survivor = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let stolen_watcher = state.create_card_in_zone(WATCHER, 3, ZoneType::Battlefield).unwrap();
     layer(
         &mut state,
         stolen_watcher,
         LayerModification::ChangeController(2),
     );
     layer(&mut state, stolen_watcher, LayerModification::SetPT(10, 10));
-    let a = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(CREATURE, 3, ZoneType::Battlefield);
+    let a = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(CREATURE, 3, ZoneType::Battlefield).unwrap();
     each(&mut state, 0, 1);
     assert_eq!(state.pending_triggers.len(), 24);
     for (id, n, controller) in [
@@ -587,11 +587,11 @@ fn each_departing_cross_player_and_stolen_observers_common_group() {
 fn successive_each_and_sacrifice_then_each_keep_separate_groups_and_observers() {
     for first_is_each in [false, true] {
         let mut state = game(3);
-        let watcher = state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield);
+        let watcher = state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield).unwrap();
         layer(&mut state, watcher, LayerModification::SetPT(0, 2));
-        let a = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+        let a = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
         for _ in 0..2 {
-            state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield);
+            state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield).unwrap();
         }
         let first = if first_is_each {
             Effect::EachOpponentSacrifices { count: 1 }
@@ -633,11 +633,11 @@ fn successive_each_and_sacrifice_then_each_keep_separate_groups_and_observers() 
 fn each_multiplayer_persistence_every_continuation_checkpoint() {
     let mut state = game(4);
     state.active_player = 3;
-    let watcher = state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield);
-    let token = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield).unwrap();
+    let token = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&token).unwrap().is_token = true;
     layer(&mut state, token, LayerModification::ChangeController(2));
-    let other = state.create_card_in_zone(CREATURE, 3, ZoneType::Battlefield);
+    let other = state.create_card_in_zone(CREATURE, 3, ZoneType::Battlefield).unwrap();
     // Selection prestate itself also survives every persistence path.
     for mut restored in restores(&state) {
         each(&mut restored, 0, 1);
@@ -712,7 +712,7 @@ fn each_raw_allocation_pending_and_member_order_canonical_invariance() {
                     let mut state = game(4);
                     state.active_player = 3;
                     if offset != 0 {
-                        let unused = state.create_card_in_zone(ARTIFACT, 0, ZoneType::Exile);
+                        let unused = state.create_card_in_zone(ARTIFACT, 0, ZoneType::Exile).unwrap();
                         state.objects.remove(&unused);
                         state.players[0].exile.clear();
                     }
@@ -728,7 +728,7 @@ fn each_raw_allocation_pending_and_member_order_canonical_invariance() {
                             },
                             player,
                             ZoneType::Battlefield,
-                        );
+                        ).unwrap();
                         subjects.push(selected(&state, id, player));
                     }
                     if reverse_members {
@@ -818,9 +818,9 @@ fn each_production_raw_id_visibility_and_large_fifo_own_state_invariance() {
             state.next_object_id += offset;
             state.next_zone_event_group_id += offset;
             for _ in 0..3 {
-                state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield);
+                state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield).unwrap();
             }
-            let token = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+            let token = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&token).unwrap().is_token = true;
             layer(&mut state, token, LayerModification::ChangeController(2));
             each(&mut state, 0, 3);
@@ -880,12 +880,12 @@ fn realistic_each_opponent_normalizer_diagnostic() {
         .into_iter()
         .enumerate()
         {
-            state.create_card_in_zone(card, i % players, ZoneType::Battlefield);
+            state.create_card_in_zone(card, i % players, ZoneType::Battlefield).unwrap();
         }
         for player in 1..players {
-            state.create_card_in_zone(CREATURE, player, ZoneType::Battlefield);
+            state.create_card_in_zone(CREATURE, player, ZoneType::Battlefield).unwrap();
         }
-        let token = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+        let token = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&token).unwrap().is_token = true;
         layer(&mut state, token, LayerModification::ChangeController(1));
         state.active_player = players - 1;
@@ -932,9 +932,9 @@ fn each_explicit_sacrifice_then_common_sba_has_separate_context() {
         ..Default::default()
     });
     state.card_db = Some(Arc::new(db));
-    let anthem = state.create_card_in_zone(994_105, 1, ZoneType::Battlefield);
-    let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    let anthem = state.create_card_in_zone(994_105, 1, ZoneType::Battlefield).unwrap();
+    let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&subject).unwrap().damage_marked = 2;
     state.refresh_continuous_effects();
     assert_eq!(state.effective_toughness(subject), 4);
@@ -969,9 +969,9 @@ fn each_six_occurrences_production_cross_state_every_ordering_window() {
             state.active_player = 3;
             state.next_object_id += offset;
             state.next_zone_event_group_id += offset;
-            state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
-            state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
-            state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield);
+            state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
+            state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
+            state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield).unwrap();
             each(&mut state, 0, 2);
             assert_eq!(state.pending_triggers.len(), 6);
             if reverse_pending {

@@ -2361,6 +2361,7 @@ pub fn build_sample_db() -> CardDatabase {
         card_types: vec![CardType::Enchantment],
         supertypes: vec![],
         subtypes: vec![Subtype("Aura".into())],
+        enchant: crate::card::EnchantRestriction::Creature,
         keywords: vec![],
         power: None,
         toughness: None,
@@ -5814,6 +5815,7 @@ pub fn build_sample_db() -> CardDatabase {
         mana_cost: Some(ManaCost::new(2, 0, 1, 0, 0, 0)),
         card_types: vec![CardType::Enchantment],
         subtypes: vec![Subtype("Aura".into())],
+        enchant: crate::card::EnchantRestriction::Creature,
         keywords: vec![KeywordAbility::Flash],
         oracle_text: "Flash. Storm. Enchant creature. Enchanted creature loses all abilities and is a blue Frog with base power and toughness 1/1.".into(),
         ..Default::default()

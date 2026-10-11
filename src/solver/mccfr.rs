@@ -1929,9 +1929,9 @@ mod encoding_attempt_disposal_tests {
     }
     fn state()->GameState {
         let mut state=GameState::new(2);state.card_db=Some(Arc::new(sample::build_sample_db()));state.phase=Phase::PreCombatMain;
-        state.create_card_in_zone(sample::ids::MOUNTAIN,1,ZoneType::Battlefield);
-        state.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Hand);
-        for player in 0..2{for _ in 0..12{state.create_card_in_zone(sample::ids::MOUNTAIN,player,ZoneType::Library);}}
+        state.create_card_in_zone(sample::ids::MOUNTAIN,1,ZoneType::Battlefield).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Hand).unwrap();
+        for player in 0..2{for _ in 0..12{state.create_card_in_zone(sample::ids::MOUNTAIN,player,ZoneType::Library).unwrap();}}
         state
     }
     #[test]
@@ -1960,8 +1960,8 @@ mod encoding_attempt_disposal_tests {
     #[test]
     fn invalid_projection_does_not_complete_iteration_callback_or_checkpoint() {
         let mut state=state();
-        let source=state.create_card_in_zone(sample::ids::LIGHTNING_GREAVES,0,ZoneType::Battlefield);
-        let target=state.create_card_in_zone(sample::ids::LLANOWAR_ELVES,0,ZoneType::Battlefield);
+        let source=state.create_card_in_zone(sample::ids::LIGHTNING_GREAVES,0,ZoneType::Battlefield).unwrap();
+        let target=state.create_card_in_zone(sample::ids::LLANOWAR_ELVES,0,ZoneType::Battlefield).unwrap();
         state.set_malformed_attachment_fixture(source,Some(crate::card::AttachmentLink{source_generation:1,target:state.exact_object(target).unwrap(),kind:crate::card::AttachmentKind::Equipment,timestamp:0}));
         let mut tables=[RegretTable::new(),RegretTable::new()];
         tables[0].get_or_create(42).unwrap().visit_count=1;
@@ -1983,8 +1983,8 @@ mod two_stage_tests {
     fn state(main: bool) -> GameState {
         let mut s = GameState::new(2); s.card_db = Some(std::sync::Arc::new(sample::build_sample_db()));
         s.phase = if main { Phase::PreCombatMain } else { Phase::Upkeep };
-        for p in 0..2 { for _ in 0..8 { s.create_card_in_zone(sample::ids::MOUNTAIN,p,ZoneType::Library); } }
-        if main { s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Hand); }
+        for p in 0..2 { for _ in 0..8 { s.create_card_in_zone(sample::ids::MOUNTAIN,p,ZoneType::Library).unwrap(); } }
+        if main { s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Hand).unwrap(); }
         s
     }
     fn evaluate(s: GameState, depth: u32, max_actions: u32) -> Result<f64,TerminationReason> {
@@ -2010,12 +2010,12 @@ mod two_stage_tests {
     #[test]
     fn malformed_state_still_fails_before_forced_limits_keyed_and_goldfish() {
         for (main,depth,limit) in [(false,0,1),(true,1,10),(true,0,0),(true,0,10)] {
-            let mut s=state(main); let id=s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Battlefield); s.battlefield.push(id);
+            let mut s=state(main); let id=s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Battlefield).unwrap(); s.battlefield.push(id);
             assert_eq!(evaluate(s,depth,limit),Err(TerminationReason::StateEncoding));
         }
         for opponent in [false,true] {
             let mut s=state(true); if opponent {s.priority_player=1;}
-            let id=s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Battlefield);s.battlefield.push(id);
+            let id=s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Battlefield).unwrap();s.battlefield.push(id);
             let mut nodes=0;
             assert_eq!(traverse_goldfish(s,&mut RegretTable::new(),
                 &McfrConfig {max_depth:1,max_actions:10,max_nodes_per_iteration:1},
@@ -2025,7 +2025,7 @@ mod two_stage_tests {
     }
     #[test]
     fn restored_occurrence_corruption_and_zero_work_preflights_reject() {
-        let mut s=state(true);let source=s.create_card_in_zone(sample::ids::ELVISH_VISIONARY,0,ZoneType::Battlefield);
+        let mut s=state(true);let source=s.create_card_in_zone(sample::ids::ELVISH_VISIONARY,0,ZoneType::Battlefield).unwrap();
         let mut trigger=PendingTrigger::from_source(&s,source,0,0,vec![]).unwrap();trigger.context.source_generation+=1;s.pending_triggers.push(trigger);
         assert!(s.validate_attachment_structure().is_ok());
         let mut restored=s.clone();restored.restore(s.snapshot()).unwrap();
@@ -2040,7 +2040,7 @@ mod two_stage_tests {
     }
     #[test]
     fn terminal_and_no_strategy_utility_boundaries_are_unchanged() {
-        let mut s=state(false);let id=s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Battlefield);s.battlefield.push(id);
+        let mut s=state(false);let id=s.create_card_in_zone(sample::ids::MOUNTAIN,0,ZoneType::Battlefield).unwrap();s.battlefield.push(id);
         assert!(rollout_utility(&s,0,None,0).is_ok());
         s.game_over=true;s.winner=Some(0);s.priority_player=99;
         assert_eq!(evaluate(s.clone(),0,0),Ok(1.0));

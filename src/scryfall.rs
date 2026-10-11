@@ -523,6 +523,7 @@ pub fn scryfall_to_card_def(card: &ScryfallCard, id: CardId) -> CardDef {
         oracle_text: oracle_text.to_string(),
         cost_reduction,
         equip_cost,
+        enchant: parse_enchant_restriction(oracle_text),
         ..CardDef::default()
     }
 }
@@ -1702,4 +1703,17 @@ fn urlencode(s: &str) -> String {
         }
     }
     result
+}
+
+/// Accept one complete, unqualified enchant clause, never a substring.
+pub fn parse_enchant_restriction(text: &str) -> crate::card::EnchantRestriction {
+    use crate::card::EnchantRestriction;
+    let clauses: Vec<_> = text.split(['.', '\n']).map(str::trim)
+        .filter(|clause| clause.to_ascii_lowercase().starts_with("enchant ")
+            || clause.eq_ignore_ascii_case("enchant")).collect();
+    match clauses.as_slice() {
+        [] => EnchantRestriction::Missing,
+        [clause] if clause.eq_ignore_ascii_case("enchant creature") => EnchantRestriction::Creature,
+        _ => EnchantRestriction::Unsupported,
+    }
 }

@@ -516,8 +516,8 @@ mod tests {
 
         // Libraries so no one decks out
         for _ in 0..20 {
-            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-            state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+            state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
         }
 
         (state, registry)
@@ -535,7 +535,7 @@ mod tests {
         let (mut state, registry) = setup_state_with_combos();
 
         // Only Basalt Monolith, no Kinnan
-        state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
 
         let available = detect_available_combos(&state, 0, &registry);
         assert!(available.is_empty(), "Missing Kinnan = combo not available");
@@ -546,8 +546,8 @@ mod tests {
         let (mut state, registry) = setup_state_with_combos();
 
         // Both pieces on battlefield
-        state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
-        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
+        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
 
         // Monolith starts untapped, so combo should be available
         let available = detect_available_combos(&state, 0, &registry);
@@ -561,8 +561,8 @@ mod tests {
     fn test_detect_combo_tapped_monolith() {
         let (mut state, registry) = setup_state_with_combos();
 
-        let monolith = state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
-        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
+        let monolith = state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
+        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
 
         // Tap the monolith
         state.objects.get_mut(&monolith).unwrap().tapped = true;
@@ -579,8 +579,8 @@ mod tests {
         let (mut state, registry) = setup_state_with_combos();
 
         // Monolith controlled by player 0, Kinnan controlled by player 1
-        state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
-        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 1, ZoneType::Battlefield);
+        state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
+        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 1, ZoneType::Battlefield).unwrap();
 
         let available = detect_available_combos(&state, 0, &registry);
         assert!(
@@ -605,7 +605,7 @@ mod tests {
         let (mut state, registry) = setup_state_with_combos();
 
         // Only Kinnan (1 of 2 pieces for Basalt Monolith combo)
-        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
 
         let bonus = combo_proximity_bonus(&state, 0, &registry);
         // Kinnan is 1/2 of the Basalt combo, weight 0.2
@@ -622,8 +622,8 @@ mod tests {
         let (mut state, registry) = setup_state_with_combos();
 
         // Both pieces for Basalt combo
-        state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
-        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
+        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
 
         let bonus = combo_proximity_bonus(&state, 0, &registry);
         // Basalt combo: 2/2 * 0.2 = 0.2
@@ -638,8 +638,8 @@ mod tests {
     fn test_apply_combo_effect_adds_mana() {
         let (mut state, registry) = setup_state_with_combos();
 
-        let monolith = state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield);
-        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield);
+        let monolith = state.create_card_in_zone(ids::BASALT_MONOLITH, 0, ZoneType::Battlefield).unwrap();
+        state.create_card_in_zone(ids::KINNAN_BONDER_PRODIGY, 0, ZoneType::Battlefield).unwrap();
 
         let initial_colorless = state.players[0].mana_pool.colorless;
         apply_combo_effect(&mut state, 0, &registry.combos[0]);

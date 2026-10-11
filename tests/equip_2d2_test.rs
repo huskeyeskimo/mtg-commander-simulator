@@ -34,9 +34,9 @@ fn fixture() -> (GameState, u64, u64, u64) {
     let mut s = GameState::new(2);
     s.card_db = Some(Arc::new(db));
     s.phase = Phase::PreCombatMain;
-    let e = s.create_card_in_zone(2, 0, ZoneType::Battlefield);
-    let a = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
-    let b = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+    let e = s.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap();
+    let a = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+    let b = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
     s.players[0].mana_pool.colorless = 5;
     (s, e, a, b)
 }
@@ -272,7 +272,7 @@ fn computed_control_and_creature_type_drive_generation_and_activation() {
     assert_eq!(s.effective_power(a), 3);
     let (mut s, e, a, _) = fixture();
     // A printed noncreature becomes a represented creature without replacing its definition.
-    let t = s.create_card_in_zone(2, 0, ZoneType::Battlefield);
+    let t = s.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap();
     effect(&mut s, a, t, M::AddType(CardType::Creature));
     effect(&mut s, a, t, M::SetPT(3, 3));
     assert!(legal_actions(&s).contains(&Action::Equip {
@@ -494,15 +494,15 @@ fn allocated(offset: u64, reverse: bool) -> (GameState, u64, u64, u64) {
     s.next_stack_id = offset + 50;
     s.players[0].mana_pool.colorless = 5;
     let (e, a, b) = if reverse {
-        let b = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
-        let a = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
-        let e = s.create_card_in_zone(2, 0, ZoneType::Battlefield);
+        let b = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+        let a = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+        let e = s.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap();
         (e, a, b)
     } else {
         (
-            s.create_card_in_zone(2, 0, ZoneType::Battlefield),
-            s.create_card_in_zone(1, 0, ZoneType::Battlefield),
-            s.create_card_in_zone(1, 0, ZoneType::Battlefield),
+            s.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap(),
+            s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap(),
+            s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap(),
         )
     };
     for id in [e, a, b] {
@@ -680,12 +680,12 @@ fn lethal_fixture(token: bool, observers: bool) -> (GameState, u64, u64) {
         s.objects.get_mut(&a).unwrap().is_token = true;
     }
     for _ in 0..4 {
-        s.create_card_in_zone(1, 0, ZoneType::Library);
+        s.create_card_in_zone(1, 0, ZoneType::Library).unwrap();
     }
     if observers {
-        s.create_card_in_zone(3, 0, ZoneType::Battlefield);
-        s.create_card_in_zone(3, 1, ZoneType::Battlefield);
-        s.create_card_in_zone(3, 1, ZoneType::Battlefield);
+        s.create_card_in_zone(3, 0, ZoneType::Battlefield).unwrap();
+        s.create_card_in_zone(3, 1, ZoneType::Battlefield).unwrap();
+        s.create_card_in_zone(3, 1, ZoneType::Battlefield).unwrap();
     }
     s.continuous_effects.retain(|effect| {
         effect.source_id != e
@@ -796,7 +796,7 @@ fn pending_equip_survives_unrelated_mandatory_continuation_across_all_restores()
     equip(&mut s, e, a);
     let pending_id = s.stack[0].id;
     for _ in 0..2 {
-        let v = s.create_card_in_zone(3, 0, ZoneType::Battlefield);
+        let v = s.create_card_in_zone(3, 0, ZoneType::Battlefield).unwrap();
         s.objects.get_mut(&v).unwrap().temp_toughness_mod = -1;
     }
     s.invalidate_characteristics_cache();
@@ -865,7 +865,7 @@ fn tui_pending_display_cache_and_undo_retain_owned_identity() {
         spell_effect: Some(mtg_gto::card::Effect::GainLife { amount: 1 }),
         ..Default::default()
     });
-    s.create_card_in_zone(3, 0, ZoneType::Hand);
+    s.create_card_in_zone(3, 0, ZoneType::Hand).unwrap();
     let db = s.card_db().clone();
     let mut app = mtg_gto::tui::App::new(s, db);
     let action = Action::Equip {
@@ -932,7 +932,7 @@ fn pending_equip_performance_diagnostics() {
             s.continuous_effects.clear();
         }
         for _ in 2..n {
-            let id = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+            let id = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
             if case == "identical_token_heavy" {
                 s.objects.get_mut(&id).unwrap().is_token = true;
             }
@@ -953,7 +953,7 @@ fn pending_equip_performance_diagnostics() {
             a
         };
         if case == "cyclic_public_incidence" {
-            let e2 = s.create_card_in_zone(2, 0, ZoneType::Battlefield);
+            let e2 = s.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap();
             established(&mut s, e2, b);
             effect(&mut s, a, b, M::ModifyPT(0, 0));
         }
@@ -1061,7 +1061,7 @@ fn counted_activation_and_responsive_spell_continue_without_repayment() {
         }),
         ..Default::default()
     });
-    let counter = s.create_card_in_zone(4, 0, ZoneType::Hand);
+    let counter = s.create_card_in_zone(4, 0, ZoneType::Hand).unwrap();
     let before = bincode::serialize(&s).unwrap();
     let entry = s.stack[0].id;
     rules::apply_action(
@@ -1072,7 +1072,7 @@ fn counted_activation_and_responsive_spell_continue_without_repayment() {
         },
     );
     assert_eq!(before, bincode::serialize(&s).unwrap());
-    let spell = s.create_card_in_zone(3, 0, ZoneType::Hand);
+    let spell = s.create_card_in_zone(3, 0, ZoneType::Hand).unwrap();
     rules::apply_action(
         &mut s,
         &Action::CastSpell {
@@ -1106,7 +1106,7 @@ fn activation_preflight_preserves_auto_tap_sources_and_successful_cost_is_paid_o
         mana_abilities: vec![ManaAbility::TapForColor(mtg_gto::mana::Color::Green)],
         ..Default::default()
     });
-    let land = s.create_card_in_zone(3, 0, ZoneType::Battlefield);
+    let land = s.create_card_in_zone(3, 0, ZoneType::Battlefield).unwrap();
     s.players[0].mana_pool.colorless = 0;
     s.objects
         .get_mut(&a)
@@ -1132,7 +1132,7 @@ fn activation_preflight_preserves_auto_tap_sources_and_successful_cost_is_paid_o
 #[test]
 fn death_trigger_uses_current_source_controller_not_prior_activation_controller() {
     let (mut s, e, a) = lethal_fixture(false, false);
-    s.create_card_in_zone(1, 1, ZoneType::Library);
+    s.create_card_in_zone(1, 1, ZoneType::Library).unwrap();
     equip(&mut s, e, a);
     assert_eq!(s.stack[0].controller, 0);
     effect(
@@ -1359,7 +1359,7 @@ fn review_owned_fixture(role: u8, conflict: bool) -> GameState {
                 }
             }
             _ => {
-                let e2 = s.create_card_in_zone(3, 0, ZoneType::Battlefield);
+                let e2 = s.create_card_in_zone(3, 0, ZoneType::Battlefield).unwrap();
                 *source = s.exact_object(e2).unwrap();
                 *source_card_id = 3;
                 *target_card_id = if conflict { 3 } else { 2 };
@@ -1430,7 +1430,7 @@ fn generation_board(n: usize, equipment: bool) -> GameState {
         s.move_object(e, ZoneType::Battlefield, ZoneType::Exile);
     }
     for _ in 2..n {
-        s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
     }
     for id in s.battlefield.clone() {
         if s.objects[&id].card_def_id == 1 {
@@ -1465,9 +1465,9 @@ fn review_mixed_generation_preserves_order_multiplicity_and_computed_eligibility
             mana_abilities: vec![mtg_gto::card::ManaAbility::TapForColorless],
             ..Default::default()
         });
-        let e2 = s.create_card_in_zone(2, 1, ZoneType::Battlefield);
-        let mana = s.create_card_in_zone(3, 0, ZoneType::Battlefield);
-        let c = s.create_card_in_zone(1, 1, ZoneType::Battlefield);
+        let e2 = s.create_card_in_zone(2, 1, ZoneType::Battlefield).unwrap();
+        let mana = s.create_card_in_zone(3, 0, ZoneType::Battlefield).unwrap();
+        let c = s.create_card_in_zone(1, 1, ZoneType::Battlefield).unwrap();
         effect(&mut s, mana, e2, M::ChangeController(0));
         effect(&mut s, mana, c, M::ChangeController(0));
         effect(&mut s, mana, a, M::AddKeyword(KeywordAbility::Hexproof));

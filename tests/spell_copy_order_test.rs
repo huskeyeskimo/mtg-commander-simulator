@@ -26,12 +26,12 @@ fn game() -> GameState {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::PreCombatMain;
-    for _ in 0..16 { state.create_card_in_zone(CREATURE, 0, ZoneType::Library); }
+    for _ in 0..16 { state.create_card_in_zone(CREATURE, 0, ZoneType::Library).unwrap(); }
     state
 }
 
 fn source(state: &mut GameState, card: u64, targets: Vec<Target>) -> u64 {
-    let object = state.create_card_in_zone(card, 0, ZoneType::Hand);
+    let object = state.create_card_in_zone(card, 0, ZoneType::Hand).unwrap();
     rules::apply_action(state, &Action::CastSpell { object_id: object, targets });
     state.stack.last().unwrap().id
 }
@@ -162,7 +162,7 @@ fn mandatory_resolution_lock_blocks_all_bypass_paths() {
 #[test]
 fn no_cast_consequences_and_preserved_generation_after_source_leaves() {
     let mut state = game();
-    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     let original_id = source(&mut state, HASTE_DRAW, vec![Target::Object(creature)]);
     let snapshot = snapshot_stack_spell(&state, original_id).unwrap();
     let generations = snapshot.target_generations.clone();
@@ -223,8 +223,8 @@ fn canonical_and_information_set_ignore_runtime_ids_but_track_choices_and_target
             state.new_object_id();
             state.new_stack_id();
         }
-        let left = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-        let right = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+        let left = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+        let right = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
         let source_id = source(&mut state, HASTE_DRAW, vec![Target::Object(left)]);
         let left_copy = prepared(&state, source_id, 0, CopyTargetPolicy::Replace(vec![Target::Object(left)]));
         let right_copy = prepared(&state, source_id, 0, CopyTargetPolicy::Replace(vec![Target::Object(right)]));
@@ -351,7 +351,7 @@ fn resolution_grants_active_priority_unless_a_trigger_order_is_mandatory() {
             trigger: TriggerCondition::EntersBattlefield,
             effect: Effect::GainLife { amount: i + 1 }, description: format!("ETB {i}")
         }).collect(), ..Default::default() });
-    let object = state.create_card_in_zone(ETB, 1, ZoneType::Hand);
+    let object = state.create_card_in_zone(ETB, 1, ZoneType::Hand).unwrap();
     state.priority_player = 1;
     rules::apply_action(&mut state, &Action::CastSpell { object_id: object, targets: vec![] });
     pass_twice(&mut state);
@@ -376,8 +376,8 @@ fn nonactive_caster_retains_priority_after_ordering_cast_triggers_and_restore() 
             trigger: TriggerCondition::YouCastSpell,
             effect: Effect::GainLife { amount: i + 1 }, description: format!("Cast {i}")
         }).collect(), ..Default::default() });
-    state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield);
-    let spell = state.create_card_in_zone(DRAW, 1, ZoneType::Hand);
+    state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield).unwrap();
+    let spell = state.create_card_in_zone(DRAW, 1, ZoneType::Hand).unwrap();
     state.priority_player = 1;
     rules::apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![] });
     assert_eq!(state.priority_player, 1);
@@ -410,7 +410,7 @@ fn attacker_trigger_order_still_advances_to_blockers() {
             trigger: TriggerCondition::Attacks,
             effect: Effect::GainLife { amount: i + 1 }, description: format!("Attack {i}")
         }).collect(), ..Default::default() });
-    let attacker = state.create_card_in_zone(ATTACKER, 0, ZoneType::Battlefield);
+    let attacker = state.create_card_in_zone(ATTACKER, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&attacker).unwrap().summoning_sick = false;
     state.phase = Phase::DeclareAttackers;
     rules::apply_action(&mut state, &Action::DeclareAttackers { attackers: vec![attacker] });
@@ -450,9 +450,9 @@ fn copy_commit_sba_death_orders_nonactive_triggers_before_priority() {
         triggered_abilities: vec![TriggeredAbility { trigger: TriggerCondition::ACreatureDies,
             effect: Effect::GainLife { amount: 1 }, description: "Death".into() }],
         ..Default::default() });
-    state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield);
-    state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield);
-    let doomed = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield).unwrap();
+    let doomed = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     let source_id = source(&mut state, DRAW, vec![]);
     let item = prepared(&state, source_id, 0, CopyTargetPolicy::Preserve);
     begin(&mut state, vec![item.clone(), item]);
@@ -482,8 +482,8 @@ fn direct_mana_and_trigger_helpers_cannot_bypass_copy_order() {
         triggered_abilities: vec![TriggeredAbility { trigger: TriggerCondition::BeginningOfUpkeep,
             effect: Effect::GainLife { amount: 1 }, description: "Upkeep".into() }],
         ..Default::default() });
-    state.create_card_in_zone(LAND, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(LAND, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     let source_id = source(&mut state, DRAW, vec![]);
     let item = prepared(&state, source_id, 0, CopyTargetPolicy::Preserve);
     begin(&mut state, vec![item.clone(), item]);
@@ -498,7 +498,7 @@ fn direct_mana_and_trigger_helpers_cannot_bypass_copy_order() {
 fn direct_combo_helper_cannot_mutate_while_copy_order_is_pending() {
     use mtg_gto::combo::{apply_combo_effect, ComboDef, ComboEffect, ComboPrecondition};
     let mut state = game();
-    let piece = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let piece = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     let source_id = source(&mut state, DRAW, vec![]);
     let item = prepared(&state, source_id, 0, CopyTargetPolicy::Preserve);
     begin(&mut state, vec![item.clone(), item]);
@@ -575,8 +575,8 @@ fn pending_target_state(extra_ids: usize, reverse_battlefield: bool,
     targeted_damaged: bool, targeted_tapped: bool) -> GameState {
     let mut state = game();
     for _ in 0..extra_ids { state.new_object_id(); state.new_stack_id(); }
-    let selected = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let selected = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     let damaged = if targeted_damaged { selected } else { other };
     state.objects.get_mut(&damaged).unwrap().damage_marked = 1;
     let tapped = if targeted_tapped { selected } else { other };
@@ -615,8 +615,8 @@ fn indistinguishable_targets_keep_relationships_without_raw_id_rank() {
     fn state_for(selected_second: bool, target_other: bool, extra_ids: usize) -> GameState {
         let mut state = game();
         for _ in 0..extra_ids { state.new_object_id(); state.new_stack_id(); }
-        let first = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-        let second = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+        let first = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+        let second = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
         let selected = if selected_second { second } else { first };
         let other = if selected_second { first } else { second };
         let source_id = source(&mut state, HASTE_DRAW, vec![Target::Object(selected)]);

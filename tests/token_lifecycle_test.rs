@@ -37,7 +37,7 @@ fn fixture() -> GameState {
     s
 }
 fn token(s: &mut GameState, zone: ZoneType) -> u64 {
-    let id = s.create_card_in_zone(1, 0, zone);
+    let id = s.create_card_in_zone(1, 0, zone).unwrap();
     s.objects.get_mut(&id).unwrap().is_token = true;
     id
 }
@@ -126,7 +126,7 @@ fn library_token_is_not_a_drawable_card() {
 #[test]
 fn linked_token_cannot_move_on_source_departure() {
     let mut s = fixture();
-    let source = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+    let source = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
     let id = token(&mut s, ZoneType::Exile);
     s.objects.get_mut(&id).unwrap().exiled_by = Some(source);
     depart(&mut s, source, ZoneType::Graveyard);
@@ -139,7 +139,7 @@ fn linked_token_cannot_move_on_source_departure() {
 fn hand_token_is_not_a_card_for_dynamic_values() {
     let mut s = fixture();
     token(&mut s, ZoneType::Hand);
-    let id = s.create_card_in_zone(2, 0, ZoneType::Battlefield);
+    let id = s.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap();
     assert_eq!(s.effective_toughness(id), 0);
 }
 
@@ -241,8 +241,8 @@ fn token_and_nontoken_share_one_departure_and_departing_watcher_history() {
         ..Default::default()
     });
     let t = token(&mut s, ZoneType::Battlefield);
-    let real = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
-    let watcher = s.create_card_in_zone(3, 1, ZoneType::Battlefield);
+    let real = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+    let watcher = s.create_card_in_zone(3, 1, ZoneType::Battlefield).unwrap();
     let requests: Vec<_> = [t, real, watcher]
         .into_iter()
         .map(|id| TransitionRequest {
@@ -416,7 +416,7 @@ fn synthetic_commander_token_uses_actual_command_destination() {
 fn failed_draw_skips_tokens_and_draws_next_real_card_without_moving_token() {
     let mut s = fixture();
     let t = token(&mut s, ZoneType::Library);
-    let real = s.create_card_in_zone(1, 0, ZoneType::Library);
+    let real = s.create_card_in_zone(1, 0, ZoneType::Library).unwrap();
     rules::draw_cards(&mut s, 0, 1);
     assert_eq!(s.players[0].hand, vec![real]);
     assert_eq!(s.players[0].library, vec![t]);
@@ -526,7 +526,7 @@ fn token_and_real_same_definition_do_not_share_card_action_coordinates() {
         .unwrap()
         .mana_cost = Some(ManaCost::zero());
     let t = token(&mut a, ZoneType::Hand);
-    let card = a.create_card_in_zone(1, 0, ZoneType::Hand);
+    let card = a.create_card_in_zone(1, 0, ZoneType::Hand).unwrap();
     let mut b = a.clone();
     b.players[0].hand.reverse();
     let cast = Action::CastSpell {
@@ -549,7 +549,7 @@ fn token_and_real_same_definition_do_not_share_card_action_coordinates() {
 fn card_only_hand_target_excludes_resident_token() {
     let mut s = fixture();
     let t = token(&mut s, ZoneType::Hand);
-    let card = s.create_card_in_zone(1, 0, ZoneType::Hand);
+    let card = s.create_card_in_zone(1, 0, ZoneType::Hand).unwrap();
     assert!(!mtg_gto::targeting::target_is_legal(
         &s,
         0,
@@ -580,7 +580,7 @@ fn copy_order_suspension_preserves_resident_tokens_until_existing_completion() {
         spell_effect: Some(Effect::GainLife { amount: 1 }),
         ..Default::default()
     });
-    let spell = s.create_card_in_zone(4, 0, ZoneType::Stack);
+    let spell = s.create_card_in_zone(4, 0, ZoneType::Stack).unwrap();
     let stack_id = s.new_stack_id();
     s.stack.push(StackEntry {
         id: stack_id,
@@ -629,7 +629,7 @@ fn token_creation_during_spell_and_trigger_resolution_stays_on_battlefield() {
         ])),
         ..Default::default()
     });
-    let spell = s.create_card_in_zone(4, 0, ZoneType::Hand);
+    let spell = s.create_card_in_zone(4, 0, ZoneType::Hand).unwrap();
     rules::apply_action(
         &mut s,
         &Action::CastSpell {
@@ -660,7 +660,7 @@ fn token_creation_during_spell_and_trigger_resolution_stays_on_battlefield() {
 fn search_choices_ignore_tokens_even_when_definition_matches_real_card() {
     let mut s = fixture();
     let t = token(&mut s, ZoneType::Library);
-    let real = s.create_card_in_zone(1, 0, ZoneType::Library);
+    let real = s.create_card_in_zone(1, 0, ZoneType::Library).unwrap();
     s.players[0].tutor_targets = vec![1];
     s.pending_tutor = Some(mtg_gto::game::PendingTutor {
         controller: 0,
@@ -709,7 +709,7 @@ fn token_residents_do_not_pay_card_escape_costs_or_delve_reduction() {
         keywords: vec![KeywordAbility::Delve],
         ..Default::default()
     });
-    let caster = s.create_card_in_zone(3, 0, ZoneType::Graveyard);
+    let caster = s.create_card_in_zone(3, 0, ZoneType::Graveyard).unwrap();
     let action = Action::CastFromGraveyard {
         object_id: caster,
         targets: vec![],
@@ -795,7 +795,7 @@ fn token_cessation_precedes_multicontroller_apnap_ordering() {
         ..Default::default()
     });
     for p in 0..3 {
-        s.create_card_in_zone(3, p, ZoneType::Battlefield);
+        s.create_card_in_zone(3, p, ZoneType::Battlefield).unwrap();
     }
     let ids: Vec<_> = (0..2)
         .map(|_| token(&mut s, ZoneType::Battlefield))

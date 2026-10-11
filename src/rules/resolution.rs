@@ -8,6 +8,22 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
         state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding);
         return;
     }
+    let aura_prepared = if let Some(entry) = state.stack.last().filter(|e| matches!(e.source, StackSource::AuraSpell { .. })) {
+        match super::aura::prepare_resolution(state, entry) {
+            Ok(plan) => Some(plan), Err(reason) => { state.sba_failure = Some(reason); return; }
+        }
+    } else { None };
+    if let Some(entry) = state.stack.last() {
+        if let StackSource::Spell(id) = entry.source {
+            if state.objects.get(&id).and_then(|inst| state.card_db().get(inst.card_def_id))
+                .is_some_and(|def| def.card_types.iter().any(|kind| matches!(kind,
+                    CardType::Creature | CardType::Artifact | CardType::Enchantment | CardType::Planeswalker))) {
+                if let Err(error) = state.preflight_noncast_entry_for_controller(id, ZoneType::Battlefield, entry.controller) {
+                    super::aura::record_entry_failure(state, error); return;
+                }
+            }
+        }
+    }
     let entry = match state.stack.pop() {
         Some(e) => e,
         None => return,
@@ -16,6 +32,7 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
     state.trigger_placement_deferred = true;
 
     match &entry.source {
+        StackSource::AuraSpell { .. } => super::aura::commit_resolution(state, aura_prepared.unwrap()),
         StackSource::Spell(obj_id) => {
             resolve_spell(state, *obj_id, &entry.targets, &entry.target_generations, entry.controller);
         }
@@ -93,9 +110,9 @@ fn resolve_spell(
         || def.card_types.contains(&CardType::Enchantment)
         || def.card_types.contains(&CardType::Planeswalker)
     {
-        state.move_object(obj_id, ZoneType::Stack, ZoneType::Battlefield);
-        if let Some(inst) = state.objects.get_mut(&obj_id) {
-            inst.controller = controller;
+        if let Err(error) = state.try_enter_battlefield(obj_id, ZoneType::Stack, controller) {
+            super::aura::record_entry_failure(state, error);
+            return;
         }
 
         // Planeswalker: enter with starting loyalty counters
@@ -107,22 +124,12 @@ fn resolve_spell(
             }
         }
 
-        // Aura attachment: when an aura spell resolves, attach it to its target
-        if def.is_aura() {
-            if let Some(Target::Object(target_id)) = targets.first() {
-                if let (Some(source), Some(target)) = (state.exact_object(obj_id), state.exact_object(*target_id)) {
-                    if let Ok(prepared) = state.prepare_attach(source, target, crate::card::AttachmentContext::ExistingAuraResolution) {
-                        let _ = state.commit_attach(prepared);
-                    }
-                }
-            }
-        }
-
         // Apply ETB replacement effects (CR 614): enters tapped, enters with counters, etc.
         state.apply_etb_replacements(obj_id);
 
         // Refresh continuous effects when a permanent enters the battlefield.
         state.refresh_continuous_effects();
+        if state.gameplay_stopped() { return; }
 
         // Queue ETB triggered abilities
         let _ = super::triggers::fire_triggers(state, TriggerCondition::EntersBattlefield, Some(obj_id));
@@ -135,7 +142,7 @@ fn resolve_spell(
         // CR 608.2b: an illegal sole target stops the whole spell, including
         // untargeted instructions such as drawing. Check only before execution.
         resolve_spell_effect(state, &def, targets, generations, controller, Some(obj_id));
-        if state.pending_copy_order.is_some() { return; }
+        if state.pending_copy_order.is_some() || state.gameplay_stopped() { return; }
         finish_physical_spell(state, obj_id, &def);
     }
 }
@@ -255,8 +262,8 @@ mod destruction_ability_tests {
             card_types: vec![CardType::Land], ..Default::default() });
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
-        let source = state.create_card_in_zone(996_001, 0, ZoneType::Battlefield);
-        let subject = state.create_card_in_zone(996_002, 1, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(996_001, 0, ZoneType::Battlefield).unwrap();
+        let subject = state.create_card_in_zone(996_002, 1, ZoneType::Battlefield).unwrap();
         (state, source, subject)
     }
 
@@ -311,7 +318,7 @@ mod destruction_ability_tests {
             Effect::DrawCards { count: 1 },
         ]);
         let (mut state, source, target) = fixture(effect);
-        let card = state.create_card_in_zone(996_003, 0, ZoneType::Library);
+        let card = state.create_card_in_zone(996_003, 0, ZoneType::Library).unwrap();
         let generation = state.objects[&target].zone_change_count;
         resolve(&mut state, source, target, generation);
         assert!(state.players[1].graveyard.contains(&target));
@@ -380,9 +387,9 @@ mod settlement_copy_tests {
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
         state.phase = Phase::PreCombatMain;
-        state.create_card_in_zone(990103, 0, ZoneType::Library);
-        let observer = state.create_card_in_zone(990102, 1, ZoneType::Battlefield);
-        let spell = state.create_card_in_zone(990101, 0, ZoneType::Hand);
+        state.create_card_in_zone(990103, 0, ZoneType::Library).unwrap();
+        let observer = state.create_card_in_zone(990102, 1, ZoneType::Battlefield).unwrap();
+        let spell = state.create_card_in_zone(990101, 0, ZoneType::Hand).unwrap();
         super::super::apply_action(
             &mut state,
             &Action::CastSpell {
@@ -487,7 +494,7 @@ mod terminal_copy_integration_tests {
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
         state.phase = Phase::PreCombatMain;
-        let object = state.create_card_in_zone(SPELL, 0, ZoneType::Hand);
+        let object = state.create_card_in_zone(SPELL, 0, ZoneType::Hand).unwrap();
         super::super::apply_action(&mut state, &Action::CastSpell { object_id: object, targets: vec![] });
         setup(&mut state);
         super::super::apply_action(&mut state, &Action::PassPriority);
@@ -562,8 +569,8 @@ mod terminal_copy_integration_tests {
             let db = Arc::make_mut(state.card_db.as_mut().unwrap());
             db.insert(watcher);
             db.insert(doomed);
-            state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield);
-            let dying = state.create_card_in_zone(DOOMED, 0, ZoneType::Battlefield);
+            state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield).unwrap();
+            let dying = state.create_card_in_zone(DOOMED, 0, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&dying).unwrap().damage_marked = 1;
         });
         assert_eq!(state.pending_triggers.len(), 0);

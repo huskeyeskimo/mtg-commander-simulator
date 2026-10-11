@@ -1635,7 +1635,7 @@ mod tests {
         state.active_player = 1;
         state.priority_player = 0;
         for player in 0..2 {
-            for _ in 0..8 { state.create_card_in_zone(90_123, player, ZoneType::Hand); }
+            for _ in 0..8 { state.create_card_in_zone(90_123, player, ZoneType::Hand).unwrap(); }
         }
         let json = serde_json::to_string(&state).unwrap();
         let mut restored: GameState = serde_json::from_str(&json).unwrap();
@@ -2112,7 +2112,7 @@ mod tests {
         state.card_db = Some(Arc::new(db));
         state.phase = Phase::Cleanup;
         state.cleanup_discard_in_progress = true;
-        for _ in 0..8 { state.create_card_in_zone(90_124, 0, ZoneType::Hand); }
+        for _ in 0..8 { state.create_card_in_zone(90_124, 0, ZoneType::Hand).unwrap(); }
         let shared_rejection = classify_outcome(&state, 20, 10_000, 0,
             Some(GameOutcome::Stalled(TerminationReason::RejectedAction)));
         let legal = legal_actions(&state);
@@ -2713,7 +2713,7 @@ mod loss_boundary_search_tests {
         let mut state = GameState::new(3);
         state.card_db = Some(std::sync::Arc::new(db));
         state.phase = Phase::PreCombatMain;
-        state.create_card_in_zone(987_001, 0, crate::card::ZoneType::Hand);
+        state.create_card_in_zone(987_001, 0, crate::card::ZoneType::Hand).unwrap();
         assert!(legal_actions(&state).len() > 1);
         let mut root = MctsNode::new();
         expand_node(&mut root, &[Action::Concede]);
@@ -2812,7 +2812,7 @@ mod completed_invalid_action_tests {
         state.phase = Phase::PreCombatMain;
         state.players[0].life = 1;
         state.loss_boundary.accepted_actions = 41;
-        let source = state.create_card_in_zone(987_102, 0, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(987_102, 0, ZoneType::Battlefield).unwrap();
         (state, Action::ActivateAbility { object_id: source, ability_index: 0, targets: vec![] })
     }
 

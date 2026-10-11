@@ -154,6 +154,8 @@ pub enum LayerModification {
     // --- Layer 7e: P/T switching ---
     /// Switch power and toughness.
     SwitchPT,
+    /// Represented subtype loss, including loss of the Aura attachment type.
+    RemoveSubtype(Subtype),
 }
 
 impl LayerModification {
@@ -165,7 +167,7 @@ impl LayerModification {
             LayerModification::AddType(_)
             | LayerModification::RemoveType(_)
             | LayerModification::SetTypes(_)
-            | LayerModification::AddSubtype(_) => Layer::L4Type,
+            | LayerModification::AddSubtype(_) | LayerModification::RemoveSubtype(_) => Layer::L4Type,
             LayerModification::AddColor(_) | LayerModification::SetColors(_) => Layer::L5Color,
             LayerModification::AddKeyword(_)
             | LayerModification::RemoveKeyword(_)
@@ -208,6 +210,7 @@ pub struct ComputedCharacteristics {
     pub controller: PlayerIndex,
     /// Whether all abilities were removed (e.g., by Humility).
     pub abilities_removed: bool,
+    pub enchant: crate::card::ComputedEnchant,
 }
 
 /// Compute the characteristics of a specific object after applying
@@ -352,6 +355,8 @@ fn compute_characteristics_through_layer(
                 }
             }
 
+            LayerModification::RemoveSubtype(st) => subtypes.retain(|subtype| subtype != st),
+
             // --- Layer 5: Color ---
             LayerModification::AddColor(c) => {
                 if !colors.contains(c) {
@@ -436,6 +441,9 @@ fn compute_characteristics_through_layer(
         toughness,
         controller,
         abilities_removed,
+        enchant: if abilities_removed && def.enchant == crate::card::EnchantRestriction::Creature {
+            crate::card::ComputedEnchant::Removed
+        } else { crate::card::ComputedEnchant::Restriction(def.enchant) },
     })
 }
 

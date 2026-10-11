@@ -85,7 +85,7 @@ fn run_effect(state: &mut GameState, player: usize, effect: Effect) {
     });
     state.card_db = Some(Arc::new(db));
     state.phase = mtg_gto::game::Phase::PreCombatMain;
-    let source = state.create_card_in_zone(source_id, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(source_id, 0, ZoneType::Battlefield).unwrap();
     apply_action(
         state,
         &Action::ActivateAbility {
@@ -116,9 +116,9 @@ fn layer(state: &mut GameState, id: u64, modification: LayerModification) {
 #[test]
 fn sacrifice_captures_one_common_event_and_departing_watcher() {
     let mut state = game(2);
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     sacrifice(&mut state, 0, 3);
     assert_eq!(state.pending_triggers.len(), 13);
     let contexts: Vec<_> = state
@@ -140,17 +140,17 @@ fn sacrifice_captures_one_common_event_and_departing_watcher() {
 #[test]
 fn sacrifice_uses_effective_controller_and_type() {
     let mut state = game(2);
-    let stolen = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+    let stolen = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
     layer(&mut state, stolen, LayerModification::ChangeController(0));
-    let given = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let given = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     layer(&mut state, given, LayerModification::ChangeController(1));
-    let animated = state.create_card_in_zone(ARTIFACT, 0, ZoneType::Battlefield);
+    let animated = state.create_card_in_zone(ARTIFACT, 0, ZoneType::Battlefield).unwrap();
     layer(
         &mut state,
         animated,
         LayerModification::AddType(CardType::Creature),
     );
-    let deanimated = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let deanimated = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     layer(
         &mut state,
         deanimated,
@@ -211,7 +211,7 @@ fn replacement(state: &mut GameState, action: ReplacementAction) {
 #[test]
 fn single_indestructible_sacrifice_is_not_destruction() {
     let mut state = game(2);
-    let id = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let id = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     state
         .objects
         .get_mut(&id)
@@ -239,7 +239,7 @@ fn count_controls_and_weakest_first_stable_ties() {
     for (count, available) in [(0, 3), (1, 0), (1, 3), (2, 3), (3, 3), (5, 3)] {
         let mut state = game(2);
         let ids: Vec<_> = (0..available)
-            .map(|_| state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield))
+            .map(|_| state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap())
             .collect();
         if ids.len() == 3 {
             layer(&mut state, ids[2], LayerModification::SetPT(1, 2));
@@ -271,7 +271,7 @@ fn represented_replacement_endpoints_and_prevention() {
         ZoneType::Battlefield,
     ] {
         let mut state = game(2);
-        let id = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+        let id = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
         layer(&mut state, id, LayerModification::ChangeController(0));
         replacement(
             &mut state,
@@ -312,7 +312,7 @@ fn represented_replacement_endpoints_and_prevention() {
 #[test]
 fn token_and_commander_actual_evidence() {
     let mut token_game = game(2);
-    let id = token_game.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+    let id = token_game.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
     token_game.objects.get_mut(&id).unwrap().is_token = true;
     layer(&mut token_game, id, LayerModification::ChangeController(0));
     sacrifice(&mut token_game, 0, 1);
@@ -328,7 +328,7 @@ fn token_and_commander_actual_evidence() {
     assert_eq!(token_game.pending_events.iter().filter(|e| matches!(e, GameEvent::ZoneChange { object, from: Zone::Battlefield, .. } if *object == id)).count(), 1);
     let mut commander = GameState::new_commander(2);
     commander.card_db = game(2).card_db;
-    let id = commander.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let id = commander.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     commander.players[0].commander_object_id = Some(id);
     sacrifice(&mut commander, 0, 1);
     assert!(commander.players[0].command_zone.contains(&id));
@@ -345,8 +345,8 @@ fn token_and_commander_actual_evidence() {
 fn all_malformed_selected_sets_reject_atomically_including_prevented_members() {
     for case in 0..11 {
         let mut state = game(2);
-        let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-        let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+        let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+        let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
         let mut intents = vec![selected(&state, a, 0), selected(&state, b, 0)];
         match case {
             0 => intents[1].object.generation += 1,
@@ -397,7 +397,7 @@ fn all_malformed_selected_sets_reject_atomically_including_prevented_members() {
 #[test]
 fn noncreature_is_not_a_resolved_creature_sacrifice() {
     let mut state = game(2);
-    let id = state.create_card_in_zone(ARTIFACT, 0, ZoneType::Battlefield);
+    let id = state.create_card_in_zone(ARTIFACT, 0, ZoneType::Battlefield).unwrap();
     let intent = selected(&state, id, 0);
     assert_eq!(
         resolved_sacrifice_batch(&mut state, &[intent]).unwrap_err(),
@@ -408,9 +408,9 @@ fn noncreature_is_not_a_resolved_creature_sacrifice() {
 #[test]
 fn successive_batches_do_not_reuse_departed_watchers() {
     let mut state = game(2);
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     let first = vec![selected(&state, watcher, 0), selected(&state, a, 0)];
     let mut simultaneous = state.clone();
     let all = vec![
@@ -471,8 +471,8 @@ fn cost_paths_keep_their_legacy_or_unpaid_behavior() {
             ..Default::default()
         });
         state.card_db = Some(Arc::new(db));
-        let outlet = state.create_card_in_zone(994_104, 0, ZoneType::Battlefield);
-        let victim = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+        let outlet = state.create_card_in_zone(994_104, 0, ZoneType::Battlefield).unwrap();
+        let victim = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
         state.phase = mtg_gto::game::Phase::PreCombatMain;
         apply_action(
             &mut state,
@@ -496,10 +496,10 @@ fn cost_paths_keep_their_legacy_or_unpaid_behavior() {
 #[test]
 fn surviving_and_stolen_controller_relative_watchers() {
     let mut state = game(3);
-    let watcher = state.create_card_in_zone(WATCHER, 2, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 2, ZoneType::Battlefield).unwrap();
     layer(&mut state, watcher, LayerModification::ChangeController(0));
     layer(&mut state, watcher, LayerModification::SetPT(10, 10));
-    let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+    let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
     layer(&mut state, subject, LayerModification::ChangeController(0));
     sacrifice(&mut state, 0, 1);
     assert!(state.battlefield.contains(&watcher));
@@ -558,8 +558,8 @@ fn restores(state: &GameState) -> Vec<GameState> {
 #[test]
 fn pending_and_stacked_final_continuations_preserve_purged_stolen_history() {
     let mut state = game(3);
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let token = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let token = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&token).unwrap().is_token = true;
     layer(&mut state, token, LayerModification::ChangeController(0));
     sacrifice(&mut state, 0, 2);
@@ -609,15 +609,15 @@ fn thirteen_occurrence_state_invariance_and_own_fifo_roundtrips() {
                 let mut state = game(2);
                 // Actual irrelevant allocation history, then a separate raw-ID shift.
                 if offset != 0 {
-                    let unused = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile);
+                    let unused = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile).unwrap();
                     state.objects.remove(&unused);
                     state.players[1].exile.clear();
                 }
                 state.next_object_id += offset;
                 state.next_zone_event_group_id += offset;
-                let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-                let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-                let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+                let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+                let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+                let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
                 let ids = [watcher, a, b];
                 let mut intents: Vec<_> = ids.iter().map(|&id| selected(&state, id, 0)).collect();
                 if reverse {
@@ -723,14 +723,14 @@ fn six_occurrence_cross_state_actions_reconstruct_and_finish_equivalently() {
             for reverse_pending in [false, true] {
                 let mut state = game(2);
                 if offset != 0 {
-                    let unused = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile);
+                    let unused = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile).unwrap();
                     state.objects.remove(&unused);
                     state.players[1].exile.clear();
                 }
                 state.next_object_id += offset;
                 state.next_zone_event_group_id += offset;
                 for _ in 0..3 {
-                    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+                    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
                 }
                 let mut intents: Vec<_> = state
                     .battlefield
@@ -840,10 +840,10 @@ fn realistic_sacrifice_normalizer_diagnostic() {
         .into_iter()
         .enumerate()
         {
-            state.create_card_in_zone(card, i % players, ZoneType::Battlefield);
+            state.create_card_in_zone(card, i % players, ZoneType::Battlefield).unwrap();
         }
         for _ in 0..3 {
-            state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+            state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
         }
         // One SacrificeCreatures instruction, never EachOpponentSacrifices.
         sacrifice(&mut state, 0, 5);
@@ -874,7 +874,7 @@ fn realistic_sacrifice_normalizer_diagnostic() {
 fn two_resolved_instructions_are_distinct_from_one_two_victim_instruction() {
     let mut one = game(2);
     for _ in 0..2 {
-        one.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+        one.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     }
     let mut two = one.clone();
     sacrifice(&mut one, 0, 2);
@@ -920,9 +920,9 @@ fn explicit_sacrifice_then_common_sba_has_separate_context() {
         ..Default::default()
     });
     state.card_db = Some(Arc::new(db));
-    let anthem = state.create_card_in_zone(994_105, 0, ZoneType::Battlefield);
-    let subject = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let watcher = state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield);
+    let anthem = state.create_card_in_zone(994_105, 0, ZoneType::Battlefield).unwrap();
+    let subject = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let watcher = state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&subject).unwrap().damage_marked = 2;
     state.refresh_continuous_effects();
     assert_eq!(state.effective_toughness(subject), 4);
@@ -952,7 +952,7 @@ fn explicit_sacrifice_then_common_sba_has_separate_context() {
 fn noncreature_departure_negative_control_and_raw_sacrifice_rejection() {
     use mtg_gto::rules::transitions::{transition_batch, TransitionRequest};
     let mut state = game(2);
-    let id = state.create_card_in_zone(ARTIFACT, 0, ZoneType::Battlefield);
+    let id = state.create_card_in_zone(ARTIFACT, 0, ZoneType::Battlefield).unwrap();
     let object = selected(&state, id, 0).object;
     let mut request = TransitionRequest {
         object,
@@ -974,9 +974,9 @@ fn noncreature_departure_negative_control_and_raw_sacrifice_rejection() {
 fn linked_followup_validation_precedes_sacrifice_and_followup_is_separate() {
     for malformed in [true, false] {
         let mut state = game(2);
-        let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-        let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-        let linked = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile);
+        let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+        let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+        let linked = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile).unwrap();
         state.objects.get_mut(&linked).unwrap().exiled_by = Some(b);
         if malformed {
             state.objects.get_mut(&linked).unwrap().zone_change_count = u32::MAX;
@@ -998,9 +998,9 @@ fn linked_followup_validation_precedes_sacrifice_and_followup_is_separate() {
 #[test]
 fn production_successive_instructions_exclude_earlier_departed_watcher() {
     let mut state = game(2);
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     layer(&mut state, watcher, LayerModification::SetPT(0, 2));
-    let victim = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     run_effect(
         &mut state,
         0,
@@ -1032,9 +1032,9 @@ fn production_successive_instructions_exclude_earlier_departed_watcher() {
 #[test]
 fn prevented_selected_intent_still_rejects_invalid_linked_generation() {
     let mut state = game(2);
-    let victim = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&victim).unwrap().is_token = true;
-    let linked = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile);
+    let linked = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile).unwrap();
     state.objects.get_mut(&linked).unwrap().exiled_by = Some(victim);
     state.objects.get_mut(&linked).unwrap().zone_change_count = u32::MAX;
     replacement(&mut state, ReplacementAction::Prevent);
@@ -1054,8 +1054,8 @@ fn selected_intent_linked_preflight_crosses_validity_and_prevention() {
     for invalid in [false, true] {
         for prevented in [false, true] {
             let mut state = game(2);
-            let victim = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-            let linked = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile);
+            let victim = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+            let linked = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile).unwrap();
             state.objects.get_mut(&linked).unwrap().exiled_by = Some(victim);
             if invalid {
                 state.objects.get_mut(&linked).unwrap().zone_change_count = u32::MAX;
@@ -1089,10 +1089,10 @@ fn selected_intent_linked_preflight_crosses_validity_and_prevention() {
 fn selected_intent_preflight_rejects_entire_prevented_multivictim_set() {
     for reverse in [false, true] {
         let mut state = game(2);
-        let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-        let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+        let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+        let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&b).unwrap().is_token = true;
-        let linked = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile);
+        let linked = state.create_card_in_zone(ARTIFACT, 1, ZoneType::Exile).unwrap();
         state.objects.get_mut(&linked).unwrap().exiled_by = Some(b);
         state.objects.get_mut(&linked).unwrap().zone_change_count = u32::MAX;
         // The existing represented WouldDie subset applies this prevention to
@@ -1115,7 +1115,7 @@ fn selected_intent_preflight_rejects_entire_prevented_multivictim_set() {
 #[test]
 fn prevented_selected_intent_still_rejects_exhausted_event_group_counter() {
     let mut state = game(2);
-    let victim = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     state.next_zone_event_group_id = u64::MAX;
     replacement(&mut state, ReplacementAction::Prevent);
     let intent = selected(&state, victim, 0);

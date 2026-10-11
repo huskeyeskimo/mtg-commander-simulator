@@ -475,6 +475,14 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                     None => continue,
                 };
 
+                if !def.is_aura() {
+                    let mut future = inst.clone();
+                    if !def.is_land() { future.controller = player; }
+                    if let Some(generation) = future.zone_change_count.checked_add(if def.is_land() { 1 } else { 2 }) {
+                        future.zone_change_count = generation;
+                        if state.prospective_aura(future, def).unwrap_or(true) { continue; }
+                    }
+                }
                 // Play lands (sorcery speed, once per turn)
                 if def.is_land()
                     && is_main
@@ -485,7 +493,9 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
 
                 // Cast spells
                 if !def.is_land() {
-                    let can_cast_timing = if def.is_instant_speed() {
+                    let can_cast_timing = if def.is_aura() {
+                        crate::targeting::aura_cast_context(state, obj_id)
+                    } else if def.is_instant_speed() {
                         true // instants and flash anytime you have priority
                     } else {
                         is_main // sorcery speed
@@ -543,6 +553,13 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                         None => continue,
                     };
 
+                    if def.is_aura() { continue; }
+                    let mut future = inst.clone();
+                    future.controller = player;
+                    if let Some(generation) = future.zone_change_count.checked_add(2) {
+                        future.zone_change_count = generation;
+                        if state.prospective_aura(future, def).unwrap_or(true) { continue; }
+                    }
                     // Flashback: cast instant/sorcery from graveyard for flashback cost
                     if let Some(ref fb_cost) = def.flashback_cost {
                         let can_cast_timing = if def.is_instant_speed() {
@@ -644,6 +661,13 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                         Some(d) => d,
                         None => continue,
                     };
+                    if def.is_aura() { continue; }
+                    let mut future = inst.clone();
+                    future.controller = player;
+                    if let Some(generation) = future.zone_change_count.checked_add(2) {
+                        future.zone_change_count = generation;
+                        if state.prospective_aura(future, def).unwrap_or(true) { continue; }
+                    }
                     // Must be this player's commander or partner commander
                     let is_primary = state.players[player].commander_card_id == Some(inst.card_def_id);
                     let is_partner = state.players[player].partner_commander_card_id == Some(inst.card_def_id);

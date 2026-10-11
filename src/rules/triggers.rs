@@ -16,11 +16,22 @@ fn captured_context(inst: &CardInstance, ability: &TriggeredAbility, cast_spell:
 /// the given condition, and queue any that trigger.
 pub(super) fn check_triggers(state: &mut GameState, condition: TriggerCondition, source_hint: Option<ObjectId>) {
     if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
-    let triggers = collect_triggers(state, condition, source_hint);
+    let triggers = collect_triggers(state, condition, source_hint, false);
     state.pending_triggers.extend(triggers);
 }
 
-fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint: Option<ObjectId>) -> Vec<PendingTrigger> {
+/// Prepared Aura entry has already refreshed its attached effects. Reuse the
+/// ordinary collector with those computed observation facts before settlement.
+pub(super) fn check_aura_entry_triggers(state: &mut GameState, source: ObjectId) {
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    let mut triggers = collect_triggers(state, TriggerCondition::EntersBattlefield, Some(source), true);
+    if state.is_creature(source) {
+        triggers.extend(collect_triggers(state, TriggerCondition::ACreatureEnters, None, true));
+    }
+    state.pending_triggers.extend(triggers);
+}
+
+fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint: Option<ObjectId>, computed: bool) -> Vec<PendingTrigger> {
     {
         let db = state.card_db();
         let mut found = Vec::new();
@@ -43,7 +54,12 @@ fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint:
                 .collect(),
         };
 
-        for (obj_id, controller) in objects_to_check {
+        for (obj_id, mut controller) in objects_to_check {
+            if computed {
+                let chars = state.get_characteristics(obj_id).unwrap();
+                if chars.abilities_removed { continue; }
+                controller = chars.controller;
+            }
             let inst = &state.objects[&obj_id];
             let def = match db.get(inst.card_def_id) {
                 Some(d) => d,
@@ -446,11 +462,13 @@ pub(super) fn apply_annihilator(state: &mut GameState, attackers: &[ObjectId]) {
             break;
         }
         state.move_object(perm_id, ZoneType::Battlefield, ZoneType::Graveyard);
+        if state.gameplay_stopped() { return; }
         sacrificed += 1;
     }
 
     if sacrificed > 0 {
         state.refresh_continuous_effects();
+        if state.gameplay_stopped() { return; }
         state.refresh_replacement_effects();
     }
 }
@@ -504,8 +522,8 @@ mod zada_cast_predicate_tests {
             }), ..Default::default() });
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
-        let zada = state.create_card_in_zone(ids::ZADA_HEDRON_GRINDER, 0, ZoneType::Battlefield);
-        let spell = state.create_card_in_zone(SPELL, 0, ZoneType::Hand);
+        let zada = state.create_card_in_zone(ids::ZADA_HEDRON_GRINDER, 0, ZoneType::Battlefield).unwrap();
+        let spell = state.create_card_in_zone(SPELL, 0, ZoneType::Hand).unwrap();
         let stack_id = state.new_stack_id();
         let generation = state.objects[&zada].zone_change_count;
         state.stack.push(StackEntry { id: stack_id, source: StackSource::Spell(spell),

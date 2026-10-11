@@ -375,10 +375,10 @@ fn test_mcfr_strategy_fallback_on_unseen_info_set() {
 
     // Set up a minimal state so there are legal actions
     for _ in 0..10 {
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
-    state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand);
+    state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand).unwrap();
     state.active_player = 0;
     state.priority_player = 0;
     state.phase = Phase::PreCombatMain;
@@ -414,8 +414,8 @@ fn test_info_set_per_color_mana() {
     let mut state1 = GameState::new(2);
     state1.card_db = Some(Arc::new(db.clone()));
     for _ in 0..10 {
-        state1.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state1.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state1.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state1.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
     state1.active_player = 0;
     state1.priority_player = 0;
@@ -426,8 +426,8 @@ fn test_info_set_per_color_mana() {
     let mut state2 = GameState::new(2);
     state2.card_db = Some(Arc::new(db));
     for _ in 0..10 {
-        state2.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-        state2.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library);
+        state2.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state2.create_card_in_zone(sample::ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
     }
     state2.active_player = 0;
     state2.priority_player = 0;

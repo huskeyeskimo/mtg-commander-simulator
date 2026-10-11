@@ -15,13 +15,13 @@ fn game() -> GameState {
     state.priority_player = 0;
     state.players[0].mana_pool.red = 10;
     for _ in 0..20 {
-        state.create_card_in_zone(ids::MOUNTAIN, 0, ZoneType::Library);
+        state.create_card_in_zone(ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
     }
     state
 }
 
 fn cast_expedite(state: &mut GameState, target: u64) -> u64 {
-    let spell = state.create_card_in_zone(ids::EXPEDITE, 0, ZoneType::Hand);
+    let spell = state.create_card_in_zone(ids::EXPEDITE, 0, ZoneType::Hand).unwrap();
     let action = Action::CastSpell {
         object_id: spell,
         targets: vec![Target::Object(target)],
@@ -84,7 +84,7 @@ fn cast_flying_spell(state: &mut GameState, target: u64) {
         }),
         ..Default::default()
     });
-    let spell = state.create_card_in_zone(FLYING_SPELL, 0, ZoneType::Hand);
+    let spell = state.create_card_in_zone(FLYING_SPELL, 0, ZoneType::Hand).unwrap();
     let action = Action::CastSpell { object_id: spell, targets: vec![Target::Object(target)] };
     assert!(legal_actions(state).contains(&action));
     rules::apply_action(state, &action);
@@ -110,7 +110,7 @@ fn sample_expedite_has_real_card_definition() {
 #[test]
 fn expedite_targets_and_resolves_through_normal_priority_flow() {
     let mut state = game();
-    let creature = state.create_card_in_zone(ids::KRENKO_MOB_BOSS, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(ids::KRENKO_MOB_BOSS, 0, ZoneType::Battlefield).unwrap();
     let spell = cast_expedite(&mut state, creature);
     let hand_before_resolution = state.players[0].hand.len();
     let library_before_resolution = state.players[0].library.len();
@@ -128,8 +128,8 @@ fn expedite_enables_krenko_then_haste_expires_at_real_cleanup() {
     let mut state = game();
     // Keep this real-cleanup/haste control within ordinary continuing play.
     // The passive player's draw must not cause an unrelated terminal loss.
-    state.create_card_in_zone(ids::MOUNTAIN, 1, ZoneType::Library);
-    let krenko = state.create_card_in_zone(ids::KRENKO_MOB_BOSS, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(ids::MOUNTAIN, 1, ZoneType::Library).unwrap();
+    let krenko = state.create_card_in_zone(ids::KRENKO_MOB_BOSS, 0, ZoneType::Battlefield).unwrap();
     let activate = Action::ActivateAbility {
         object_id: krenko,
         ability_index: 0,
@@ -182,9 +182,9 @@ fn expedite_enables_krenko_then_haste_expires_at_real_cleanup() {
 #[test]
 fn zada_expedite_copies_are_orderable_independent_not_casts_and_fizzle_individually() {
     let mut state = game();
-    let zada = state.create_card_in_zone(ids::ZADA_HEDRON_GRINDER, 0, ZoneType::Battlefield);
-    let first_creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
-    let second_creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let zada = state.create_card_in_zone(ids::ZADA_HEDRON_GRINDER, 0, ZoneType::Battlefield).unwrap();
+    let first_creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
+    let second_creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     let spell = cast_expedite(&mut state, zada);
     let original_stack_id = state.stack[0].id;
     let cast_count = state.spells_cast_this_turn;
@@ -231,7 +231,7 @@ fn zada_expedite_copies_are_orderable_independent_not_casts_and_fizzle_individua
 #[test]
 fn expedite_with_target_removed_before_resolution_draws_nothing() {
     let mut state = game();
-    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     let spell = cast_expedite(&mut state, creature);
     let hand_before = state.players[0].hand.len();
     let library_before = state.players[0].library.len();
@@ -247,7 +247,7 @@ fn expedite_with_target_removed_before_resolution_draws_nothing() {
 #[test]
 fn expedite_with_blinked_target_draws_nothing() {
     let mut state = game();
-    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     let generation_before = state.objects[&creature].zone_change_count;
     let spell = cast_expedite(&mut state, creature);
     let hand_before = state.players[0].hand.len();
@@ -266,7 +266,7 @@ fn expedite_with_blinked_target_draws_nothing() {
 #[test]
 fn expedite_with_new_shroud_before_resolution_draws_nothing() {
     let mut state = game();
-    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     let spell = cast_expedite(&mut state, creature);
     let hand_before = state.players[0].hand.len();
     let library_before = state.players[0].library.len();
@@ -292,7 +292,7 @@ fn expedite_with_new_shroud_before_resolution_draws_nothing() {
 #[test]
 fn expedited_haste_obeys_later_removal_and_fresh_regrant() {
     let mut state = game();
-    let krenko = state.create_card_in_zone(ids::KRENKO_MOB_BOSS, 0, ZoneType::Battlefield);
+    let krenko = state.create_card_in_zone(ids::KRENKO_MOB_BOSS, 0, ZoneType::Battlefield).unwrap();
     assert!(!state.has_keyword(krenko, KeywordAbility::Haste)); // Warm the cache.
 
     let first = cast_expedite(&mut state, krenko);
@@ -330,7 +330,7 @@ fn expedited_haste_obeys_later_removal_and_fresh_regrant() {
 #[test]
 fn non_haste_keyword_grants_follow_the_same_timestamp_order() {
     let mut state = game();
-    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     assert!(!state.has_keyword(creature, KeywordAbility::Flying));
     cast_flying_spell(&mut state, creature);
     assert!(state.has_keyword(creature, KeywordAbility::Flying));
@@ -352,7 +352,7 @@ fn non_haste_keyword_grants_follow_the_same_timestamp_order() {
 #[test]
 fn blink_invalidates_old_grant_and_fresh_expedite_grants_again() {
     let mut state = game();
-    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     assert!(!state.has_keyword(creature, KeywordAbility::Haste));
     cast_expedite(&mut state, creature);
     pass_twice(&mut state);
@@ -398,8 +398,8 @@ fn departing_ability_source_does_not_cancel_grant_but_target_departure_does() {
         }],
         ..Default::default()
     });
-    let source = state.create_card_in_zone(SOURCE, 0, ZoneType::Battlefield);
-    let target = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(SOURCE, 0, ZoneType::Battlefield).unwrap();
+    let target = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     let action = Action::ActivateAbility {
         object_id: source, ability_index: 0, targets: vec![Target::Object(target)],
     };
@@ -426,8 +426,8 @@ fn departing_ability_source_does_not_cancel_grant_but_target_departure_does() {
 #[test]
 fn zada_original_and_copy_grants_expire_together_at_real_cleanup() {
     let mut state = game();
-    let zada = state.create_card_in_zone(ids::ZADA_HEDRON_GRINDER, 0, ZoneType::Battlefield);
-    let other = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let zada = state.create_card_in_zone(ids::ZADA_HEDRON_GRINDER, 0, ZoneType::Battlefield).unwrap();
+    let other = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     cast_expedite(&mut state, zada);
     pass_twice(&mut state); // Zada trigger creates one copy.
     assert!(matches!(state.stack.last().unwrap().source, StackSource::SpellCopy { .. }));
@@ -452,7 +452,7 @@ fn zada_original_and_copy_grants_expire_together_at_real_cleanup() {
 #[test]
 fn active_grants_keep_timestamps_and_generations_across_state_roundtrips() {
     let mut state = game();
-    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
     cast_expedite(&mut state, creature);
     pass_twice(&mut state);
     let removal = keyword_layer(&mut state, creature,

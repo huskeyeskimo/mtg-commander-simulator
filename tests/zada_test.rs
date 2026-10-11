@@ -54,9 +54,9 @@ fn game_with_id_offset(id_offset: usize) -> (GameState, u64) {
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::PreCombatMain;
     state.turn_number = 2;
-    for _ in 0..12 { state.create_card_in_zone(ids::MOUNTAIN, 0, ZoneType::Library); }
+    for _ in 0..12 { state.create_card_in_zone(ids::MOUNTAIN, 0, ZoneType::Library).unwrap(); }
     for _ in 0..id_offset { state.new_object_id(); state.new_stack_id(); }
-    let zada = state.create_card_in_zone(ids::ZADA_HEDRON_GRINDER, 0, ZoneType::Battlefield);
+    let zada = state.create_card_in_zone(ids::ZADA_HEDRON_GRINDER, 0, ZoneType::Battlefield).unwrap();
     (state, zada)
 }
 
@@ -66,7 +66,7 @@ fn cast(state: &mut GameState, card_id: u64, target: Option<Target>) -> u64 {
 
 fn cast_as(state: &mut GameState, player: usize, card_id: u64, target: Option<Target>) -> u64 {
     state.priority_player = player;
-    let spell = state.create_card_in_zone(card_id, player, ZoneType::Hand);
+    let spell = state.create_card_in_zone(card_id, player, ZoneType::Hand).unwrap();
     let action = Action::CastSpell { object_id: spell, targets: target.into_iter().collect() };
     assert!(legal_actions(state).contains(&action), "fixture cast should be legal: {action:?}");
     rules::apply_action(state, &action);
@@ -131,7 +131,7 @@ fn cast_predicate_accepts_instant_and_sorcery_only_when_they_target_zada() {
     for (spell_id, target_zada) in [(DRAW, false), (HASTE_DRAW, false),
         (TARGETED_ENCHANTMENT, true)] {
         let (mut state, zada) = game();
-        let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+        let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
         let target = match spell_id {
             DRAW => None,
             _ if target_zada => Some(Target::Object(zada)),
@@ -177,7 +177,7 @@ fn nonterminal_copy_instruction_cannot_start_an_ordering_batch() {
                 .get_mut(&ids::ZADA_HEDRON_GRINDER).unwrap().triggered_abilities[0].effect =
                 Effect::Multiple(vec![first, Effect::GainLife { amount: 2 }]);
             for _ in 0..candidate_count {
-                state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+                state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
             }
             let life_before = state.players[0].life;
             cast(&mut state, HASTE_DRAW, Some(Target::Object(zada)));
@@ -196,7 +196,7 @@ fn final_child_copy_instruction_still_works() {
         .get_mut(&ids::ZADA_HEDRON_GRINDER).unwrap().triggered_abilities[0].effect =
         Effect::Multiple(vec![Effect::GainLife { amount: 2 },
             Effect::CopyCastSpellForOtherCreatures]);
-    let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     let life_before = state.players[0].life;
     cast(&mut state, HASTE_DRAW, Some(Target::Object(zada)));
     pass_twice(&mut state);
@@ -207,7 +207,7 @@ fn final_child_copy_instruction_still_works() {
 #[test]
 fn one_candidate_copies_immediately_and_both_spells_resolve_independently() {
     let (mut state, zada) = game();
-    let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     let spell = cast(&mut state, HASTE_DRAW, Some(Target::Object(zada)));
     let hand_before = state.players[0].hand.len();
     pass_twice(&mut state);
@@ -229,16 +229,16 @@ fn one_candidate_copies_immediately_and_both_spells_resolve_independently() {
 #[test]
 fn current_battlefield_and_layered_target_legality_choose_exact_candidates() {
     let (mut state, zada) = game();
-    let existing = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let departing = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let no_longer_creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let shrouded = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let own_hexproof = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let layered_creature = state.create_card_in_zone(ARTIFACT, 0, ZoneType::Battlefield);
-    let opponent = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+    let existing = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let departing = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let no_longer_creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let shrouded = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let own_hexproof = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let layered_creature = state.create_card_in_zone(ARTIFACT, 0, ZoneType::Battlefield).unwrap();
+    let opponent = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
     cast(&mut state, HASTE_DRAW, Some(Target::Object(zada)));
-    let entered = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let token = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let entered = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let token = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&token).unwrap().is_token = true;
     state.move_object(departing, ZoneType::Battlefield, ZoneType::Graveyard);
     layer(&mut state, no_longer_creature, LayerModification::RemoveType(CardType::Creature));
@@ -277,7 +277,7 @@ fn naturally_created_goblin_tokens_each_receive_a_copy() {
 #[test]
 fn original_target_becoming_illegal_does_not_cancel_the_trigger() {
     let (mut state, zada) = game();
-    let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     cast(&mut state, HASTE_DRAW, Some(Target::Object(zada)));
     layer(&mut state, zada, LayerModification::AddKeyword(KeywordAbility::Shroud));
     pass_twice(&mut state);
@@ -322,7 +322,7 @@ fn returned_zada_qualifies_only_when_currently_controlled_by_trigger_controller(
 #[test]
 fn departed_zada_and_countered_original_still_copy_from_the_snapshot() {
     let (mut state, zada) = game();
-    let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let other = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     let spell = cast(&mut state, HASTE_DRAW, Some(Target::Object(zada)));
     let original_stack_id = state.stack[0].id;
     state.move_object(zada, ZoneType::Battlefield, ZoneType::Graveyard);
@@ -339,8 +339,8 @@ fn departed_zada_and_countered_original_still_copy_from_the_snapshot() {
 #[test]
 fn control_change_uses_captured_trigger_controller() {
     let (mut state, zada) = game();
-    let ours = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let theirs = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+    let ours = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let theirs = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
     cast(&mut state, HASTE_DRAW, Some(Target::Object(zada)));
     state.objects.get_mut(&zada).unwrap().controller = 1;
     state.invalidate_characteristics_cache();
@@ -352,7 +352,7 @@ fn control_change_uses_captured_trigger_controller() {
 #[test]
 fn layered_controller_owns_cast_trigger_and_later_changes_do_not_reassign_it() {
     let (mut state, zada) = game();
-    let theirs = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+    let theirs = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
     layer(&mut state, zada, LayerModification::ChangeController(1));
     assert_eq!(state.objects[&zada].controller, 0);
     cast_as(&mut state, 1, HASTE_DRAW, Some(Target::Object(zada)));
@@ -389,8 +389,8 @@ fn cast_after_layered_control_expires_uses_current_controller() {
 fn multiple_same_name_creatures_get_distinct_orderable_copies_above_original() {
     for chosen in [0, 1] {
         let (mut state, zada) = game();
-        let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-        let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+        let a = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+        let b = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
         let spell = cast(&mut state, HASTE_DRAW, Some(Target::Object(zada)));
         let original_id = state.stack[0].id;
         let cast_count = state.spells_cast_this_turn;
@@ -420,8 +420,8 @@ fn multiple_same_name_creatures_get_distinct_orderable_copies_above_original() {
 
 fn equivalent_pending(extra_ids: usize, reverse_battlefield: bool, distinguish: bool) -> GameState {
     let (mut state, zada) = game_with_id_offset(extra_ids);
-    let first = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let first = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     if reverse_battlefield { state.battlefield.reverse(); }
     if distinguish { state.objects.get_mut(&first).unwrap().tapped = true; }
     state.invalidate_characteristics_cache();
@@ -468,8 +468,8 @@ fn existing_trigger_condition_binary_tags_remain_stable() {
 #[test]
 fn zada_cast_context_survives_clone_snapshot_json_and_bincode() {
     let (mut state, zada) = game();
-    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     cast(&mut state, HASTE_DRAW, Some(Target::Object(zada)));
     let database = state.card_db.clone();
     let snapshot = state.snapshot();

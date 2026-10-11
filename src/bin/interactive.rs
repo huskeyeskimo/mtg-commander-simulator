@@ -280,8 +280,8 @@ mod mandatory_choice_tests {
         state.turn_number = 2;
         state.active_player = 1;
         state.priority_player = 1;
-        state.create_card_in_zone(990402, 1, ZoneType::Library);
-        for _ in 0..2 { state.create_card_in_zone(990401, 0, ZoneType::Battlefield); }
+        state.create_card_in_zone(990402, 1, ZoneType::Library).unwrap();
+        for _ in 0..2 { state.create_card_in_zone(990401, 0, ZoneType::Battlefield).unwrap(); }
         rules::apply_action(&mut state, &Action::PassPriority);
         rules::apply_action(&mut state, &Action::PassPriority);
         assert_eq!(state.phase, Phase::Draw);
@@ -449,7 +449,12 @@ fn display_game_state(state: &GameState, db: &CardDatabase) {
                         .map(|d| format!("Ability of {} (#{}) ", d.name, ability_index))
                         .unwrap_or_else(|| "Ability: ?".into())
                 }
-                mtg_gto::game::StackSource::EquipAbility { source_card_id, target_card_id, .. } => {
+                        mtg_gto::game::StackSource::AuraSpell { source_card_id, target_card_id, .. } => {
+                    let source = db.get(*source_card_id).map(|d| d.name.as_str()).unwrap_or("?");
+                    let target = db.get(*target_card_id).map(|d| d.name.as_str()).unwrap_or("?");
+                    format!("Aura spell: {} → {} (stack #{})", source, target, entry.id)
+                }
+        mtg_gto::game::StackSource::EquipAbility { source_card_id, target_card_id, .. } => {
                     let source = db.get(*source_card_id).map(|def| def.name.as_str()).unwrap_or("?");
                     let target = db.get(*target_card_id).map(|def| def.name.as_str()).unwrap_or("?");
                     format!("Equip: {} → {} (stack #{})", source, target, entry.id)
@@ -681,6 +686,7 @@ fn format_targets(state: &GameState, targets: &[Target], db: &CardDatabase) -> S
         Target::StackEntry(id) => state.stack.iter().find(|entry| entry.id == *id)
             .and_then(|entry| match entry.source {
                 mtg_gto::game::StackSource::Spell(object) => Some(format!("{} (stack #{})", card_name(state, object, db), id)),
+                mtg_gto::game::StackSource::AuraSpell { source_card_id, .. } => Some(format!("{} (stack #{})", db.get(source_card_id).map(|d| d.name.as_str()).unwrap_or("?"), id)),
                 mtg_gto::game::StackSource::SpellCopy { ref definition } => Some(format!("{} copy (stack #{})", definition.name, id)),
                 _ => None,
             }).unwrap_or_else(|| format!("Stack #{} (gone)", id)),

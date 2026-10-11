@@ -30,15 +30,15 @@ fn setup_commander_state(commander0: CardId, commander1: CardId) -> GameState {
     state.players[1].commander_card_id = Some(commander1);
 
     // Put commanders in command zone and record object IDs
-    let cmd0_obj = state.create_card_in_zone(commander0, 0, ZoneType::Command);
-    let cmd1_obj = state.create_card_in_zone(commander1, 1, ZoneType::Command);
+    let cmd0_obj = state.create_card_in_zone(commander0, 0, ZoneType::Command).unwrap();
+    let cmd1_obj = state.create_card_in_zone(commander1, 1, ZoneType::Command).unwrap();
     state.players[0].commander_object_id = Some(cmd0_obj);
     state.players[1].commander_object_id = Some(cmd1_obj);
 
     // Libraries so no one decks out
     for _ in 0..30 {
-        state.create_card_in_zone(ids::PLAINS, 0, ZoneType::Library);
-        state.create_card_in_zone(ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(ids::PLAINS, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(ids::FOREST, 1, ZoneType::Library).unwrap();
     }
 
     state
@@ -122,7 +122,7 @@ fn test_cast_commander_action_available() {
 
     // Give player 0 enough mana to cast Brimaz (1WW = 3 mana)
     for _ in 0..3 {
-        state.create_card_in_zone(ids::PLAINS, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(ids::PLAINS, 0, ZoneType::Battlefield).unwrap();
     }
     // Untap the lands
     for &id in &state.battlefield.clone() {
@@ -171,7 +171,7 @@ fn test_cast_commander_resolves_to_battlefield() {
 
     // Give player 0 lands
     for _ in 0..4 {
-        let land = state.create_card_in_zone(ids::PLAINS, 0, ZoneType::Battlefield);
+        let land = state.create_card_in_zone(ids::PLAINS, 0, ZoneType::Battlefield).unwrap();
         if let Some(inst) = state.objects.get_mut(&land) {
             inst.tapped = false;
             inst.summoning_sick = false;
@@ -219,7 +219,7 @@ fn test_commander_tax_increments() {
 
     // Give player 0 plenty of mana
     for _ in 0..10 {
-        let land = state.create_card_in_zone(ids::PLAINS, 0, ZoneType::Battlefield);
+        let land = state.create_card_in_zone(ids::PLAINS, 0, ZoneType::Battlefield).unwrap();
         if let Some(inst) = state.objects.get_mut(&land) {
             inst.tapped = false;
         }
@@ -299,7 +299,7 @@ fn test_non_commander_goes_to_graveyard_normally() {
     let mut state = setup_commander_state(ids::BRIMAZ_KING, ids::THRUN_LAST_TROLL);
 
     // A non-commander creature
-    let bear_obj = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+    let bear_obj = state.create_card_in_zone(ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
 
     state.move_object(bear_obj, ZoneType::Battlefield, ZoneType::Graveyard);
 

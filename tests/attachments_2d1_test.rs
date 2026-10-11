@@ -37,6 +37,7 @@ fn fixture() -> (GameState, u64, u64) {
         name: "Aura".into(),
         card_types: vec![CardType::Enchantment],
         subtypes: vec![Subtype("Aura".into())],
+        enchant: mtg_gto::card::EnchantRestriction::Creature,
         mana_cost: Some(ManaCost::zero()),
         spell_effect: Some(Effect::Buff {
             power: 1,
@@ -48,8 +49,8 @@ fn fixture() -> (GameState, u64, u64) {
     let mut s = GameState::new(2);
     s.card_db = Some(Arc::new(db));
     s.phase = Phase::PreCombatMain;
-    let e = s.create_card_in_zone(2, 0, ZoneType::Battlefield);
-    let c = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+    let e = s.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap();
+    let c = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
     rules::apply_action(
         &mut s,
         &Action::Equip {
@@ -128,7 +129,7 @@ fn source_departure_clears_reverse() {
 fn pairing_changes_information() {
     let (s, e, _c) = fixture();
     let mut a = s;
-    let other = a.create_card_in_zone(1, 0, ZoneType::Battlefield);
+    let other = a.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
     a.objects.get_mut(&other).unwrap().tapped = true;
     let mut b = a.clone();
     let prepared = b
@@ -145,7 +146,7 @@ fn pairing_changes_information() {
 #[test]
 fn canonical_target_respects_semantic_identity() {
     let (mut a, e, c) = fixture();
-    let other = a.create_card_in_zone(1, 0, ZoneType::Battlefield);
+    let other = a.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
     a.objects.get_mut(&other).unwrap().tapped = true;
     let mut b = a.clone();
     let mut ci = b.objects.remove(&c).unwrap();
@@ -244,12 +245,12 @@ fn departed_target_does_not_get_attachment_bonus() {
 #[test]
 fn composed_effect_attachment_distribution_distinguishes_02_11() {
     let (mut a, e1, c1) = fixture();
-    let c2 = a.create_card_in_zone(1, 0, ZoneType::Battlefield);
-    let c3 = a.create_card_in_zone(1, 0, ZoneType::Battlefield);
-    let c4 = a.create_card_in_zone(1, 0, ZoneType::Battlefield);
-    let x1 = a.create_card_in_zone(1, 0, ZoneType::Battlefield);
-    let x2 = a.create_card_in_zone(1, 0, ZoneType::Battlefield);
-    let e2 = a.create_card_in_zone(2, 0, ZoneType::Battlefield);
+    let c2 = a.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+    let c3 = a.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+    let c4 = a.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+    let x1 = a.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+    let x2 = a.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
+    let e2 = a.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap();
     for (source_id, target) in [(x1, c1), (x1, c2), (x2, c3), (x2, c4)] {
         a.continuous_effects
             .push(mtg_gto::layers::ContinuousEffect {
@@ -318,7 +319,7 @@ fn equipped_watcher(
     state.invalidate_characteristics_cache();
     for player in 0..2 {
         for _ in 0..5 {
-            state.create_card_in_zone(1, player, ZoneType::Library);
+            state.create_card_in_zone(1, player, ZoneType::Library).unwrap();
         }
     }
     (state, equipment, creature)
@@ -411,7 +412,7 @@ fn historical_predicate_rejects_unrelated_detached_noncreature_and_non_death() {
     for case in 0..4 {
         let (mut state, e, c) = equipped_watcher(false, 0, 1);
         let victim = if case == 0 {
-            state.create_card_in_zone(1, 0, ZoneType::Battlefield)
+            state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap()
         } else {
             c
         };
@@ -451,8 +452,8 @@ fn historical_predicate_rejects_unrelated_detached_noncreature_and_non_death() {
 #[test]
 fn simultaneous_attachment_history_is_member_order_invariant() {
     let (mut base, e, c) = equipped_watcher(false, 1, 0);
-    let c2 = base.create_card_in_zone(1, 1, ZoneType::Battlefield);
-    let e2 = base.create_card_in_zone(2, 0, ZoneType::Battlefield);
+    let c2 = base.create_card_in_zone(1, 1, ZoneType::Battlefield).unwrap();
+    let e2 = base.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap();
     established(&mut base, e2, c2);
     let mut a = base.clone();
     let mut b = base;
@@ -476,7 +477,7 @@ fn simultaneous_attachment_history_is_member_order_invariant() {
 #[test]
 fn established_aura_orphans_during_departure_and_moves_in_its_later_group() {
     let (mut state, _, c) = fixture();
-    let aura = state.create_card_in_zone(3, 1, ZoneType::Battlefield);
+    let aura = aura_fixture_storage(&mut state, 3, 1);
     established(&mut state, aura, c);
     let batch = depart(&mut state, &[c], ZoneType::Graveyard);
     assert_eq!(state.objects[&aura].attachment_link(), None);
@@ -491,9 +492,9 @@ fn established_aura_orphans_during_departure_and_moves_in_its_later_group() {
 #[test]
 fn multiple_sources_control_changes_and_shroud_do_not_detach() {
     let (mut state, e, c) = fixture();
-    let e2 = state.create_card_in_zone(2, 1, ZoneType::Battlefield);
-    let aura1 = state.create_card_in_zone(3, 0, ZoneType::Battlefield);
-    let aura2 = state.create_card_in_zone(3, 1, ZoneType::Battlefield);
+    let e2 = state.create_card_in_zone(2, 1, ZoneType::Battlefield).unwrap();
+    let aura1 = aura_fixture_storage(&mut state, 3, 0);
+    let aura2 = aura_fixture_storage(&mut state, 3, 1);
     for source in [e2, aura1, aura2] {
         established(&mut state, source, c);
     }
@@ -512,7 +513,7 @@ fn multiple_sources_control_changes_and_shroud_do_not_detach() {
         4
     );
     assert_eq!(state.effective_power(c), 4);
-    let next = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
+    let next = state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
     established(&mut state, e2, next);
     assert_eq!(
         state.attachments_of(state.exact_object(c).unwrap()).len(),
@@ -563,7 +564,7 @@ fn action_only_incidence_merge_split_and_departure_rebuild() {
     );
     let linked_bytes = linked.encoding.clone();
     drop(linked);
-    let other = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
+    let other = state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
     established(&mut state, e, other);
     let changed = JointPublicNormalization::for_state(&state, 0).unwrap();
     assert!(changed
@@ -590,7 +591,7 @@ fn action_only_incidence_merge_split_and_departure_rebuild() {
 fn isolated_facts_do_not_expand_relationship_supplement() {
     use mtg_gto::public_projection::JointPublicNormalization;
     let (mut state, _, _) = fixture();
-    let isolated = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
+    let isolated = state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
     let before = JointPublicNormalization::for_state(&state, 0)
         .unwrap()
         .encoding
@@ -798,8 +799,8 @@ fn both_isolated_endpoints_move_to_relational_and_component_merges_rebuild() {
     state.card_db = Some(Arc::new(db));
     state.continuous_effects.clear();
     state.refresh_continuous_effects();
-    let e2 = state.create_card_in_zone(2, 0, ZoneType::Battlefield);
-    let c2 = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
+    let e2 = state.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap();
+    let c2 = state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
     let initial = JointPublicNormalization::for_state(&state, 0).unwrap();
     for id in [e, c, e2, c2] {
         assert_eq!(
@@ -935,9 +936,17 @@ fn solver_checkpoint_rejects_old_and_unversioned_semantic_keys_explicitly() {
     let tables = [RegretTable::new(), RegretTable::new()];
     save_checkpoint(&tables, path, 7).unwrap();
     let current = std::fs::read(folder.join("player_0_iter_7.bin")).unwrap();
-    assert_eq!(mtg_gto::solver::SEMANTIC_FORMAT, "mtg-joint-public-2d2-v1");
+    assert_eq!(mtg_gto::solver::SEMANTIC_FORMAT, "mtg-joint-public-2d3-v1");
     assert!(load_checkpoint(path, 7).is_ok());
     for legacy in [
+        {
+            let mut bytes = current.clone();
+            let index = bytes.windows(mtg_gto::solver::SEMANTIC_FORMAT.len())
+                .position(|part| part == mtg_gto::solver::SEMANTIC_FORMAT.as_bytes()).unwrap();
+            bytes[index..index + mtg_gto::solver::SEMANTIC_FORMAT.len()]
+                .copy_from_slice(b"mtg-joint-public-2d2-v1");
+            bytes
+        },
         bincode::serialize(&std::collections::HashMap::<
             u64,
             mtg_gto::solver::InfoSetData,
@@ -1059,4 +1068,19 @@ fn suspended_owned_occurrence_uses_joint_frame_and_visible_current_source() {
             .as_ref(),
         Some(occurrence)
     );
+}
+
+// Deliberate fixture storage construction, never a gameplay admission path.
+// Callers establish valid exact links with prepare_attach/commit_attach, or
+// explicitly construct malformed/orphan state to preserve rejection/pass tests.
+fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
+    assert!(owner < state.players.len());
+    let def = state.card_db().get(card).unwrap();
+    assert!(def.is_aura());
+    assert_eq!(def.enchant, mtg_gto::card::EnchantRestriction::Creature);
+    let id = state.new_object_id();
+    state.objects.insert(id, mtg_gto::card::CardInstance::new(id, card, owner));
+    state.battlefield.push(id);
+    state.invalidate_characteristics_cache();
+    id
 }

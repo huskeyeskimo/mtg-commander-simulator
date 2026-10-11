@@ -207,10 +207,10 @@ fn state(offset: u64, generation: u32, reverse: bool, pairing: bool) -> GameStat
     state.next_object_id = offset;
     let mut bodies = vec![];
     for _ in 0..6 {
-        bodies.push(state.create_card_in_zone(1, 0, ZoneType::Battlefield));
+        bodies.push(state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap());
     }
     let equipment: Vec<_> = (0..2)
-        .map(|_| state.create_card_in_zone(2, 0, ZoneType::Battlefield))
+        .map(|_| state.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap())
         .collect();
     for instance in state.objects.values_mut() {
         instance.zone_change_count = generation;
@@ -324,7 +324,7 @@ fn complete_action_sets_reconstruct_with_shared_witness_across_allocations() {
 fn hidden_current_identities_do_not_join_owned_history_or_opaque_handles() {
     let a = state(1, 0, false, false);
     let mut b = a.clone();
-    let hidden = b.create_card_in_zone(1, 1, ZoneType::Hand);
+    let hidden = b.create_card_in_zone(1, 1, ZoneType::Hand).unwrap();
     b.continuous_effects.push(ContinuousEffect {
         source_id: hidden,
         controller: 1,
@@ -393,14 +393,14 @@ fn performance_state(n: usize, shared: bool, modifier: bool) -> (GameState, Vec<
     for id in originals {
         state.move_object(id, ZoneType::Battlefield, ZoneType::Exile);
     }
-    let target = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
+    let target = state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
     let mut targets = vec![];
     for i in 0..n {
-        let source = state.create_card_in_zone(2, 0, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap();
         let current = if shared {
             target
         } else {
-            state.create_card_in_zone(1, 0, ZoneType::Battlefield)
+            state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap()
         };
         if i % 2 == 0 {
             state.objects.get_mut(&current).unwrap().is_token = true;
@@ -461,7 +461,7 @@ fn production_performance_diagnostics() {
     }
     for pairs in [2, 3, 4, 5, 6, 8, 10] {
         let (mut state, targets) = performance_state(pairs, false, false);
-        let hub = state.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let hub = state.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
         for target in targets {
             state.continuous_effects.push(ContinuousEffect {
                 source_id: hub,
@@ -645,7 +645,7 @@ fn reversed_source_target_ids_preserve_complete_action_sets_and_anchor_incidence
             a.combat.blockers.insert(other, wearer);
             a.combat.attacker_blockers.insert(wearer, vec![other]);
             a.combat.damage_assignment.insert(wearer, vec![(other, 1)]);
-            let exile = a.create_card_in_zone(1, 0, ZoneType::Exile);
+            let exile = a.create_card_in_zone(1, 0, ZoneType::Exile).unwrap();
             a.objects.get_mut(&exile).unwrap().exiled_by = Some(equipment);
         }
         let b = reverse_runtime_ids(&a);

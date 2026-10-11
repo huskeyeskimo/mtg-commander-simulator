@@ -845,6 +845,7 @@ fn characteristics_facts(
         chars.toughness,
         chars.controller,
         chars.abilities_removed,
+        chars.enchant,
     ))
 }
 
@@ -1783,6 +1784,15 @@ impl<'v, 'a> Inventory<'v, 'a> {
         Ok((source, target))
     }
 
+    fn aura_endpoints(&mut self, entry: &crate::game::StackEntry) -> EncodingResult<(usize, usize)> {
+        let Some((source, target)) = crate::targeting::aura_entry_endpoints(entry, self.view.card_db,
+            self.view.player_count, |id| self.view.objects.get(&id).copied())? else { return Err(TerminationReason::StateEncoding); };
+        let StackSource::AuraSpell { source_card_id, source_owner, target_card_id, target_owner, target_is_token, .. } = entry.source else { unreachable!() };
+        let source = self.exact(source, StableIdentityFacts { definition: Some(source_card_id), owner: Some(source_owner), token: Some(false) })?;
+        let target = self.exact(target, StableIdentityFacts { definition: Some(target_card_id), owner: Some(target_owner), token: Some(target_is_token) })?;
+        Ok((source, target))
+    }
+
     fn operations(&mut self) -> EncodingResult<()> {
         for trigger in self.view.pending_triggers {
             let occurrence = self.occurrence(
@@ -1796,6 +1806,11 @@ impl<'v, 'a> Inventory<'v, 'a> {
         }
         let mut records = HashMap::new();
         for (position, entry) in self.view.stack.iter().enumerate() {
+            if let StackSource::AuraSpell { source, .. } = entry.source {
+                if self.view.stack.iter().filter(|other| other.source.physical_object() == Some(source.id)).count() != 1 {
+                    return Err(TerminationReason::StateEncoding);
+                }
+            }
             let source_facts = match &entry.source {
                 StackSource::Spell(_) => encode(&(0u8,))?,
                 StackSource::ActivatedAbility { ability_index, .. } => {
@@ -1806,6 +1821,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                 }
                 StackSource::SpellCopy { definition } => encode(&(3u8, definition))?,
                 StackSource::EquipAbility { source_card_id, target_card_id, .. } => encode(&(4u8, source_card_id, target_card_id))?,
+                StackSource::AuraSpell { source_card_id, source_owner, target_card_id, target_owner, target_controller, target_is_token, restriction, .. } => encode(&(5u8, source_card_id, source_owner, target_card_id, target_owner, target_controller, target_is_token, restriction))?,
             };
             let record = self.graph.vertex(
                 VertexKind::StackOrOperation,
@@ -1837,6 +1853,11 @@ impl<'v, 'a> Inventory<'v, 'a> {
                     (Some(occurrence), Some(occurrence))
                 }
                 StackSource::SpellCopy { .. } => (None, None),
+                StackSource::AuraSpell { .. } => {
+                    let (source, target) = self.aura_endpoints(entry)?;
+                    self.graph.edge(record, target, EdgeKind::StackTarget, &(0usize, 0u8, true))?;
+                    (Some(source), None)
+                }
                 StackSource::EquipAbility { .. } => {
                     let (source, target) = self.equip_endpoints(entry)?;
                     self.graph.edge(record, target, EdgeKind::StackTarget, &(0usize, 0u8, true))?;
@@ -1848,7 +1869,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                 self.graph
                     .edge(record, source, EdgeKind::StackSource, &())?;
             }
-            if !matches!(entry.source, StackSource::EquipAbility { .. }) {
+            if !matches!(entry.source, StackSource::EquipAbility { .. } | StackSource::AuraSpell { .. }) {
                 self.targets(record, &entry.targets, &entry.target_generations, EdgeKind::StackTarget, &records)?;
             }
         }
@@ -1893,6 +1914,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                     }
                     StackSource::SpellCopy { definition } => encode(&(3u8, definition))?,
                     StackSource::EquipAbility { source_card_id, target_card_id, .. } => encode(&(4u8, source_card_id, target_card_id))?,
+                StackSource::AuraSpell { source_card_id, source_owner, target_card_id, target_owner, target_controller, target_is_token, restriction, .. } => encode(&(5u8, source_card_id, source_owner, target_card_id, target_owner, target_controller, target_is_token, restriction))?,
                 };
                 let member = self.graph.vertex(
                     VertexKind::StackOrOperation,
@@ -1928,6 +1950,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                         self.resolving_occurrence_vertex = Some(occurrence);
                         Some(occurrence)
                     }
+                    StackSource::AuraSpell { .. } => return Err(TerminationReason::StateEncoding),
                     StackSource::EquipAbility { .. } => {
                         let (source, target) = self.equip_endpoints(entry)?;
                         self.graph.edge(member, target, EdgeKind::ContinuationTarget, &(0usize, 0u8, true))?;
@@ -1942,7 +1965,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                     self.graph
                         .edge(member, source, EdgeKind::StackSource, &())?;
                 }
-                if !matches!(entry.source, StackSource::EquipAbility { .. }) {
+                if !matches!(entry.source, StackSource::EquipAbility { .. } | StackSource::AuraSpell { .. }) {
                     self.targets(member, &entry.targets, &entry.target_generations, EdgeKind::ContinuationTarget, &records)?;
                 }
             }
@@ -2020,6 +2043,7 @@ impl<'v, 'a> PreparedPublicNormalization<'v, 'a> {
         if player >= state.players.len() || state.players.len() < 2 {
             return Err(TerminationReason::StateEncoding);
         }
+        crate::targeting::validate_pending_auras(state)?;
         PreparedPublicNormalization::from_view(&state.visible_state(player)).map(drop)
     }
 
@@ -2222,6 +2246,7 @@ impl<'a> JointPublicNormalization<'a> {
         if player >= state.players.len() || state.players.len() < 2 {
             return Err(TerminationReason::StateEncoding);
         }
+        crate::targeting::validate_pending_auras(state)?;
         Self::from_view(&state.visible_state(player))
     }
 
@@ -2323,10 +2348,10 @@ mod two_stage_tests {
     fn state() -> GameState {
         let mut s = GameState::new(2);
         s.card_db = Some(std::sync::Arc::new(sample::build_sample_db()));
-        let source = s.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield);
+        let source = s.create_card_in_zone(sample::ids::ELVISH_VISIONARY, 0, ZoneType::Battlefield).unwrap();
         s.pending_triggers.push(PendingTrigger::from_source(&s, source, 0, 0, vec![]).unwrap());
-        s.create_card_in_zone(sample::ids::BLOOD_ARTIST, 0, ZoneType::Battlefield);
-        let target = s.create_card_in_zone(sample::ids::LLANOWAR_ELVES, 0, ZoneType::Battlefield);
+        s.create_card_in_zone(sample::ids::BLOOD_ARTIST, 0, ZoneType::Battlefield).unwrap();
+        let target = s.create_card_in_zone(sample::ids::LLANOWAR_ELVES, 0, ZoneType::Battlefield).unwrap();
         let exact = s.exact_object(target).unwrap();
         crate::rules::transitions::transition_batch(&mut s, &[crate::rules::transitions::TransitionRequest {
             object: exact, from: ZoneType::Battlefield, to: ZoneType::Graveyard,

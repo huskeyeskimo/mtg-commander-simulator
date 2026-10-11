@@ -50,7 +50,7 @@ fn fixture(effect: Effect, players: usize) -> (GameState, u64) {
     let mut state = GameState::new(players);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::PreCombatMain;
-    let source = state.create_card_in_zone(SOURCE, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(SOURCE, 0, ZoneType::Battlefield).unwrap();
     (state, source)
 }
 
@@ -80,7 +80,7 @@ fn move_subject(state: &mut GameState, source: u64, subject: u64) {
 fn direct_departure_ability_rechecks_shroud_at_resolution() {
     for effect in effects() {
         let (mut state, source) = fixture(effect, 2);
-        let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+        let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
         activate(&mut state, source, vec![Target::Object(subject)]);
         state.objects.get_mut(&subject).unwrap().temp_keywords.push(KeywordAbility::Shroud);
         state.invalidate_characteristics_cache();
@@ -99,9 +99,9 @@ fn creature_and_noncreature_departures_emit_once_without_death() {
     for (index, effect) in effects().into_iter().enumerate() {
         for card in [CREATURE, ARTIFACT] {
             let (mut state, source) = fixture(effect.clone(), 2);
-            let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-            let death = state.create_card_in_zone(DEATH, 0, ZoneType::Battlefield);
-            let subject = state.create_card_in_zone(card, 1, ZoneType::Battlefield);
+            let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+            let death = state.create_card_in_zone(DEATH, 0, ZoneType::Battlefield).unwrap();
+            let subject = state.create_card_in_zone(card, 1, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&subject).unwrap().controller = 0;
             let generation = state.objects[&subject].zone_change_count;
             move_subject(&mut state, source, subject);
@@ -134,7 +134,7 @@ fn stale_and_blinked_targets_leave_returned_incarnation_and_event_counter_untouc
     for effect in effects() {
         for blink in [false, true] {
             let (mut state, source) = fixture(effect.clone(), 2);
-            let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+            let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
             activate(&mut state, source, vec![Target::Object(subject)]);
             state.move_object(subject, ZoneType::Battlefield, ZoneType::Hand);
             if blink { state.move_object(subject, ZoneType::Hand, ZoneType::Battlefield); }
@@ -162,8 +162,8 @@ fn library_bottom_and_shuffle_preserve_contents_and_placement() {
           for _ in 0..4 {
             let (mut state, source) = fixture(effects()[index].clone(), 2);
             let mut before: Vec<_> = (0..24)
-                .map(|_| state.create_card_in_zone(LAND, 1, ZoneType::Library)).collect();
-            let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+                .map(|_| state.create_card_in_zone(LAND, 1, ZoneType::Library).unwrap()).collect();
+            let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&subject).unwrap().is_token = token;
             if !token { before.push(subject); }
             move_subject(&mut state, source, subject);
@@ -186,8 +186,8 @@ fn library_bottom_and_shuffle_preserve_contents_and_placement() {
 fn rejected_library_target_preserves_order_without_shuffle_or_bottom_postprocessing() {
     for index in [1, 2] {
         let (mut state, source) = fixture(effects()[index].clone(), 2);
-        for _ in 0..12 { state.create_card_in_zone(LAND, 1, ZoneType::Library); }
-        let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+        for _ in 0..12 { state.create_card_in_zone(LAND, 1, ZoneType::Library).unwrap(); }
+        let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
         activate(&mut state, source, vec![Target::Object(subject)]);
         state.move_object(subject, ZoneType::Battlefield, ZoneType::Hand);
         let order = state.players[1].library.clone();
@@ -204,24 +204,24 @@ fn mass_state(players: usize, id_start: u64, reverse: bool) -> (GameState, Vec<u
     if reverse {
         // Different allocation history, with no surviving extra information.
         for _ in 0..3 {
-            let transient = state.create_card_in_zone(LAND, players - 1, ZoneType::Library);
+            let transient = state.create_card_in_zone(LAND, players - 1, ZoneType::Library).unwrap();
             state.players[players - 1].library.retain(|&id| id != transient);
             state.objects.remove(&transient);
         }
     }
     let watchers: Vec<_> = (0..players)
-        .map(|p| state.create_card_in_zone(WATCHER, p, ZoneType::Battlefield)).collect();
+        .map(|p| state.create_card_in_zone(WATCHER, p, ZoneType::Battlefield).unwrap()).collect();
     let mut movers = watchers[1..].to_vec();
-    for p in 1..players { movers.push(state.create_card_in_zone(CREATURE, p, ZoneType::Battlefield)); }
-    movers.push(state.create_card_in_zone(ARTIFACT, 1, ZoneType::Battlefield));
-    let stolen = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    for p in 1..players { movers.push(state.create_card_in_zone(CREATURE, p, ZoneType::Battlefield).unwrap()); }
+    movers.push(state.create_card_in_zone(ARTIFACT, 1, ZoneType::Battlefield).unwrap());
+    let stolen = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&stolen).unwrap().controller = 1;
     movers.push(stolen);
-    let token = state.create_card_in_zone(CREATURE, players - 1, ZoneType::Battlefield);
+    let token = state.create_card_in_zone(CREATURE, players - 1, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&token).unwrap().is_token = true;
     movers.push(token);
-    for p in 0..players { state.create_card_in_zone(LAND, p, ZoneType::Battlefield); }
-    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    for p in 0..players { state.create_card_in_zone(LAND, p, ZoneType::Battlefield).unwrap(); }
+    state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     if reverse { state.battlefield.reverse(); }
     activate(&mut state, source, vec![]);
     state.drain_events();
@@ -292,9 +292,9 @@ fn hidden_hand_and_library_current_identity_is_player_relative() {
     for players in [2, 3, 4] {
         for (index, effect) in effects().into_iter().enumerate() {
             let (mut state, source) = fixture(effect, players);
-            state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+            state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
             let owner = players - 1;
-            let subject = state.create_card_in_zone(CREATURE, owner, ZoneType::Battlefield);
+            let subject = state.create_card_in_zone(CREATURE, owner, ZoneType::Battlefield).unwrap();
             // Controller before movement must not replace destination ownership.
             state.objects.get_mut(&subject).unwrap().controller = 0;
             move_subject(&mut state, source, subject);
@@ -378,8 +378,8 @@ fn private_destinations_and_purged_tokens_finish_identically_after_every_restore
     for effect in effects() {
         for token in [false, true] {
             let (mut state, source) = fixture(effect.clone(), 3);
-            state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-            let subject = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield);
+            state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+            let subject = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&subject).unwrap().is_token = token;
             state.objects.get_mut(&subject).unwrap().controller = 0;
             move_subject(&mut state, source, subject);
@@ -410,8 +410,8 @@ fn compatible_multiple_rechecks_only_at_entry_and_preserves_later_draw() {
         for protected in [false, true] {
             let (mut state, source) = fixture(Effect::Multiple(vec![effect.clone(),
                 Effect::DrawCards { count: 1 }]), 2);
-            let drawn = state.create_card_in_zone(LAND, 0, ZoneType::Library);
-            let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+            let drawn = state.create_card_in_zone(LAND, 0, ZoneType::Library).unwrap();
+            let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
             activate(&mut state, source, vec![Target::Object(subject)]);
             if protected {
                 state.objects.get_mut(&subject).unwrap().temp_keywords.push(KeywordAbility::Hexproof);
@@ -436,8 +436,8 @@ fn conditional_modal_and_foreach_departures_preserve_existing_envelope_behavior(
             Effect::ForEach { count: DynamicValue::Fixed(1), effect: Box::new(child()) },
         ] {
             let (mut state, source) = fixture(envelope, 2);
-            let drawn = state.create_card_in_zone(LAND, 0, ZoneType::Library);
-            let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+            let drawn = state.create_card_in_zone(LAND, 0, ZoneType::Library).unwrap();
+            let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
             move_subject(&mut state, source, subject);
             assert!(!state.battlefield.contains(&subject));
             assert!(state.players[0].hand.contains(&drawn));
@@ -454,7 +454,7 @@ fn creature_contract_rejects_current_noncreature_at_resolution() {
         Effect::PutOnBottomOfLibrary { target: TargetSpec::AnyCreature },
     ] {
         let (mut state, source) = fixture(effect, 2);
-        let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+        let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
         activate(&mut state, source, vec![Target::Object(subject)]);
         state.continuous_effects.push(ContinuousEffect {
             source_id: subject, controller: 1, timestamp: 1, duration: Duration::Permanent,
@@ -473,8 +473,8 @@ fn commander_hand_and_library_compatibility_records_actual_destination() {
     for (index, effect) in effects().into_iter().enumerate() {
         let (mut state, source) = fixture(effect, 2);
         state.format = mtg_gto::game::GameFormat::Commander;
-        state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-        let commander = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+        state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+        let commander = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
         state.players[1].commander_card_id = Some(CREATURE);
         state.players[1].commander_object_id = Some(commander);
         state.objects.get_mut(&commander).unwrap().controller = 0;
@@ -489,7 +489,7 @@ fn commander_hand_and_library_compatibility_records_actual_destination() {
     }
     let (mut state, source) = fixture(Effect::BounceAllNonlandOpponents, 3);
     state.format = mtg_gto::game::GameFormat::Commander;
-    let commander = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield);
+    let commander = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield).unwrap();
     state.players[2].commander_object_id = Some(commander);
     activate(&mut state, source, vec![]);
     pass_round(&mut state);
@@ -501,11 +501,11 @@ fn commander_hand_and_library_compatibility_records_actual_destination() {
 fn migrated_departure_then_common_sba_death_has_separate_contexts_and_endpoints() {
     use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
     let (mut state, source) = fixture(effects()[0].clone(), 2);
-    let departure = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let death = state.create_card_in_zone(DEATH, 0, ZoneType::Battlefield);
-    let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+    let departure = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let death = state.create_card_in_zone(DEATH, 0, ZoneType::Battlefield).unwrap();
+    let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&subject).unwrap().controller = 0;
-    let cascade = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let cascade = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&cascade).unwrap().damage_marked = 2;
     state.continuous_effects.push(ContinuousEffect {
         source_id: subject, controller: 0, timestamp: 1,
@@ -552,8 +552,8 @@ fn later_opponent_public_exile_and_death_controls_confirm_current_incarnation() 
         Effect::DestroyTarget { target: TargetSpec::AnyPermanent }] {
         let dies = matches!(effect, Effect::DestroyTarget { .. });
         let (mut state, source) = fixture(effect, 3);
-        state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-        let subject = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield);
+        state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+        let subject = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&subject).unwrap().controller = 0;
         move_subject(&mut state, source, subject);
         for viewer in 0..3 {
@@ -575,7 +575,7 @@ fn owned_targeted_trigger_rechecks_departure_legality_without_rebinding_target()
     for effect in effects() {
         for case in 0..3 {
             let (mut state, source) = fixture(effect.clone(), 2);
-            let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+            let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
             let generation = state.objects[&subject].zone_change_count;
             let id = state.new_stack_id();
             state.stack.push(StackEntry { id, controller: 0,
@@ -617,9 +617,9 @@ fn physical_spell_cleanup_precedes_trigger_placement_for_all_four_families() {
             card_types: vec![CardType::Instant], mana_cost: Some(ManaCost::zero()),
             spell_effect: Some(effect), ..Default::default() });
         state.card_db = Some(Arc::new(db));
-        state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-        let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
-        let spell = state.create_card_in_zone(SPELL, 0, ZoneType::Hand);
+        state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+        let subject = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
+        let spell = state.create_card_in_zone(SPELL, 0, ZoneType::Hand).unwrap();
         apply_action(&mut state, &Action::CastSpell { object_id: spell,
             targets: if mass { vec![] } else { vec![Target::Object(subject)] } });
         state.drain_events();
@@ -647,14 +647,14 @@ fn every_private_departure_family_preserves_coordinates_after_id_and_history_cha
                 state.next_object_id = if renamed { 6_000_060 } else { 5_000_050 };
                 if renamed {
                     for _ in 0..3 {
-                        let transient = state.create_card_in_zone(LAND, players - 1, ZoneType::Library);
+                        let transient = state.create_card_in_zone(LAND, players - 1, ZoneType::Library).unwrap();
                         state.players[players - 1].library.retain(|&id| id != transient);
                         state.objects.remove(&transient);
                     }
                     state.next_zone_event_group_id = 77;
                 }
-                state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-                let subject = state.create_card_in_zone(CREATURE, players - 1, ZoneType::Battlefield);
+                state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+                let subject = state.create_card_in_zone(CREATURE, players - 1, ZoneType::Battlefield).unwrap();
                 state.objects.get_mut(&subject).unwrap().controller = 0;
                 move_subject(&mut state, source, subject);
                 if renamed { state.pending_triggers.reverse(); }
@@ -674,8 +674,8 @@ fn every_private_departure_family_preserves_coordinates_after_id_and_history_cha
 fn departure_source_state(effect: Effect, pending: bool) -> (GameState, u64) {
     let mass = matches!(effect, Effect::BounceAllNonlandOpponents);
     let (mut state, ability) = fixture(effect, 3);
-    if pending { state.create_card_in_zone(WATCHER, 2, ZoneType::Battlefield); }
-    let source = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield);
+    if pending { state.create_card_in_zone(WATCHER, 2, ZoneType::Battlefield).unwrap(); }
+    let source = state.create_card_in_zone(CREATURE, 2, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&source).unwrap().plus_counters = 2;
     state.objects.get_mut(&source).unwrap().tapped = true;
     if mass {
@@ -787,8 +787,8 @@ fn source_zone_state(zone: ZoneType, players: usize, id_start: u64) -> (GameStat
     use mtg_gto::rules::transitions::{transition_batch, ExactObjectRef, MovementKind, TransitionRequest};
     let (mut state, _) = fixture(effects()[0].clone(), players);
     state.next_object_id = id_start;
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let source = state.create_card_in_zone(CREATURE, players - 1, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let source = state.create_card_in_zone(CREATURE, players - 1, ZoneType::Battlefield).unwrap();
     let instance = state.objects.get_mut(&source).unwrap();
     instance.controller = 0;
     instance.plus_counters = 2;
@@ -828,7 +828,7 @@ fn stacked_activated_source_reference_does_not_grant_hidden_current_access() {
     for zone in [ZoneType::Hand, ZoneType::Library, ZoneType::Battlefield,
         ZoneType::Graveyard, ZoneType::Exile, ZoneType::Command] {
         let (mut state, _) = fixture(effects()[0].clone(), 3);
-        let source = state.create_card_in_zone(SOURCE, 2, zone);
+        let source = state.create_card_in_zone(SOURCE, 2, zone).unwrap();
         let id = state.new_stack_id();
         state.stack.push(StackEntry { id, source: StackSource::ActivatedAbility { source_id: source, ability_index: 0 },
             controller: 2, targets: vec![], target_generations: vec![] });

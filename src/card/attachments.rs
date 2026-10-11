@@ -160,6 +160,15 @@ impl GameState {
             }
             AttachmentKind::Equipment
         } else if def.is_aura() {
+            let chars = self.get_characteristics(source.id).ok_or(AttachmentError::Source)?;
+            if !chars.subtypes.iter().any(|s| s.0 == "Aura") || chars.card_types.contains(&CardType::Creature) {
+                return Err(AttachmentError::Source);
+            }
+            match chars.enchant {
+                crate::card::ComputedEnchant::Restriction(crate::card::EnchantRestriction::Creature) if self.is_creature(target.id) => {},
+                crate::card::ComputedEnchant::Removed => {},
+                _ => return Err(AttachmentError::Kind),
+            }
             AttachmentKind::Aura
         } else {
             return Err(AttachmentError::Kind);
@@ -229,24 +238,25 @@ impl GameState {
         }
         let renew = prepared.context == AttachmentContext::EquipResolution
             && prepared.old_link.is_none_or(|link| link.target != prepared.target);
+        let mut projection = crate::game::RefreshProjection::new(self);
+        let allocate = |projection: &mut crate::game::RefreshProjection| {
+            let timestamp = projection.next_timestamp;
+            projection.next_timestamp = timestamp.checked_add(1).ok_or(AttachmentError::Timestamp)?;
+            Ok::<_, AttachmentError>(timestamp)
+        };
         let timestamp = if prepared.context == AttachmentContext::Established || renew {
-            self.new_timestamp()
+            allocate(&mut projection)?
         } else {
             prepared
                 .old_link
                 .map_or(self.next_timestamp, |link| link.timestamp)
         };
-        self.objects
-            .get_mut(&prepared.source.id)
-            .ok_or(AttachmentError::Source)?
-            .attachment = Some(AttachmentLink {
-            source_generation: prepared.source.generation,
-            target: prepared.target,
-            kind: prepared.kind,
-            timestamp,
-        });
+        let mut inst = self.objects[&prepared.source.id].clone();
+        inst.attachment = Some(AttachmentLink { source_generation: prepared.source.generation,
+            target: prepared.target, kind: prepared.kind, timestamp });
+        projection.put(inst);
         if prepared.context == AttachmentContext::Established {
-            for effect in &mut self.continuous_effects {
+            for effect in &mut projection.effects {
                 if effect.source_id == prepared.source.id
                     && effect.affected == crate::layers::AffectedObjects::AttachedTo
                 {
@@ -263,27 +273,28 @@ impl GameState {
                 let controller = inst.controller;
                 let abilities = self.card_db().get(inst.card_def_id).unwrap().static_abilities.clone();
                 for (rank, ability) in abilities.iter().enumerate() {
-                    let stamp = if rank == 0 { timestamp } else { self.new_timestamp() };
-                    self.continuous_effects.extend(ability.to_continuous_effects(prepared.source.id, controller, stamp));
+                    let stamp = if rank == 0 { timestamp } else { allocate(&mut projection)? };
+                    projection.effects.extend(ability.to_continuous_effects(prepared.source.id, controller, stamp));
                 }
             } else {
                 // Match the represented static records, not independent spell effects.
                 // Mutate in place and retain the ordering of distinct source timestamps.
                 let indices = self.equip_static_indices(prepared.source.id);
-                let mut old: Vec<_> = indices.iter().map(|&i| self.continuous_effects[i].timestamp).collect();
+                let mut old: Vec<_> = indices.iter().map(|&i| projection.effects[i].timestamp).collect();
                 old.sort_unstable(); old.dedup();
                 let mut replacements = Vec::new();
                 for rank in 0..old.len() {
-                    replacements.push(if rank == 0 { timestamp } else { self.new_timestamp() });
+                    replacements.push(if rank == 0 { timestamp } else { allocate(&mut projection)? });
                 }
                 for i in indices {
-                    let rank = old.binary_search(&self.continuous_effects[i].timestamp).unwrap();
-                    self.continuous_effects[i].timestamp = replacements[rank];
+                    let rank = old.binary_search(&projection.effects[i].timestamp).unwrap();
+                    projection.effects[i].timestamp = replacements[rank];
                 }
             }
         }
-        self.refresh_continuous_effects();
-        self.invalidate_characteristics_cache();
+        let refresh = projection.refresh(self).map_err(|_| AttachmentError::Timestamp)?;
+        self.objects.get_mut(&prepared.source.id).unwrap().attachment = projection.object(self, prepared.source.id).unwrap().attachment;
+        refresh.commit(self);
         Ok(())
     }
 
@@ -292,20 +303,23 @@ impl GameState {
         source: ExactObjectRef,
         expected_target: ExactObjectRef,
     ) -> bool {
-        let Some(inst) = self.objects.get_mut(&source.id) else {
-            return false;
+        let mut projection = crate::game::RefreshProjection::new(self);
+        if !projection.detach(self, source, expected_target) { return false; }
+        let prepared = match projection.refresh(self) {
+            Ok(prepared) => prepared,
+            Err(error) => { self.sba_failure = Some(error); return false; }
         };
-        if inst.zone_change_count != source.generation
-            || !inst.attachment.is_some_and(|link| {
-                link.source_generation == source.generation && link.target == expected_target
-            })
-        {
-            return false;
-        }
-        inst.attachment = None;
-        self.refresh_continuous_effects();
-        self.invalidate_characteristics_cache();
+        self.detach_exact_prepared(source, expected_target, prepared);
         true
+    }
+
+    pub(crate) fn detach_exact_prepared(&mut self, source: ExactObjectRef,
+        target: ExactObjectRef, refresh: crate::game::PreparedContinuousRefresh) {
+        let inst = self.objects.get_mut(&source.id).unwrap();
+        debug_assert!(inst.zone_change_count == source.generation
+            && inst.attachment.is_some_and(|link| link.target == target));
+        inst.attachment = None;
+        refresh.commit(self);
     }
 
     pub(crate) fn capture_attachment_inventory(&self) -> AttachmentInventory {
@@ -446,7 +460,7 @@ impl GameState {
             }
         }
         for entry in &self.stack {
-            if let crate::game::StackSource::Spell(id) = entry.source {
+            if let Some(id) = entry.source.physical_object() {
                 if !membership.insert(id) || !self.objects.contains_key(&id) {
                     return Err(AttachmentError::Membership);
                 }
@@ -507,6 +521,7 @@ impl GameState {
         }
         for (source, target) in orphaned {
             self.detach_exact(source, target);
+            if self.sba_failure.is_some() { return Err(AttachmentError::Timestamp); }
         }
         Ok(())
     }
@@ -548,5 +563,82 @@ impl GameState {
 impl super::CardInstance {
     pub fn attachment_link(&self) -> Option<AttachmentLink> {
         self.attachment
+    }
+}
+
+/// Transient capability for an already-preflighted attached Aura entry.
+#[derive(Debug)]
+pub(crate) struct PreparedAuraAttachment {
+    source: ExactObjectRef,
+    target: ExactObjectRef,
+}
+
+impl GameState {
+    pub(crate) fn prepare_aura_attachment(&self, source: ExactObjectRef, target: ExactObjectRef)
+        -> Result<PreparedAuraAttachment, AttachmentError> {
+        if self.exact_object(source.id) != Some(source) || self.battlefield.contains(&source.id)
+            || self.objects[&source.id].attachment.is_some() { return Err(AttachmentError::Source); }
+        if self.exact_object(target.id) != Some(target) || !self.battlefield.contains(&target.id)
+            || source.id == target.id { return Err(AttachmentError::Target); }
+        let generation = source.generation.checked_add(1).ok_or(AttachmentError::Generation)?;
+        Ok(PreparedAuraAttachment { source: ExactObjectRef { id: source.id, generation }, target })
+    }
+
+    pub(crate) fn project_aura_attachment(&self, prepared: &PreparedAuraAttachment,
+        projection: &mut crate::game::RefreshProjection) -> Result<(), AttachmentError> {
+        let timestamp = projection.next_timestamp;
+        projection.next_timestamp = timestamp.checked_add(1).ok_or(AttachmentError::Timestamp)?;
+        let mut inst = projection.object(self, prepared.source.id).ok_or(AttachmentError::Source)?.clone();
+        inst.attachment = Some(AttachmentLink { source_generation: prepared.source.generation,
+            target: prepared.target, kind: AttachmentKind::Aura, timestamp });
+        let abilities = &self.card_db().get(inst.card_def_id).ok_or(AttachmentError::Source)?.static_abilities;
+        for (index, ability) in abilities.iter().enumerate() {
+            let stamp = if index == 0 { timestamp } else {
+                let stamp = projection.next_timestamp;
+                projection.next_timestamp = stamp.checked_add(1).ok_or(AttachmentError::Timestamp)?; stamp
+            };
+            let generated = ability.to_continuous_effects(prepared.source.id, inst.controller, stamp);
+            projection.effects.len().checked_add(generated.len()).ok_or(AttachmentError::Timestamp)?;
+            projection.effects.extend(generated);
+        }
+        projection.put(inst);
+        Ok(())
+    }
+
+    /// Called only by the synchronous prepared adapter after storage entry and
+    /// before notifications/ETB. This module remains the forward-link authority.
+    pub(crate) fn commit_aura_attachment(&mut self, prepared: PreparedAuraAttachment) {
+        debug_assert_eq!(self.exact_object(prepared.source.id), Some(prepared.source));
+        debug_assert_eq!(self.exact_object(prepared.target.id), Some(prepared.target));
+        let timestamp = self.new_timestamp();
+        self.objects.get_mut(&prepared.source.id).unwrap().attachment = Some(AttachmentLink {
+            source_generation: prepared.source.generation, target: prepared.target,
+            kind: AttachmentKind::Aura, timestamp,
+        });
+        // The current Stack incarnation has no materialized Battlefield
+        // definition records. Preserve independent records, including ones
+        // whose modification happens to equal a static template.
+        let inst = &self.objects[&prepared.source.id];
+        let controller = inst.controller;
+        let abilities = self.card_db().get(inst.card_def_id).unwrap().static_abilities.clone();
+        for (index, ability) in abilities.iter().enumerate() {
+            let stamp = if index == 0 { timestamp } else { self.new_timestamp() };
+            self.continuous_effects.extend(ability.to_continuous_effects(prepared.source.id, controller, stamp));
+        }
+        self.invalidate_characteristics_cache();
+    }
+}
+
+impl super::CardInstance {
+    /// Read-only preparation uses the same forward-link cleanup condition.
+    pub(crate) fn project_attachment_departure(&mut self, departed: ExactObjectRef) {
+        if self.object_id == departed.id || self.attachment.is_some_and(|link| link.target == departed) {
+            self.attachment = None;
+        }
+    }
+    pub(crate) fn project_detachment(&mut self, source: ExactObjectRef, target: ExactObjectRef) -> bool {
+        if self.zone_change_count != source.generation || !self.attachment.is_some_and(|link|
+            link.source_generation == source.generation && link.target == target) { return false; }
+        self.attachment = None; true
     }
 }

@@ -6,6 +6,17 @@ use crate::action::Action;
 use crate::card::{ObjectId, ZoneType};
 use crate::game::{GameState, Phase};
 
+// Setup preserves its existing void API; a rejected primitive records the
+// established failure and stops the enclosing setup rather than panicking.
+macro_rules! setup_card {
+    ($state:expr, $card:expr, $owner:expr, $zone:expr) => {
+        match $state.create_card_in_zone($card, $owner, $zone) {
+            Ok(id) => id,
+            Err(error) => { super::aura::record_entry_failure($state, error); return; }
+        }
+    };
+}
+
 /// Advance the mulligan state machine after a keep or bottom-card decision.
 ///
 /// Flow:
@@ -59,18 +70,18 @@ pub fn setup_game(
     let mut rng = rand::thread_rng();
 
     // Create card instances for player 0
-    let mut lib0: Vec<ObjectId> = deck0
-        .iter()
-        .map(|&card_id| state.create_card_in_zone(card_id, 0, ZoneType::Library))
-        .collect();
+    let mut lib0: Vec<ObjectId> = Vec::new();
+    for &card_id in deck0 {
+        lib0.push(setup_card!(state, card_id, 0, ZoneType::Library));
+    }
     lib0.shuffle(&mut rng);
     state.players[0].library = lib0;
 
     // Create card instances for player 1
-    let mut lib1: Vec<ObjectId> = deck1
-        .iter()
-        .map(|&card_id| state.create_card_in_zone(card_id, 1, ZoneType::Library))
-        .collect();
+    let mut lib1: Vec<ObjectId> = Vec::new();
+    for &card_id in deck1 {
+        lib1.push(setup_card!(state, card_id, 1, ZoneType::Library));
+    }
     lib1.shuffle(&mut rng);
     state.players[1].library = lib1;
 
@@ -101,17 +112,17 @@ pub fn setup_game_seeded(
     if state.pending_copy_order.is_some() { return; }
     let mut rng = StdRng::seed_from_u64(seed);
 
-    let mut lib0: Vec<ObjectId> = deck0
-        .iter()
-        .map(|&card_id| state.create_card_in_zone(card_id, 0, ZoneType::Library))
-        .collect();
+    let mut lib0: Vec<ObjectId> = Vec::new();
+    for &card_id in deck0 {
+        lib0.push(setup_card!(state, card_id, 0, ZoneType::Library));
+    }
     lib0.shuffle(&mut rng);
     state.players[0].library = lib0;
 
-    let mut lib1: Vec<ObjectId> = deck1
-        .iter()
-        .map(|&card_id| state.create_card_in_zone(card_id, 1, ZoneType::Library))
-        .collect();
+    let mut lib1: Vec<ObjectId> = Vec::new();
+    for &card_id in deck1 {
+        lib1.push(setup_card!(state, card_id, 1, ZoneType::Library));
+    }
     lib1.shuffle(&mut rng);
     state.players[1].library = lib1;
 
@@ -144,11 +155,11 @@ pub fn setup_commander_game_seeded(
     let mut found_commander0 = false;
     for &card_id in deck0 {
         if card_id == commander0 && !found_commander0 {
-            let obj_id = state.create_card_in_zone(card_id, 0, ZoneType::Command);
+            let obj_id = setup_card!(state, card_id, 0, ZoneType::Command);
             state.players[0].commander_object_id = Some(obj_id);
             found_commander0 = true;
         } else {
-            lib0.push(state.create_card_in_zone(card_id, 0, ZoneType::Library));
+            lib0.push(setup_card!(state, card_id, 0, ZoneType::Library));
         }
     }
     lib0.shuffle(&mut rng);
@@ -158,11 +169,11 @@ pub fn setup_commander_game_seeded(
     let mut found_commander1 = false;
     for &card_id in deck1 {
         if card_id == commander1 && !found_commander1 {
-            let obj_id = state.create_card_in_zone(card_id, 1, ZoneType::Command);
+            let obj_id = setup_card!(state, card_id, 1, ZoneType::Command);
             state.players[1].commander_object_id = Some(obj_id);
             found_commander1 = true;
         } else {
-            lib1.push(state.create_card_in_zone(card_id, 1, ZoneType::Library));
+            lib1.push(setup_card!(state, card_id, 1, ZoneType::Library));
         }
     }
     lib1.shuffle(&mut rng);
@@ -203,11 +214,11 @@ pub fn setup_commander_game(
     let mut found_commander0 = false;
     for &card_id in deck0 {
         if card_id == commander0 && !found_commander0 {
-            let obj_id = state.create_card_in_zone(card_id, 0, ZoneType::Command);
+            let obj_id = setup_card!(state, card_id, 0, ZoneType::Command);
             state.players[0].commander_object_id = Some(obj_id);
             found_commander0 = true;
         } else {
-            lib0.push(state.create_card_in_zone(card_id, 0, ZoneType::Library));
+            lib0.push(setup_card!(state, card_id, 0, ZoneType::Library));
         }
     }
     lib0.shuffle(&mut rng);
@@ -218,11 +229,11 @@ pub fn setup_commander_game(
     let mut found_commander1 = false;
     for &card_id in deck1 {
         if card_id == commander1 && !found_commander1 {
-            let obj_id = state.create_card_in_zone(card_id, 1, ZoneType::Command);
+            let obj_id = setup_card!(state, card_id, 1, ZoneType::Command);
             state.players[1].commander_object_id = Some(obj_id);
             found_commander1 = true;
         } else {
-            lib1.push(state.create_card_in_zone(card_id, 1, ZoneType::Library));
+            lib1.push(setup_card!(state, card_id, 1, ZoneType::Library));
         }
     }
     lib1.shuffle(&mut rng);
@@ -273,15 +284,15 @@ pub fn setup_commander_game_with_partners(
     let mut found_partner0 = false;
     for &card_id in deck0 {
         if card_id == commander0 && !found_commander0 {
-            let obj_id = state.create_card_in_zone(card_id, 0, ZoneType::Command);
+            let obj_id = setup_card!(state, card_id, 0, ZoneType::Command);
             state.players[0].commander_object_id = Some(obj_id);
             found_commander0 = true;
         } else if partner0 == Some(card_id) && !found_partner0 {
-            let obj_id = state.create_card_in_zone(card_id, 0, ZoneType::Command);
+            let obj_id = setup_card!(state, card_id, 0, ZoneType::Command);
             state.players[0].partner_commander_object_id = Some(obj_id);
             found_partner0 = true;
         } else {
-            lib0.push(state.create_card_in_zone(card_id, 0, ZoneType::Library));
+            lib0.push(setup_card!(state, card_id, 0, ZoneType::Library));
         }
     }
     lib0.shuffle(&mut rng);
@@ -293,15 +304,15 @@ pub fn setup_commander_game_with_partners(
     let mut found_partner1 = false;
     for &card_id in deck1 {
         if card_id == commander1 && !found_commander1 {
-            let obj_id = state.create_card_in_zone(card_id, 1, ZoneType::Command);
+            let obj_id = setup_card!(state, card_id, 1, ZoneType::Command);
             state.players[1].commander_object_id = Some(obj_id);
             found_commander1 = true;
         } else if partner1 == Some(card_id) && !found_partner1 {
-            let obj_id = state.create_card_in_zone(card_id, 1, ZoneType::Command);
+            let obj_id = setup_card!(state, card_id, 1, ZoneType::Command);
             state.players[1].partner_commander_object_id = Some(obj_id);
             found_partner1 = true;
         } else {
-            lib1.push(state.create_card_in_zone(card_id, 1, ZoneType::Library));
+            lib1.push(setup_card!(state, card_id, 1, ZoneType::Library));
         }
     }
     lib1.shuffle(&mut rng);

@@ -1,3 +1,5 @@
+mod refresh;
+pub(crate) use refresh::{PreparedContinuousRefresh, RefreshProjection};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -172,13 +174,28 @@ pub enum StackSource {
         source_card_id: crate::card::CardId,
         target_card_id: crate::card::CardId,
     },
+    /// Physical ordinary hand-cast enchant-creature spell. Owns endpoint facts.
+    AuraSpell {
+        source: crate::card::ExactObjectRef,
+        source_card_id: CardId,
+        source_owner: PlayerIndex,
+        target: crate::card::ExactObjectRef,
+        target_card_id: CardId,
+        target_owner: PlayerIndex,
+        target_controller: PlayerIndex,
+        target_is_token: bool,
+        restriction: crate::card::EnchantRestriction,
+    },
     /// A spell without a physical card on the stack. Owns its spell data.
     SpellCopy { definition: Box<CardDef> },
 }
 
 impl StackSource {
+    pub fn physical_object(&self) -> Option<ObjectId> {
+        match self { Self::Spell(id) => Some(*id), Self::AuraSpell { source, .. } => Some(source.id), _ => None }
+    }
     pub fn is_spell(&self) -> bool {
-        matches!(self, Self::Spell(_) | Self::SpellCopy { .. })
+        matches!(self, Self::Spell(_) | Self::AuraSpell { .. } | Self::SpellCopy { .. })
     }
 }
 
@@ -931,6 +948,7 @@ impl GameState {
         for entry in &self.stack {
             let source_id = match entry.source {
                 StackSource::Spell(id) => Some(id),
+                StackSource::AuraSpell { source, .. } => Some(source.id),
                 StackSource::ActivatedAbility { .. } | StackSource::TriggeredAbility { .. }
                     | StackSource::EquipAbility { .. } => None,
                 StackSource::SpellCopy { .. } => None,
@@ -1020,7 +1038,7 @@ impl GameState {
             }
         }
         for entry in &self.stack {
-            if let StackSource::Spell(id) = entry.source {
+            if let Some(id) = entry.source.physical_object() {
                 if let Some(inst) = visible.get(&id).filter(|inst| inst.is_token) {
                     visible_zone_tokens.push((4, inst.owner, inst.card_def_id));
                 }
@@ -1036,10 +1054,10 @@ impl GameState {
         }
         visible_locations.extend(self.players[player].hand.iter().map(|&id| (id, ZoneType::Hand, player)));
         for entry in &self.stack {
-            if let StackSource::Spell(id) = entry.source { visible_locations.push((id, ZoneType::Stack, entry.controller)); }
+            if let Some(id) = entry.source.physical_object() { visible_locations.push((id, ZoneType::Stack, entry.controller)); }
         }
         if let Some(entry) = self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry) {
-            if let StackSource::Spell(id) = entry.source {
+            if let Some(id) = entry.source.physical_object() {
                 if visible.contains_key(&id) && !visible_locations.iter().any(|&(current, _, _)| current == id) {
                     visible_locations.push((id, ZoneType::Stack, entry.controller));
                 }
@@ -1354,7 +1372,18 @@ impl GameState {
         card_id: CardId,
         owner: PlayerIndex,
         zone: ZoneType,
-    ) -> ObjectId {
+    ) -> Result<ObjectId, crate::rules::transitions::TransitionError> {
+        use crate::rules::transitions::TransitionError;
+        if owner >= self.players.len() { return Err(TransitionError::InvalidPlayer(self.next_object_id)); }
+        if zone == ZoneType::Battlefield {
+            let def = self.card_db.as_ref().ok_or(TransitionError::MissingDatabase)?
+                .get(card_id).ok_or(TransitionError::MissingDefinition(card_id))?;
+            if self.prospective_aura(CardInstance::new(self.next_object_id, card_id, owner), def)? {
+                return Err(TransitionError::UnsupportedPath);
+            }
+        }
+        if self.objects.contains_key(&self.next_object_id) { return Err(TransitionError::DuplicateSubject(self.next_object_id)); }
+        self.next_object_id.checked_add(1).ok_or(TransitionError::CapacityExhausted)?;
         let obj_id = self.new_object_id();
         let instance = CardInstance::new(obj_id, card_id, owner);
         self.objects.insert(obj_id, instance);
@@ -1368,7 +1397,7 @@ impl GameState {
             ZoneType::Stack => {} // handled separately
             ZoneType::Command => self.players[owner].command_zone.push(obj_id),
         }
-        obj_id
+        Ok(obj_id)
     }
 
     /// Move a card instance from one zone to another.
@@ -1394,14 +1423,157 @@ impl GameState {
         from: ZoneType,
         to: ZoneType,
     ) {
-        self.move_object_with_policy(obj_id, from, to, true, true, None);
+        if let Err(error) = self.try_move_object(obj_id, from, to) {
+            self.sba_failure = Some(if error == crate::rules::transitions::TransitionError::UnsupportedPath {
+                crate::rules::sba::PreparedPassFailure::Transition(error)
+            } else { crate::rules::sba::PreparedPassFailure::StateEncoding });
+        }
+    }
+
+    /// Fallible bounded admission for noncast Battlefield ingress.
+    pub fn try_move_object(&mut self, id: ObjectId, from: ZoneType, to: ZoneType)
+        -> Result<(), crate::rules::transitions::TransitionError> {
+        self.try_move_object_with_entry_controller(id, from, to, None)
+    }
+
+    /// Carry a represented entry controller through admission and successful
+    /// movement. Do not modify stored control before admission has succeeded.
+    pub(crate) fn try_enter_battlefield(&mut self, id: ObjectId, from: ZoneType, controller: PlayerIndex)
+        -> Result<(), crate::rules::transitions::TransitionError> {
+        self.try_move_object_with_entry_controller(id, from, ZoneType::Battlefield, Some(controller))
+    }
+
+    fn try_move_object_with_entry_controller(&mut self, id: ObjectId, from: ZoneType, to: ZoneType,
+        entry_controller: Option<PlayerIndex>) -> Result<(), crate::rules::transitions::TransitionError> {
+        if to == ZoneType::Battlefield {
+            if let Some(inst) = self.objects.get(&id).filter(|inst|
+                self.card_db.as_ref().and_then(|db| db.get(inst.card_def_id)).is_some_and(|def| def.is_aura())) {
+                let resident = match from {
+                    ZoneType::Battlefield => self.battlefield.contains(&id),
+                    ZoneType::Stack => self.stack.iter().any(|entry| entry.source.physical_object() == Some(id)),
+                    zone => self.players.get(inst.owner).is_some_and(|player| match zone {
+                        ZoneType::Library => player.library.contains(&id),
+                        ZoneType::Hand => player.hand.contains(&id),
+                        ZoneType::Graveyard => player.graveyard.contains(&id),
+                        ZoneType::Exile => player.exile.contains(&id),
+                        ZoneType::Command => player.command_zone.contains(&id),
+                        _ => unreachable!(),
+                    }),
+                };
+                if !resident { return Err(crate::rules::transitions::TransitionError::WrongZone(id)); }
+            }
+        }
+        if let Some(controller) = entry_controller {
+            self.preflight_noncast_entry_for_controller(id, to, controller)?;
+        } else {
+            self.preflight_noncast_entry(id, to)?;
+        }
+        let refresh = if from == ZoneType::Battlefield && to != ZoneType::Battlefield
+            && self.battlefield.contains(&id) {
+            let mut projection = RefreshProjection::new(self);
+            let actual = if self.is_commander_format() && self.is_commander(id)
+                && matches!(to, ZoneType::Graveyard | ZoneType::Exile) { ZoneType::Command } else { to };
+            for player in &self.players {
+                for &linked in &player.exile {
+                    if self.is_card(linked) && self.objects.get(&linked).is_some_and(|inst| inst.exiled_by == Some(id)) {
+                        projection.depart(self, linked, ZoneType::Graveyard).map_err(|_| crate::rules::transitions::TransitionError::CapacityExhausted)?;
+                    }
+                }
+            }
+            projection.depart(self, id, actual).map_err(|_| crate::rules::transitions::TransitionError::CapacityExhausted)?;
+            Some(projection.refresh(self).map_err(|_| crate::rules::transitions::TransitionError::CapacityExhausted)?)
+        } else { None };
+        self.move_object_with_policy(id, from, to, true, true, None, refresh);
+        if let Some(controller) = entry_controller {
+            self.objects.get_mut(&id).expect("validated entry source").controller = controller;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_prospective_aura_effect(&self) -> bool {
+        self.continuous_effects.iter().any(|effect| match &effect.modification {
+            crate::layers::LayerModification::CopyOf(_) => true,
+            crate::layers::LayerModification::AddSubtype(subtype) => subtype.0 == "Aura",
+            _ => false,
+        })
+    }
+
+    /// Evaluate the represented future Battlefield incarnation without entry.
+    /// Only prospective Aura admission uses this local layer input view.
+    pub(crate) fn prospective_aura(&self, inst: CardInstance, def: &CardDef)
+        -> Result<bool, crate::rules::transitions::TransitionError> {
+        use crate::rules::transitions::TransitionError;
+        if def.is_aura() { return Ok(true); }
+        if !self.has_prospective_aura_effect() { return Ok(false); }
+        if inst.owner >= self.players.len() || inst.controller >= self.players.len() {
+            return Err(TransitionError::InvalidPlayer(inst.object_id));
+        }
+        let db = self.card_db.as_ref().ok_or(TransitionError::MissingDatabase)?;
+        let mut definitions = (**db).clone();
+        definitions.insert(def.clone());
+        let id = inst.object_id;
+        let mut objects = self.objects.clone();
+        objects.insert(id, inst);
+        let mut battlefield: HashSet<_> = self.battlefield.iter().copied().collect();
+        battlefield.insert(id);
+        let chars = crate::layers::compute_characteristics(id, &self.continuous_effects,
+            &objects, &battlefield, &definitions).ok_or(TransitionError::MissingObject(id))?;
+        if chars.controller >= self.players.len() { return Err(TransitionError::InvalidPlayer(id)); }
+        Ok(chars.card_types.contains(&crate::card::CardType::Enchantment)
+            && chars.subtypes.iter().any(|subtype| subtype.0 == "Aura"))
+    }
+
+    pub(crate) fn preflight_noncast_entry(&self, id: ObjectId, to: ZoneType)
+        -> Result<(), crate::rules::transitions::TransitionError> {
+        let controller = self.objects.get(&id).map_or(0, |inst| inst.controller);
+        self.preflight_noncast_entry_for_controller(id, to, controller)
+    }
+
+    pub(crate) fn preflight_noncast_entry_for_controller(&self, id: ObjectId, to: ZoneType, controller: usize)
+        -> Result<(), crate::rules::transitions::TransitionError> {
+        use crate::rules::transitions::TransitionError;
+        if to != ZoneType::Battlefield { return Ok(()); }
+        let inst = self.objects.get(&id).ok_or(TransitionError::MissingObject(id))?;
+        let def = self.card_db.as_ref().ok_or(TransitionError::MissingDatabase)?
+            .get(inst.card_def_id).ok_or(TransitionError::MissingDefinition(inst.card_def_id))?;
+        if inst.object_id != id || inst.owner >= self.players.len() || inst.controller >= self.players.len()
+            || controller >= self.players.len() {
+            return Err(TransitionError::InvalidPlayer(id));
+        }
+        let residents = self.battlefield.iter().filter(|&&object| object == id).count()
+            + self.players.iter().map(|player| [&player.hand, &player.library, &player.graveyard, &player.exile, &player.command_zone]
+                .iter().map(|zone| zone.iter().filter(|&&object| object == id).count()).sum::<usize>()).sum::<usize>()
+            + self.stack.iter().filter(|entry| entry.source.physical_object() == Some(id)).count();
+        let aura = if def.is_aura() || self.has_prospective_aura_effect() {
+            let mut future = inst.clone();
+            future.controller = controller;
+            future.zone_change_count = future.zone_change_count.checked_add(1).ok_or(TransitionError::GenerationExhausted(id))?;
+            self.prospective_aura(future, def)?
+        } else { false };
+        if aura {
+            if residents != 1 { return Err(TransitionError::WrongZone(id)); }
+            if self.stack.iter().any(|entry| entry.source.physical_object() == Some(id))
+                && crate::targeting::validate_pending_auras(self).is_err() {
+                return Err(TransitionError::StaleIncarnation(id));
+            }
+            if self.players.iter().enumerate().any(|(owner, player)| owner != inst.owner
+                && [&player.hand, &player.library, &player.graveyard, &player.exile, &player.command_zone]
+                    .iter().any(|zone| zone.contains(&id))) { return Err(TransitionError::WrongZone(id)); }
+            return Err(TransitionError::UnsupportedPath);
+        }
+        Ok(())
+    }
+
+    /// Storage only for the synchronously prepared cast Aura adapter.
+    pub(crate) fn move_prepared_aura(&mut self, id: ObjectId, to: ZoneType) {
+        self.move_object_with_policy(id, ZoneType::Stack, to, false, false, None, None);
     }
 
     /// Storage adapter for the validated transition kernel. The caller owns
     /// committed notifications and trigger collection; the token remains in
     /// its destination until a following state-based cessation pass.
     pub(crate) fn move_object_for_transition(&mut self, obj_id: ObjectId, from: ZoneType, to: ZoneType, attachments: &crate::card::AttachmentInventory) {
-        self.move_object_with_policy(obj_id, from, to, false, false, Some(attachments));
+        self.move_object_with_policy(obj_id, from, to, false, false, Some(attachments), None);
     }
 
     /// CR 111.8: a token outside the battlefield cannot change zones again.
@@ -1428,6 +1600,7 @@ impl GameState {
         &mut self, obj_id: ObjectId, from: ZoneType, to: ZoneType,
         emit_primary_event: bool, run_linked_followup: bool,
         attachment_inventory: Option<&crate::card::AttachmentInventory>,
+        refresh: Option<PreparedContinuousRefresh>,
     ) {
         if self.token_movement_prohibited(obj_id, from) { return; }
         // Commander redirect: graveyard/exile -> command zone (see doc above)
@@ -1487,7 +1660,7 @@ impl GameState {
         }
         self.battlefield.retain(|&id| id != obj_id);
         self.stack.retain(|e| {
-            if let StackSource::Spell(spell_id) = e.source {
+            if let Some(spell_id) = e.source.physical_object() {
                 spell_id != obj_id
             } else {
                 true
@@ -1520,7 +1693,7 @@ impl GameState {
         }
         if let (Some(departed), Some(attachments)) = (departed, attachments) {
             self.cleanup_attachment_departure(departed, attachments);
-            if emit_primary_event { self.refresh_continuous_effects(); }
+            if emit_primary_event { refresh.expect("prepared departure refresh").commit(self); }
         }
     }
 
@@ -1687,105 +1860,10 @@ impl GameState {
     /// Uses the two-phase read-write pattern to satisfy the borrow checker:
     /// Phase 1 collects what needs to be added (read-only), Phase 2 mutates.
     pub fn refresh_continuous_effects(&mut self) {
-        self.invalidate_characteristics_cache();
-
-        // Remove effects whose source has left the relevant zone
-        let bf: HashSet<ObjectId> = self.battlefield.iter().copied().collect();
-        let gy: HashSet<ObjectId> = self.players.iter()
-            .flat_map(|p| p.graveyard.iter().copied())
-            .collect();
-        self.continuous_effects.retain(|e| {
-            match e.duration {
-                crate::layers::Duration::WhileSourceOnBattlefield => {
-                    bf.contains(&e.source_id)
-                }
-                crate::layers::Duration::WhileSourceInGraveyard => {
-                    gy.contains(&e.source_id)
-                }
-                _ => true, // UntilEndOfTurn and Permanent effects persist
-            }
-        });
-
-        // Phase 1: Read — collect new effects to add
-        let existing_static_sources: std::collections::HashSet<ObjectId> = self
-            .continuous_effects
-            .iter()
-            .filter(|e| e.duration == crate::layers::Duration::WhileSourceOnBattlefield)
-            .map(|e| e.source_id)
-            .collect();
-
-        let mut new_effects = Vec::new();
-        let mut ts = self.next_timestamp;
-        {
-            let db = self.card_db();
-            for &obj_id in &self.battlefield {
-                if existing_static_sources.contains(&obj_id) {
-                    continue;
-                }
-                let inst = match self.objects.get(&obj_id) {
-                    Some(i) => i,
-                    None => continue,
-                };
-                let def = match db.get(inst.card_def_id) {
-                    Some(d) => d,
-                    None => continue,
-                };
-                for sa in &def.static_abilities {
-                    let generated = sa.to_continuous_effects(obj_id, inst.controller, ts);
-                    ts += 1;
-                    new_effects.extend(generated);
-                }
-            }
+        match RefreshProjection::new(self).refresh(self) {
+            Ok(prepared) => prepared.commit(self),
+            Err(error) => self.sba_failure = Some(error),
         }
-
-        // Phase 1b: Check graveyards for WonderInGraveyard static abilities.
-        // These generate flying grants while the source is in a graveyard.
-        let existing_gy_sources: std::collections::HashSet<ObjectId> = self
-            .continuous_effects
-            .iter()
-            .filter(|e| e.duration == crate::layers::Duration::WhileSourceInGraveyard)
-            .map(|e| e.source_id)
-            .collect();
-        {
-            let db = self.card_db();
-            for (pi, player) in self.players.iter().enumerate() {
-                for &obj_id in &player.graveyard {
-                    if existing_gy_sources.contains(&obj_id) {
-                        continue;
-                    }
-                    let inst = match self.objects.get(&obj_id) {
-                        Some(i) => i,
-                        None => continue,
-                    };
-                    let def = match db.get(inst.card_def_id) {
-                        Some(d) => d,
-                        None => continue,
-                    };
-                    for sa in &def.static_abilities {
-                        if matches!(sa, crate::layers::StaticAbility::WonderInGraveyard) {
-                            // Check if controller has an Island (or all lands are Islands
-                            // via Prismatic Omen / Dryad). Simplified: always grant flying
-                            // in this deck since Prismatic Omen makes all lands Islands.
-                            new_effects.push(crate::layers::ContinuousEffect {
-                                source_id: obj_id,
-                                controller: pi,
-                                timestamp: ts,
-                                duration: crate::layers::Duration::WhileSourceInGraveyard,
-                                affected: crate::layers::AffectedObjects::CreaturesControlledBy(pi),
-                                modification: crate::layers::LayerModification::AddKeyword(
-                                    crate::card::KeywordAbility::Flying,
-                                ),
-                            });
-                            ts += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Phase 2: Write — apply collected effects
-        self.next_timestamp = ts;
-        self.continuous_effects.extend(new_effects);
     }
 
     /// Remove all UntilEndOfTurn continuous effects (called during cleanup).
@@ -2127,16 +2205,20 @@ mod player_view_zone_visibility_tests {
     fn every_seat_public_zone_is_currently_visible_but_only_own_hand_is_private_visible() {
         let mut state = GameState::new(4);
         state.card_db = Some(Arc::new(CardDatabase::new()));
-        let battlefield = state.create_card_in_zone(1, 3, ZoneType::Battlefield);
+        // This visibility-only fixture deliberately has no definition for 1.
+        // Preserve that malformed metadata independently of gameplay admission.
+        let battlefield = state.new_object_id();
+        state.objects.insert(battlefield, CardInstance::new(battlefield, 1, 3));
+        state.battlefield.push(battlefield);
         let mut public = vec![battlefield];
         let mut hands = Vec::new();
         let mut libraries = Vec::new();
         for owner in 0..4 {
             for zone in [ZoneType::Graveyard, ZoneType::Exile, ZoneType::Command] {
-                public.push(state.create_card_in_zone(1, owner, zone));
+                public.push(state.create_card_in_zone(1, owner, zone).unwrap());
             }
-            hands.push(state.create_card_in_zone(1, owner, ZoneType::Hand));
-            libraries.push(state.create_card_in_zone(1, owner, ZoneType::Library));
+            hands.push(state.create_card_in_zone(1, owner, ZoneType::Hand).unwrap());
+            libraries.push(state.create_card_in_zone(1, owner, ZoneType::Library).unwrap());
         }
         for viewer in 0..4 {
             let view = state.visible_state(viewer);

@@ -60,6 +60,10 @@ pub fn snapshot_stack_spell(state: &GameState, source_stack_id: StackId) -> Resu
             state.card_db.as_ref().and_then(|db| db.get(instance.card_def_id))
                 .ok_or(CopyError::MissingDefinition)?.clone()
         }
+        StackSource::AuraSpell { source_card_id, .. } => {
+            crate::targeting::validate_pending_auras(state).map_err(|_| CopyError::InvalidPendingState)?;
+            state.card_db().get(*source_card_id).ok_or(CopyError::MissingDefinition)?.clone()
+        }
         StackSource::SpellCopy { definition } => (**definition).clone(),
         StackSource::ActivatedAbility { .. } | StackSource::TriggeredAbility { .. } | StackSource::EquipAbility { .. } => {
             return Err(CopyError::SourceIsAbility);
@@ -71,10 +75,12 @@ pub fn snapshot_stack_spell(state: &GameState, source_stack_id: StackId) -> Resu
         controller: source.controller,
         targets: source.targets.clone(),
         target_generations: source.target_generations.clone(),
-        historical_object_targets: source.targets.iter().map(|target| match target {
+        historical_object_targets: if let StackSource::AuraSpell { target_card_id, target_controller, .. } = source.source {
+            vec![Some((target_card_id, target_controller))]
+        } else { source.targets.iter().map(|target| match target {
             Target::Object(id) => state.objects.get(id).map(|inst| (inst.card_def_id, inst.controller)),
             Target::Player(_) | Target::StackEntry(_) => None,
-        }).collect(),
+        }).collect() },
     })
 }
 
@@ -422,7 +428,7 @@ mod terminal_position_tests {
         db.insert(definition);
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
-        let object = state.create_card_in_zone(982002, 0, ZoneType::Hand);
+        let object = state.create_card_in_zone(982002, 0, ZoneType::Hand).unwrap();
         super::super::apply_action(&mut state, &Action::CastSpell { object_id: object, targets: vec![] });
         let snapshot = snapshot_stack_spell(&state, state.stack[0].id).unwrap();
         let entry = state.stack.pop().unwrap();
@@ -465,7 +471,7 @@ mod terminal_position_tests {
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
         state.phase = Phase::PreCombatMain;
-        let object = state.create_card_in_zone(982003, 0, ZoneType::Hand);
+        let object = state.create_card_in_zone(982003, 0, ZoneType::Hand).unwrap();
         super::super::apply_action(&mut state, &Action::CastSpell { object_id: object, targets: vec![] });
         let snapshot = snapshot_stack_spell(&state, state.stack[0].id).unwrap();
         let entry = state.stack.pop().unwrap();

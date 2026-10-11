@@ -155,7 +155,7 @@ fn request(state: &GameState, id: u64, to: ZoneType) -> TransitionRequest {
 #[test]
 fn valid_exile_owns_lki_and_emits_only_committed_departure() {
     let mut state = game();
-    let subject = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
+    let subject = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&subject).unwrap().controller = 1;
     state.objects.get_mut(&subject).unwrap().plus_counters = 1;
     state.objects.get_mut(&subject).unwrap().tapped = true;
@@ -198,9 +198,9 @@ fn valid_exile_owns_lki_and_emits_only_committed_departure() {
 #[test]
 fn invalid_requests_reject_without_partial_mutation_or_cache_effect() {
     let mut state = game();
-    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
-    let valid_peer = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let other = state.create_card_in_zone(OTHER, 0, ZoneType::Hand);
+    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
+    let valid_peer = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let other = state.create_card_in_zone(OTHER, 0, ZoneType::Hand).unwrap();
     let good = request(&state, valid_peer, ZoneType::Exile);
     let bad_base = request(&state, id, ZoneType::Exile);
     let cases = [
@@ -269,7 +269,7 @@ fn invalid_requests_reject_without_partial_mutation_or_cache_effect() {
 #[test]
 fn missing_database_rejects_without_mutation() {
     let mut state = game();
-    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
+    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
     let req = request(&state, id, ZoneType::Exile);
     state.card_db = None;
     let before = serde_json::to_vec(&state).unwrap();
@@ -283,9 +283,9 @@ fn missing_database_rejects_without_mutation() {
 #[test]
 fn one_batch_observes_all_departures_including_its_own_watcher() {
     let mut state = game();
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let a = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let a = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let requests = [
         request(&state, a, ZoneType::Exile),
         request(&state, b, ZoneType::Exile),
@@ -333,8 +333,8 @@ fn one_batch_observes_all_departures_including_its_own_watcher() {
 #[test]
 fn successive_events_do_not_reuse_departed_observers() {
     let mut state = game();
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let a = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let a = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
     let first_request = request(&state, watcher, ZoneType::Exile);
     let first = transition_batch(&mut state, &[first_request]).unwrap();
     let first_count = state.pending_triggers.len();
@@ -357,7 +357,7 @@ fn successive_events_do_not_reuse_departed_observers() {
 #[test]
 fn token_departure_owns_event_before_sba_cessation() {
     let mut state = game();
-    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
+    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&id).unwrap().is_token = true;
     let req = request(&state, id, ZoneType::Exile);
     let batch = transition_batch(&mut state, &[req]).unwrap();
@@ -383,7 +383,7 @@ fn token_departure_owns_event_before_sba_cessation() {
 #[test]
 fn layered_facts_and_reused_object_id_do_not_rewrite_lki() {
     let mut state = game();
-    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
+    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
     let original_generation = state.objects[&id].zone_change_count;
     for modification in [
         LayerModification::ChangeController(1),
@@ -434,9 +434,9 @@ fn layered_facts_and_reused_object_id_do_not_rewrite_lki() {
 #[test]
 fn subject_occurrences_order_and_round_trip_without_raw_id_keys() {
     let mut state = game();
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let a = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let a = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let requests = [
         request(&state, a, ZoneType::Exile),
         request(&state, b, ZoneType::Exile),
@@ -511,8 +511,8 @@ fn subject_occurrences_order_and_round_trip_without_raw_id_keys() {
 #[test]
 fn real_exile_spell_uses_kernel_once_without_dies() {
     let mut state = game();
-    let id = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
-    let spell = state.create_card_in_zone(SPELL, 0, ZoneType::Hand);
+    let id = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
+    let spell = state.create_card_in_zone(SPELL, 0, ZoneType::Hand).unwrap();
     let cast = Action::CastSpell {
         object_id: spell,
         targets: vec![Target::Object(id)],
@@ -554,8 +554,8 @@ fn real_exile_spell_uses_kernel_once_without_dies() {
 #[test]
 fn actual_destination_controls_death_and_simultaneous_watcher_capture() {
     let mut state = game();
-    let watcher = state.create_card_in_zone(DEATH_WATCHER, 0, ZoneType::Battlefield);
-    let subject = state.create_card_in_zone(DIES_SUBJECT, 1, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(DEATH_WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let subject = state.create_card_in_zone(DIES_SUBJECT, 1, ZoneType::Battlefield).unwrap();
     let requests = [
         request(&state, subject, ZoneType::Graveyard),
         request(&state, watcher, ZoneType::Graveyard),
@@ -584,8 +584,8 @@ fn actual_destination_controls_death_and_simultaneous_watcher_capture() {
     assert_eq!(batch.transitions[0].destination.player, 1); // owner, not watcher/controller
 
     let mut exile = game();
-    let death_watcher = exile.create_card_in_zone(DEATH_WATCHER, 0, ZoneType::Battlefield);
-    let victim = exile.create_card_in_zone(DIES_SUBJECT, 0, ZoneType::Battlefield);
+    let death_watcher = exile.create_card_in_zone(DEATH_WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let victim = exile.create_card_in_zone(DIES_SUBJECT, 0, ZoneType::Battlefield).unwrap();
     let moved = request(&exile, victim, ZoneType::Exile);
     let batch = transition_batch(&mut exile, &[moved]).unwrap();
     assert!(!batch.transitions[0].creature_died());
@@ -602,9 +602,9 @@ fn actual_destination_controls_death_and_simultaneous_watcher_capture() {
 #[test]
 fn batch_permutation_changes_storage_order_not_occurrence_multiset() {
     let mut a = game();
-    let watcher = a.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let first = a.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
-    let second = a.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let watcher = a.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let first = a.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
+    let second = a.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let mut b = a.clone();
     let requests = [
         request(&a, first, ZoneType::Exile),
@@ -642,16 +642,16 @@ fn batch_permutation_changes_storage_order_not_occurrence_multiset() {
 fn subject_occurrence_game(with_purged_prefix: bool) -> GameState {
     let mut state = game();
     if with_purged_prefix {
-        let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+        let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&state, token, ZoneType::Exile);
         transition_batch(&mut state, &[req]).unwrap();
         settle_token_residents(&mut state);
         state.pending_events.clear();
     }
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let first = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
-    let second = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let first = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
+    let second = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let requests = [
         request(&state, first, ZoneType::Exile),
         request(&state, second, ZoneType::Exile),
@@ -719,9 +719,9 @@ fn invalid_direct_occurrence_order_cannot_drop_or_duplicate_triggers() {
 #[test]
 fn seven_subject_occurrences_keep_existing_fifo_limit() {
     let mut state = game();
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     let ids: Vec<_> = (0..7)
-        .map(|_| state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield))
+        .map(|_| state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap())
         .collect();
     let requests: Vec<_> = ids
         .iter()
@@ -741,8 +741,8 @@ fn seven_subject_occurrences_keep_existing_fifo_limit() {
 #[test]
 fn occurrence_retains_controller_and_instruction_after_source_departure_and_control_change() {
     let mut state = game();
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let first = request(&state, victim, ZoneType::Exile);
     transition_batch(&mut state, &[first]).unwrap();
     let original = state.pending_triggers[0].clone();
@@ -773,10 +773,10 @@ fn occurrence_retains_controller_and_instruction_after_source_departure_and_cont
 #[test]
 fn two_controllers_order_one_window_in_outgoing_apnap_groups() {
     let mut state = game();
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield);
-    let a = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(WATCHER, 1, ZoneType::Battlefield).unwrap();
+    let a = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield).unwrap();
     let requested = [
         request(&state, a, ZoneType::Exile),
         request(&state, b, ZoneType::Exile),
@@ -819,9 +819,9 @@ fn two_controllers_order_one_window_in_outgoing_apnap_groups() {
 #[test]
 fn production_exile_of_token_captures_history_and_trigger_survives_purge() {
     let mut state = game();
-    let id = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
+    let id = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&id).unwrap().is_token = true;
-    let spell = state.create_card_in_zone(SPELL, 0, ZoneType::Hand);
+    let spell = state.create_card_in_zone(SPELL, 0, ZoneType::Hand).unwrap();
     rules::apply_action(
         &mut state,
         &Action::CastSpell {
@@ -844,7 +844,7 @@ fn production_exile_of_token_captures_history_and_trigger_survives_purge() {
 #[test]
 fn missing_definition_and_generation_exhaustion_reject_before_mutation() {
     let mut state = game();
-    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
+    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
     let missing = 9_999_991;
     state.objects.get_mut(&id).unwrap().card_def_id = missing;
     let req = request(&state, id, ZoneType::Exile);
@@ -868,8 +868,8 @@ fn missing_definition_and_generation_exhaustion_reject_before_mutation() {
 #[test]
 fn invalid_owner_or_linked_followup_cannot_partially_commit_batch() {
     let mut state = game();
-    let first = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let second = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
+    let first = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let second = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&second).unwrap().owner = state.players.len();
     let requests = [
         request(&state, first, ZoneType::Exile),
@@ -883,7 +883,7 @@ fn invalid_owner_or_linked_followup_cannot_partially_commit_batch() {
     assert_eq!(serde_json::to_vec(&state).unwrap(), before);
 
     state.objects.get_mut(&second).unwrap().owner = 0;
-    let linked = state.create_card_in_zone(OTHER, 0, ZoneType::Exile);
+    let linked = state.create_card_in_zone(OTHER, 0, ZoneType::Exile).unwrap();
     state.objects.get_mut(&linked).unwrap().exiled_by = Some(second);
     state.objects.get_mut(&linked).unwrap().zone_change_count = u32::MAX;
     let before = serde_json::to_vec(&state).unwrap();
@@ -897,8 +897,8 @@ fn invalid_owner_or_linked_followup_cannot_partially_commit_batch() {
 #[test]
 fn ability_removal_pre_event_suppresses_departure_watcher() {
     let mut state = game();
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let timestamp = state.new_timestamp();
     state.continuous_effects.push(ContinuousEffect {
         source_id: watcher,
@@ -920,9 +920,9 @@ fn ability_removal_pre_event_suppresses_departure_watcher() {
 #[test]
 fn successive_exiles_share_placement_window_without_becoming_one_event() {
     let mut state = game();
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let a = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let a = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
     let first = request(&state, a, ZoneType::Exile);
     let first_batch = transition_batch(&mut state, &[first]).unwrap();
     let second = request(&state, b, ZoneType::Exile);
@@ -950,9 +950,9 @@ fn successive_exiles_share_placement_window_without_becoming_one_event() {
 #[test]
 fn linked_exile_followup_waits_until_primary_batch_is_complete() {
     let mut state = game();
-    let a = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let linked = state.create_card_in_zone(OTHER, 0, ZoneType::Exile);
+    let a = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let linked = state.create_card_in_zone(OTHER, 0, ZoneType::Exile).unwrap();
     state.objects.get_mut(&linked).unwrap().exiled_by = Some(a);
     let requested = [
         request(&state, a, ZoneType::Exile),
@@ -1027,7 +1027,7 @@ fn pending_information_distinguishes_live_source_from_older_incarnation() {
 fn supported_commander_redirect_is_recorded_as_actual_command_destination() {
     let mut state = GameState::new_commander(2);
     state.card_db = Some(database());
-    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield);
+    let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
     state.players[0].commander_object_id = Some(id);
     let requested = request(&state, id, ZoneType::Exile);
     let batch = transition_batch(&mut state, &[requested]).unwrap();
@@ -1055,8 +1055,8 @@ fn new_departure_predicate_appends_after_existing_serialized_tags() {
 #[test]
 fn linked_primary_member_is_moved_only_once() {
     let mut state = game();
-    let a = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let a = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&b).unwrap().exiled_by = Some(a);
     state.objects.get_mut(&b).unwrap().zone_change_count = u32::MAX - 1;
     let requests = [
@@ -1084,10 +1084,10 @@ fn linked_primary_member_is_moved_only_once() {
 #[test]
 fn pending_source_relationship_changes_information_hash() {
     let mut state = game();
-    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&a).unwrap().plus_counters = 1;
-    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&state, victim, ZoneType::Exile);
     transition_batch(&mut state, &[req]).unwrap();
     let mut other = state.clone();
@@ -1106,10 +1106,10 @@ fn pending_source_relationship_changes_information_hash() {
 #[test]
 fn canonical_occurrence_order_survives_pending_reordering() {
     let mut state = game();
-    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&a).unwrap().plus_counters = 1;
-    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&state, victim, ZoneType::Exile);
     transition_batch(&mut state, &[req]).unwrap();
     let mut reversed = state.clone();
@@ -1139,9 +1139,9 @@ fn canonical_occurrence_order_survives_pending_reordering() {
 #[test]
 fn simultaneous_and_successive_occurrences_retain_partition() {
     let mut simultaneous = game();
-    simultaneous.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let a = simultaneous.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let b = simultaneous.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    simultaneous.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let a = simultaneous.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let b = simultaneous.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let mut successive = simultaneous.clone();
     let ra = request(&simultaneous, a, ZoneType::Exile);
     let rb = request(&simultaneous, b, ZoneType::Exile);
@@ -1169,8 +1169,8 @@ fn direct_pass_cannot_bypass_mandatory_occurrence_order() {
 #[test]
 fn linked_followup_plan_rejects_invalid_pre_event_entries_atomically() {
     let mut state = game();
-    let source = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let linked = state.create_card_in_zone(OTHER, 0, ZoneType::Exile);
+    let source = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let linked = state.create_card_in_zone(OTHER, 0, ZoneType::Exile).unwrap();
     state.objects.get_mut(&linked).unwrap().exiled_by = Some(source);
     let req = request(&state, source, ZoneType::Exile);
     state.objects.get_mut(&linked).unwrap().zone_change_count = u32::MAX;
@@ -1203,8 +1203,8 @@ fn linked_followup_plan_rejects_invalid_pre_event_entries_atomically() {
 #[test]
 fn newly_exiled_linked_token_has_one_event_then_ceases() {
     let mut state = game();
-    let source = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&token).unwrap().is_token = true;
     state.objects.get_mut(&token).unwrap().exiled_by = Some(source);
     let requests = [
@@ -1231,10 +1231,10 @@ fn newly_exiled_linked_token_has_one_event_then_ceases() {
 #[test]
 fn mandatory_trigger_order_rejects_unrelated_direct_actions_atomically() {
     let mut state = subject_occurrence_game(false);
-    let spell = state.create_card_in_zone(SPELL, 0, ZoneType::Hand);
-    let land = state.create_card_in_zone(LAND, 0, ZoneType::Hand);
+    let spell = state.create_card_in_zone(SPELL, 0, ZoneType::Hand).unwrap();
+    let land = state.create_card_in_zone(LAND, 0, ZoneType::Hand).unwrap();
     let source = state.battlefield[0];
-    let activator = state.create_card_in_zone(ACTIVATOR, 0, ZoneType::Battlefield);
+    let activator = state.create_card_in_zone(ACTIVATOR, 0, ZoneType::Battlefield).unwrap();
     rules::check_state_based_actions(&mut state);
     let before = serde_json::to_vec(&state).unwrap();
     let attempts = [
@@ -1281,10 +1281,10 @@ fn historical_source_key_distinguishes_different_continuations() {
     db.insert(watcher);
     db.insert(database().get(OTHER).unwrap().clone());
     state.card_db = Some(Arc::new(db));
-    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&a).unwrap().plus_counters = 1;
-    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&state, victim, ZoneType::Exile);
     transition_batch(&mut state, &[req]).unwrap();
     let mut other = state.clone();
@@ -1312,17 +1312,17 @@ fn historical_source_key_distinguishes_different_continuations() {
 fn source_relationship_game(extra_allocation: bool) -> GameState {
     let mut state = game();
     if extra_allocation {
-        let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+        let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&state, token, ZoneType::Exile);
         transition_batch(&mut state, &[req]).unwrap();
         settle_token_residents(&mut state);
         state.pending_events.clear();
     }
-    let first = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    let first = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&first).unwrap().plus_counters = 1;
-    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&state, victim, ZoneType::Exile);
     transition_batch(&mut state, &[req]).unwrap();
     state
@@ -1377,9 +1377,9 @@ fn source_keys_survive_raw_id_shift_and_pending_storage_permutation() {
 #[test]
 fn departed_source_key_keeps_pre_event_facts_after_mutation() {
     let mut state = game();
-    let source = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&source).unwrap().plus_counters = 1;
-    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let requests = [
         request(&state, source, ZoneType::Exile),
         request(&state, victim, ZoneType::Exile),
@@ -1426,15 +1426,15 @@ fn departed_source_key_keeps_pre_event_facts_after_mutation() {
 fn grouped_state(simultaneous: bool, extra_allocation: bool) -> GameState {
     let mut state = game();
     if extra_allocation {
-        let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+        let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&state, token, ZoneType::Exile);
         transition_batch(&mut state, &[req]).unwrap();
         settle_token_residents(&mut state);
     }
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let a = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let a = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let ra = request(&state, a, ZoneType::Exile);
     let rb = request(&state, b, ZoneType::Exile);
     if simultaneous {
@@ -1526,7 +1526,7 @@ fn event_group_context_expires_with_last_occurrence() {
         mtg_gto::rules::transitions::live_group_ranks(&state.pending_triggers, &state.stack)
             .is_empty()
     );
-    let next = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let next = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&state, next, ZoneType::Exile);
     let batch = transition_batch(&mut state, &[req]).unwrap();
     assert_eq!(batch.group_id, 1);
@@ -1599,9 +1599,9 @@ fn restored_occurrences_finish_resolution_and_settlement_identically() {
 #[test]
 fn restored_token_occurrences_finish_after_subject_purge() {
     let mut state = game();
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&token).unwrap().is_token = true;
     let req = request(&state, token, ZoneType::Exile);
     transition_batch(&mut state, &[req]).unwrap();
@@ -1622,10 +1622,10 @@ fn rereview_shared_source_partition_changes_result() {
     db.insert(watcher);
     db.insert(database().get(OTHER).unwrap().clone());
     state.card_db = Some(Arc::new(db));
-    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let x = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
-    let y = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let x = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
+    let y = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let mut split = state.clone();
     let fire = |game: &mut GameState, subject: u64, suppressed: u64| {
         let timestamp = game.new_timestamp();
@@ -1689,9 +1689,9 @@ fn rereview_shared_source_partition_changes_result() {
 #[test]
 fn rereview_later_live_source_change_survives_queue_reversal() {
     let mut state = game();
-    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&state, victim, ZoneType::Exile);
     transition_batch(&mut state, &[req]).unwrap();
     state.objects.get_mut(&a).unwrap().temp_power_mod = 1;
@@ -1716,17 +1716,17 @@ fn rereview_later_live_source_change_survives_queue_reversal() {
 fn shared_source_pattern(pattern: [usize; 3], shift_ids: bool) -> GameState {
     let mut state = game();
     if shift_ids {
-        let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+        let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&state, token, ZoneType::Exile);
         transition_batch(&mut state, &[req]).unwrap();
         settle_token_residents(&mut state);
     }
     let sources: Vec<_> = (0..3)
-        .map(|_| state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield))
+        .map(|_| state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap())
         .collect();
     let subjects: Vec<_> = (0..3)
-        .map(|_| state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield))
+        .map(|_| state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap())
         .collect();
     for (event, &selected) in pattern.iter().enumerate() {
         for (index, &source) in sources.iter().enumerate() {
@@ -1811,8 +1811,8 @@ fn exact_source_partitions_survive_raw_ids_and_pending_permutations() {
 #[test]
 fn current_live_source_facts_change_owned_occurrence_description() {
     let mut state = game();
-    let source = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&state, victim, ZoneType::Exile);
     transition_batch(&mut state, &[req]).unwrap();
     let choice = Action::OrderTriggerOccurrences { ordering: vec![0] };
@@ -1858,9 +1858,9 @@ fn source_and_event_equality_relations_are_independent() {
     let one_source_two_events = grouped_state(false, false);
     let one_source_one_event = grouped_state(true, false);
     let mut two_sources_one_event = game();
-    two_sources_one_event.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    two_sources_one_event.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let victim = two_sources_one_event.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    two_sources_one_event.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    two_sources_one_event.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let victim = two_sources_one_event.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&two_sources_one_event, victim, ZoneType::Exile);
     transition_batch(&mut two_sources_one_event, &[req]).unwrap();
     let partition = |game: &GameState| {
@@ -1916,16 +1916,16 @@ fn finalreview_raw_tie_is_not_symmetric_for_existing_linked_exile_relationship()
         db.insert(watcher);
         db.insert(database().get(OTHER).unwrap().clone());
         state.card_db = Some(Arc::new(db));
-        let first = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-        let second = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+        let first = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+        let second = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
         let (a, b) = if reverse_ids {
             (second, first)
         } else {
             (first, second)
         };
-        let linked = state.create_card_in_zone(OTHER, 0, ZoneType::Exile);
+        let linked = state.create_card_in_zone(OTHER, 0, ZoneType::Exile).unwrap();
         state.objects.get_mut(&linked).unwrap().exiled_by = Some(a);
-        let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+        let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
         state.battlefield = vec![a, b, victim];
         let req = request(&state, victim, ZoneType::Exile);
         transition_batch(&mut state, &[req]).unwrap();
@@ -1990,9 +1990,9 @@ fn finalreview_raw_tie_is_not_symmetric_for_existing_linked_exile_relationship()
 #[test]
 fn finalreview_source_subject_cross_relationship_is_preserved() {
     let mut s = game();
-    let a = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let b = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let c = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    let a = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let b = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let c = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     let timestamp = s.new_timestamp();
     s.continuous_effects.push(ContinuousEffect {
         source_id: c,
@@ -2061,14 +2061,14 @@ fn linked_source_choice_game(
 ) -> (GameState, [u64; 2]) {
     let mut state = game();
     if shift_ids {
-        let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+        let token = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&state, token, ZoneType::Exile);
         transition_batch(&mut state, &[req]).unwrap();
         settle_token_residents(&mut state);
     }
-    let first = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let second = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    let first = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let second = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     let sources = if reverse_sources {
         [second, first]
     } else {
@@ -2081,11 +2081,11 @@ fn linked_source_choice_game(
     };
     for index in order {
         if let Some(card_id) = linked_cards[index] {
-            let linked = state.create_card_in_zone(card_id, 0, ZoneType::Exile);
+            let linked = state.create_card_in_zone(card_id, 0, ZoneType::Exile).unwrap();
             state.objects.get_mut(&linked).unwrap().exiled_by = Some(sources[index]);
         }
     }
-    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&state, victim, ZoneType::Exile);
     transition_batch(&mut state, &[req]).unwrap();
     (state, sources)
@@ -2171,10 +2171,10 @@ fn linked_target_public_state_distinguishes_otherwise_identical_sources() {
 #[test]
 fn historical_lki_omits_live_only_damage_and_sickness() {
     let mut state = game();
-    let source = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&source).unwrap().damage_marked = 1;
     state.objects.get_mut(&source).unwrap().summoning_sick = false;
-    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let victim = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&state, victim, ZoneType::Exile);
     transition_batch(&mut state, &[req]).unwrap();
     let historical = serde_json::to_value(
@@ -2196,9 +2196,9 @@ fn historical_lki_omits_live_only_damage_and_sickness() {
 
 fn retained_subject_relationship_game() -> GameState {
     let mut state = game();
-    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let external = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+    let a = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let external = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     let timestamp = state.new_timestamp();
     state.continuous_effects.push(ContinuousEffect {
         source_id: external,
@@ -2276,7 +2276,7 @@ fn linked_asymmetry_preserves_all_three_source_sharing_partitions() {
         let mut shifted = shared_source_pattern(pattern, true);
         for state in [&mut base, &mut shifted] {
             let first_source = state.battlefield[0];
-            let linked = state.create_card_in_zone(OTHER, 0, ZoneType::Exile);
+            let linked = state.create_card_in_zone(OTHER, 0, ZoneType::Exile).unwrap();
             state.objects.get_mut(&linked).unwrap().exiled_by = Some(first_source);
         }
         shifted.pending_triggers.rotate_left(1);
@@ -2311,8 +2311,8 @@ fn two_abilities_from_one_source_for_one_subject_keep_one_relationship() {
     db.insert(watcher);
     db.insert(database().get(OTHER).unwrap().clone());
     state.card_db = Some(Arc::new(db));
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let subject = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let subject = state.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&state, subject, ZoneType::Exile);
     transition_batch(&mut state, &[req]).unwrap();
     let info = InformationSet::from_view(&state.visible_state(0), state.card_db()).unwrap();
@@ -2393,13 +2393,13 @@ fn finalreview_all_three_occurrence_permutations_and_departed_patterns() {
 #[test]
 fn finalreview_old_and_blinked_source_remain_separate_through_restore() {
     let mut s = game();
-    let source = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let x = s.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let source = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let x = s.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&s, x, ZoneType::Exile);
     transition_batch(&mut s, &[req]).unwrap();
     s.move_object(source, ZoneType::Battlefield, ZoneType::Exile);
     s.move_object(source, ZoneType::Exile, ZoneType::Battlefield);
-    let y = s.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+    let y = s.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
     let req = request(&s, y, ZoneType::Exile);
     transition_batch(&mut s, &[req]).unwrap();
     let info = InformationSet::from_view(&s.visible_state(0), s.card_db()).unwrap();
@@ -2427,15 +2427,15 @@ fn incoming_stacked_subject_game(
 ) -> (GameState, u64, u64) {
     let mut s = game();
     if shift_ids {
-        let token = s.create_card_in_zone(OTHER, 0, ZoneType::Battlefield);
+        let token = s.create_card_in_zone(OTHER, 0, ZoneType::Battlefield).unwrap();
         s.objects.get_mut(&token).unwrap().is_token = true;
         let req = request(&s, token, ZoneType::Exile);
         transition_batch(&mut s, &[req]).unwrap();
         settle_token_residents(&mut s);
     }
-    let watcher = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let first = s.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
-    let second = s.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
+    let watcher = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let first = s.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
+    let second = s.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
     let (a, b) = if reverse {
         (second, first)
     } else {
@@ -2603,9 +2603,9 @@ fn incoming_stack_order_and_raw_stack_ids_are_independent() {
 
 fn incoming_pending_subject_game(reverse: bool) -> (GameState, u64, u64) {
     let mut state = game();
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let first = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
-    let second = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let first = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
+    let second = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
     let (a, b) = if reverse {
         (second, first)
     } else {
@@ -2643,10 +2643,10 @@ fn incoming_pending_edges_are_an_unordered_multiset() {
 
 fn multiple_incoming_sources_game(split_subjects: bool) -> GameState {
     let mut state = game();
-    let c = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let d = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let a = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
-    let b = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
+    let c = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let d = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let a = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
+    let b = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
     let requests = [
         request(&state, a, ZoneType::Exile),
         request(&state, b, ZoneType::Exile),
@@ -2703,9 +2703,9 @@ fn incoming_subject_partition_distinguishes_two_to_one_from_one_to_each() {
 
 fn incoming_successive_subject_game(reverse: bool) -> (GameState, u64, u64) {
     let mut state = game();
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let first = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
-    let second = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let first = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
+    let second = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
     let (a, b) = if reverse {
         (second, first)
     } else {
@@ -2790,7 +2790,7 @@ fn incoming_edges_coexist_with_current_links_and_blinked_origin() {
     let unlinked_hash = hash(&base);
     for game in [&mut base, &mut renamed] {
         let watcher = game.battlefield[0];
-        let linked = game.create_card_in_zone(OTHER, 0, ZoneType::Exile);
+        let linked = game.create_card_in_zone(OTHER, 0, ZoneType::Exile).unwrap();
         game.objects.get_mut(&linked).unwrap().exiled_by = Some(watcher);
     }
     assert_eq!(hash(&base), hash(&renamed));
@@ -2839,10 +2839,10 @@ fn incoming_edges_coexist_with_current_links_and_blinked_origin() {
 fn incoming_closure_paired_symmetric_sources_survive_independent_id_swap() {
     let make = |reverse_subject_ids: bool| {
         let mut s = game();
-        let c = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-        let d = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-        let first = s.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
-        let second = s.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
+        let c = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+        let d = s.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+        let first = s.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
+        let second = s.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
         let (a, b) = if reverse_subject_ids {
             (second, first)
         } else {
@@ -2912,7 +2912,7 @@ fn exact_graph(edges: &[(usize, usize)], allocation: &[usize]) -> GameState {
     let n = allocation.len();
     let mut ids = vec![0; n];
     for &semantic in allocation {
-        ids[semantic] = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
+        ids[semantic] = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     }
     let requests: Vec<_> = ids
         .iter()
@@ -2986,10 +2986,10 @@ fn production_destroy_watcher_normalizer_diagnostics() {
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
         for index in 0..watchers {
-            state.create_card_in_zone(997_100 + index as u64, 0, ZoneType::Battlefield);
+            state.create_card_in_zone(997_100 + index as u64, 0, ZoneType::Battlefield).unwrap();
         }
         let subjects: Vec<_> = (0..deaths).map(|_| {
-            let id = state.create_card_in_zone(997_000, 1, ZoneType::Battlefield);
+            let id = state.create_card_in_zone(997_000, 1, ZoneType::Battlefield).unwrap();
             ExactObjectRef { id, generation: state.objects[&id].zone_change_count }
         }).collect();
         let batch = destroy_batch(&mut state, &subjects).unwrap().unwrap();
@@ -3023,14 +3023,14 @@ fn production_destroy_member_order_and_raw_ids_keep_retained_encoding() {
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
         if shift_ids {
-            let extra = state.create_card_in_zone(997_300, 1, ZoneType::Battlefield);
+            let extra = state.create_card_in_zone(997_300, 1, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&extra).unwrap().is_token = true;
             state.move_object(extra, ZoneType::Battlefield, ZoneType::Exile);
             state.pending_events.clear();
         }
-        state.create_card_in_zone(997_301, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(997_301, 0, ZoneType::Battlefield).unwrap();
         let mut subjects: Vec<_> = (0..3).map(|_| {
-            let id = state.create_card_in_zone(997_300, 1, ZoneType::Battlefield);
+            let id = state.create_card_in_zone(997_300, 1, ZoneType::Battlefield).unwrap();
             ExactObjectRef { id, generation: state.objects[&id].zone_change_count }
         }).collect();
         if reverse_members { subjects.reverse(); }
@@ -3397,13 +3397,13 @@ fn exact_oracle_covers_live_links_departed_blinked_groups_and_stack_anchors() {
     }
     fixtures.push(incoming_successive_subject_game(false).0);
     let mut blinked = game();
-    let source = blinked.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let subject = blinked.create_card_in_zone(OTHER, 1, ZoneType::Battlefield);
+    let source = blinked.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let subject = blinked.create_card_in_zone(OTHER, 1, ZoneType::Battlefield).unwrap();
     let req = request(&blinked, subject, ZoneType::Exile);
     transition_batch(&mut blinked, &[req]).unwrap();
     blinked.move_object(source, ZoneType::Battlefield, ZoneType::Exile);
     blinked.move_object(source, ZoneType::Exile, ZoneType::Battlefield);
-    let subject = blinked.create_card_in_zone(OTHER, 1, ZoneType::Battlefield);
+    let subject = blinked.create_card_in_zone(OTHER, 1, ZoneType::Battlefield).unwrap();
     let req = request(&blinked, subject, ZoneType::Exile);
     transition_batch(&mut blinked, &[req]).unwrap();
     fixtures.push(blinked);
@@ -3510,9 +3510,9 @@ fn exact_duplicate_occurrences_keep_multiplicity_without_action_orbit_merging() 
 #[test]
 fn hidden_hand_view_keys_reconstruct_from_same_player_projection() {
     let mut state = game();
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let first = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield);
-    let second = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let first = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield).unwrap();
+    let second = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield).unwrap();
     let requests = [request(&state, first, ZoneType::Hand),
         request(&state, second, ZoneType::Hand)];
     transition_batch(&mut state, &requests).unwrap();
@@ -3548,9 +3548,9 @@ fn hidden_hand_view_keys_reconstruct_from_same_player_projection() {
 fn hidden_hand_occurrences(id_start: u64, reverse: bool) -> GameState {
     let mut state = game();
     state.next_object_id = id_start;
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let first = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield);
-    let second = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let first = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield).unwrap();
+    let second = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield).unwrap();
     let mut requests = [request(&state, first, ZoneType::Hand),
         request(&state, second, ZoneType::Hand)];
     if reverse { requests.reverse(); }
@@ -3602,9 +3602,9 @@ fn hidden_subject_ids_allocation_and_pending_order_do_not_change_view_coordinate
 #[test]
 fn hidden_pending_self_source_does_not_reveal_current_private_incarnation() {
     let mut state = game();
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let first = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
-    let second = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let first = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
+    let second = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
     let requests = [request(&state, first, ZoneType::Hand),
         request(&state, second, ZoneType::Hand)];
     transition_batch(&mut state, &requests).unwrap();
@@ -3634,8 +3634,8 @@ fn hidden_pending_self_source_does_not_reveal_current_private_incarnation() {
 #[test]
 fn current_subject_visibility_is_player_relative_and_public_exile_is_retained() {
     let mut hand = game();
-    hand.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let subject = hand.create_card_in_zone(OTHER, 1, ZoneType::Battlefield);
+    hand.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let subject = hand.create_card_in_zone(OTHER, 1, ZoneType::Battlefield).unwrap();
     hand.objects.get_mut(&subject).unwrap().controller = 0;
     let req = request(&hand, subject, ZoneType::Hand);
     transition_batch(&mut hand, &[req]).unwrap();
@@ -3653,8 +3653,8 @@ fn current_subject_visibility_is_player_relative_and_public_exile_is_retained() 
     assert_eq!(opponent_view.to, ZoneType::Hand);
 
     let mut library = game();
-    library.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let subject = library.create_card_in_zone(OTHER, 1, ZoneType::Battlefield);
+    library.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let subject = library.create_card_in_zone(OTHER, 1, ZoneType::Battlefield).unwrap();
     let req = request(&library, subject, ZoneType::Library);
     transition_batch(&mut library, &[req]).unwrap();
     // A library is private even to its owner; neither view can confirm the
@@ -3663,9 +3663,9 @@ fn current_subject_visibility_is_player_relative_and_public_exile_is_retained() 
     assert!(!status(&library, 1).same_incarnation_now);
 
     let mut exile = game();
-    exile.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    exile.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let subject = exile.create_card_in_zone(OTHER, 1, ZoneType::Battlefield);
+    exile.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    exile.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let subject = exile.create_card_in_zone(OTHER, 1, ZoneType::Battlefield).unwrap();
     let req = request(&exile, subject, ZoneType::Exile);
     transition_batch(&mut exile, &[req]).unwrap();
     assert!(status(&exile, 0).same_incarnation_now);
@@ -3676,8 +3676,8 @@ fn current_subject_visibility_is_player_relative_and_public_exile_is_retained() 
 #[test]
 fn old_subject_occurrence_does_not_rebind_after_same_id_reenters() {
     let mut state = game();
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let subject = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let subject = state.create_card_in_zone(OTHER, 1, ZoneType::Battlefield).unwrap();
     let req = request(&state, subject, ZoneType::Hand);
     transition_batch(&mut state, &[req]).unwrap();
     state.move_object(subject, ZoneType::Hand, ZoneType::Battlefield);
@@ -3704,9 +3704,9 @@ fn multiplayer_departure_game(players: usize, owner: usize, to: ZoneType) -> Gam
     state.phase = Phase::PreCombatMain;
     state.active_player = 0;
     state.priority_player = 0;
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let first = state.create_card_in_zone(OTHER, owner, ZoneType::Battlefield);
-    let second = state.create_card_in_zone(OTHER, owner, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let first = state.create_card_in_zone(OTHER, owner, ZoneType::Battlefield).unwrap();
+    let second = state.create_card_in_zone(OTHER, owner, ZoneType::Battlefield).unwrap();
     let requests = [request(&state, first, to), request(&state, second, to)];
     transition_batch(&mut state, &requests).unwrap();
     state
@@ -3772,8 +3772,8 @@ fn later_opponent_hidden_source_is_absent_from_current_view_but_history_is_retai
     let mut state = GameState::new(3);
     state.card_db = Some(database());
     state.phase = Phase::PreCombatMain;
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let subject = state.create_card_in_zone(SUBJECT, 2, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let subject = state.create_card_in_zone(SUBJECT, 2, ZoneType::Battlefield).unwrap();
     let req = request(&state, subject, ZoneType::Hand);
     transition_batch(&mut state, &[req]).unwrap();
     let view = state.visible_state(0);
@@ -3801,9 +3801,9 @@ fn multiplayer_layout_game(to: ZoneType, id_start: u64, reverse: bool) -> GameSt
     state.card_db = Some(database());
     state.phase = Phase::PreCombatMain;
     state.next_object_id = id_start;
-    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let first = state.create_card_in_zone(OTHER, 2, ZoneType::Battlefield);
-    let second = state.create_card_in_zone(OTHER, 2, ZoneType::Battlefield);
+    state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let first = state.create_card_in_zone(OTHER, 2, ZoneType::Battlefield).unwrap();
+    let second = state.create_card_in_zone(OTHER, 2, ZoneType::Battlefield).unwrap();
     let mut requests = [request(&state, first, to), request(&state, second, to)];
     if reverse { requests.reverse(); }
     transition_batch(&mut state, &requests).unwrap();

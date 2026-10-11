@@ -1135,7 +1135,7 @@ pub(super) fn validate_sba_subjects(
             .iter()
             .any(|zone| zone.contains(&id))
         }) || state.stack.iter().any(
-            |entry| matches!(entry.source, crate::game::StackSource::Spell(spell) if spell == id),
+            |entry| entry.source.physical_object() == Some(id),
         ) {
             return Err(TransitionError::WrongZone(id));
         }
@@ -1228,11 +1228,26 @@ impl PreparedSbaMovements {
     pub fn has_movers(&self) -> bool {
         !self.requests.is_empty()
     }
-    pub fn commit(self, state: &mut GameState) -> Result<(), TransitionError> {
+    pub fn project(&self, state: &GameState, projection: &mut crate::game::RefreshProjection)
+        -> Result<Option<crate::game::PreparedContinuousRefresh>, super::sba::PreparedPassFailure> {
+        if self.requests.is_empty() { return Ok(None); }
+        let followups = validate(state, &self.requests, PreparedKind::Sba)
+            .map_err(super::sba::PreparedPassFailure::Transition)?;
+        for request in &self.requests {
+            projection.depart(state, request.object.id, actual_destination(state, request.object.id, request.to))?;
+        }
+        let refresh = projection.refresh(state)?;
+        // Legacy followups occur after this refresh, before later pass corrections.
+        for linked in followups {
+            projection.depart(state, linked.object.id, ZoneType::Graveyard)?;
+        }
+        Ok(Some(refresh))
+    }
+    pub fn commit(self, state: &mut GameState, refresh: Option<crate::game::PreparedContinuousRefresh>) -> Result<(), TransitionError> {
         if self.requests.is_empty() {
             return Ok(());
         }
-        commit_batch_with_causes(state, &self.requests, PreparedKind::Sba, &self.causes)?;
+        commit_batch_with_causes(state, &self.requests, PreparedKind::Sba, &self.causes, refresh)?;
         Ok(())
     }
 }
@@ -1599,11 +1614,12 @@ pub fn return_death_keyword(
             .iter().map(|zone| zone.iter().filter(|&&object| object == id).count()).sum::<usize>()
     }).sum::<usize>();
     if memberships != 1 || state.battlefield.contains(&id) || state.stack.iter().any(|entry|
-        matches!(entry.source, crate::game::StackSource::Spell(spell) if spell == id)) {
+        entry.source.physical_object() == Some(id)) {
         return Err(TransitionError::WrongZone(id));
     }
     let db = state.card_db.as_ref().ok_or(TransitionError::MissingDatabase)?;
     let definition = db.get(inst.card_def_id).ok_or(TransitionError::MissingDefinition(inst.card_def_id))?;
+    state.preflight_noncast_entry_for_controller(id, ZoneType::Battlefield, owner)?;
     if inst.zone_change_count == u32::MAX { return Err(TransitionError::GenerationExhausted(id)); }
     if inst.controller >= state.players.len() { return Err(TransitionError::InvalidPlayer(id)); }
     state.battlefield.len().checked_add(1).ok_or(TransitionError::CapacityExhausted)?;
@@ -1623,9 +1639,8 @@ pub fn return_death_keyword(
     })?;
     let starting_loyalty = definition.starting_loyalty.unwrap_or(0);
 
-    state.move_object(id, ZoneType::Graveyard, ZoneType::Battlefield);
+    state.try_enter_battlefield(id, ZoneType::Graveyard, owner)?;
     let inst = state.objects.get_mut(&id).expect("validated return subject");
-    inst.controller = owner;
     inst.plus_counters = initial_plus;
     inst.minus_counters = initial_minus;
     inst.loyalty_counters = starting_loyalty;
@@ -1633,6 +1648,7 @@ pub fn return_death_keyword(
     inst.exiled_by = None;
     state.apply_etb_replacements(id);
     state.refresh_continuous_effects();
+    if state.gameplay_stopped() { return Err(TransitionError::CapacityExhausted); }
     state.refresh_replacement_effects();
     state.invalidate_characteristics_cache();
     super::triggers::check_triggers(state, TriggerCondition::EntersBattlefield, Some(id));
@@ -1657,14 +1673,26 @@ fn commit_batch(
     requests: &[TransitionRequest],
     prepared: PreparedKind,
 ) -> Result<CommittedTransitionBatch, TransitionError> {
-    commit_batch_with_causes(state, requests, prepared, &HashMap::new())
+    commit_batch_with_causes(state, requests, prepared, &HashMap::new(), None)
 }
 
 fn commit_batch_with_causes(
     state: &mut GameState, requests: &[TransitionRequest], prepared: PreparedKind,
     causes: &HashMap<ExactObjectRef, Vec<SbaCause>>,
+    refresh: Option<crate::game::PreparedContinuousRefresh>,
 ) -> Result<CommittedTransitionBatch, TransitionError> {
     let followups = validate(state, requests, prepared)?;
+    let refresh = if let Some(refresh) = refresh { refresh } else {
+        let mut projection = crate::game::RefreshProjection::new(state);
+        for request in requests {
+            projection.depart(state, request.object.id, actual_destination(state, request.object.id, request.to))
+                .map_err(|_| TransitionError::CapacityExhausted)?;
+        }
+        match projection.refresh(state) {
+            Ok(refresh) => refresh,
+            Err(error) => { state.sba_failure = Some(error); return Err(TransitionError::CapacityExhausted); }
+        }
+    };
     let group_id = state.next_zone_event_group_id;
     // Shared preflight has already checked this counter before mutation.
     let next_group_id = group_id + 1;
@@ -1682,7 +1710,7 @@ fn commit_batch_with_causes(
     for (request, destination) in requests.iter().zip(&destinations) {
         state.move_object_for_transition(request.object.id, request.from, *destination, &attachments);
     }
-    state.refresh_continuous_effects();
+    refresh.commit(state);
     state.refresh_replacement_effects();
     let transitions = subjects
         .into_iter()
@@ -1762,7 +1790,7 @@ mod tests {
         });
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
-        let id = state.create_card_in_zone(992_001, 0, ZoneType::Battlefield);
+        let id = state.create_card_in_zone(992_001, 0, ZoneType::Battlefield).unwrap();
         let original = state.objects[&id].zone_change_count;
         state.move_object(id, ZoneType::Battlefield, ZoneType::Exile);
         state.move_object(id, ZoneType::Exile, ZoneType::Battlefield);

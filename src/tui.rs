@@ -964,6 +964,11 @@ pub fn format_stack_entry(state: &GameState, entry: &crate::game::StackEntry, db
             let name = card_name(state, *source_id, db);
             format!("Ability: {} #{}", name, ability_index)
         }
+        crate::game::StackSource::AuraSpell { source_card_id, target_card_id, .. } => {
+            let source = db.get(*source_card_id).map(|d| d.name.as_str()).unwrap_or("?");
+            let target = db.get(*target_card_id).map(|d| d.name.as_str()).unwrap_or("?");
+            format!("Aura spell: {} → {} (stack #{})", source, target, entry.id)
+        }
         crate::game::StackSource::EquipAbility { source_card_id, target_card_id, .. } => {
             let source = db.get(*source_card_id).map(|def| def.name.as_str()).unwrap_or("?");
             let target = db.get(*target_card_id).map(|def| def.name.as_str()).unwrap_or("?");
@@ -1118,6 +1123,7 @@ pub fn format_targets(state: &GameState, targets: &[Target], db: &CardDatabase) 
         Target::StackEntry(id) => state.stack.iter().find(|entry| entry.id == *id)
             .and_then(|entry| match entry.source {
                 crate::game::StackSource::Spell(object) => Some(format!("{} (stack #{})", card_name(state, object, db), id)),
+                crate::game::StackSource::AuraSpell { source_card_id, .. } => Some(format!("{} (stack #{})", db.get(source_card_id).map(|d| d.name.as_str()).unwrap_or("?"), id)),
                 crate::game::StackSource::SpellCopy { ref definition } => Some(format!("{} copy (stack #{})", definition.name, id)),
                 _ => None,
             }).unwrap_or_else(|| format!("Stack #{} (gone)", id)),
@@ -1144,7 +1150,7 @@ fn format_copy_targets(state: &GameState, targets: &[Target], db: &CardDatabase)
 #[cfg(test)]
 mod copy_target_label_tests {
     use super::*;
-    use crate::card::{CardDef, CardType, ZoneType};
+    use crate::card::{CardDef, CardType};
 
     #[test]
     fn same_name_targets_show_relevant_state() {
@@ -1152,8 +1158,14 @@ mod copy_target_label_tests {
         db.insert(CardDef { id: 983000, name: "Goblin".into(),
             card_types: vec![CardType::Creature], ..Default::default() });
         let mut state = GameState::new(2);
-        let first = state.create_card_in_zone(983000, 0, ZoneType::Battlefield);
-        let second = state.create_card_in_zone(983000, 0, ZoneType::Battlefield);
+        // Formatting accepts its database separately. Keep this existing
+        // database-less fixture outside production object admission.
+        let first = state.new_object_id();
+        let second = state.new_object_id();
+        for id in [first, second] {
+            state.objects.insert(id, crate::card::CardInstance::new(id, 983000, 0));
+            state.battlefield.push(id);
+        }
         state.objects.get_mut(&second).unwrap().tapped = true;
         state.objects.get_mut(&second).unwrap().damage_marked = 1;
         assert_ne!(format_copy_targets(&state, &[Target::Object(first)], &db),
@@ -1464,8 +1476,8 @@ mod loss_boundary_ui_tests {
         let db = crate::card::sample::build_sample_db();
         let mut state = GameState::new(2); state.card_db = Some(std::sync::Arc::new(db.clone()));
         state.phase = crate::game::Phase::PreCombatMain;
-        let source = state.create_card_in_zone(crate::card::sample::ids::LIGHTNING_GREAVES, 0, crate::card::ZoneType::Battlefield);
-        let target = state.create_card_in_zone(crate::card::sample::ids::LLANOWAR_ELVES, 0, crate::card::ZoneType::Battlefield);
+        let source = state.create_card_in_zone(crate::card::sample::ids::LIGHTNING_GREAVES, 0, crate::card::ZoneType::Battlefield).unwrap();
+        let target = state.create_card_in_zone(crate::card::sample::ids::LLANOWAR_ELVES, 0, crate::card::ZoneType::Battlefield).unwrap();
         state.set_malformed_attachment_fixture(source, Some(crate::card::AttachmentLink { source_generation: 1,
             target: state.exact_object(target).unwrap(), kind: crate::card::AttachmentKind::Equipment, timestamp: 0 }));
         let before = bincode::serialize(&state).unwrap();

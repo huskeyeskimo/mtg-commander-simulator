@@ -33,9 +33,9 @@ fn ability_game(effect: Effect) -> (GameState, u64, u64, u64) {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::PreCombatMain;
-    let source = state.create_card_in_zone(SOURCE, 0, ZoneType::Battlefield);
-    let subject = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
-    let drawn = state.create_card_in_zone(DRAWN, 0, ZoneType::Library);
+    let source = state.create_card_in_zone(SOURCE, 0, ZoneType::Battlefield).unwrap();
+    let subject = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
+    let drawn = state.create_card_in_zone(DRAWN, 0, ZoneType::Library).unwrap();
     (state, source, subject, drawn)
 }
 
@@ -140,12 +140,12 @@ fn three_player_wrath_token_occurrences_continue_identically_after_restores() {
     state.card_db = Some(db.clone());
     state.phase = Phase::PreCombatMain;
     let watchers: Vec<_> = (0..3)
-        .map(|player| state.create_card_in_zone(WATCHER, player, ZoneType::Battlefield))
+        .map(|player| state.create_card_in_zone(WATCHER, player, ZoneType::Battlefield).unwrap())
         .collect();
-    let creature = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
-    let token = state.create_card_in_zone(SUBJECT, 2, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
+    let token = state.create_card_in_zone(SUBJECT, 2, ZoneType::Battlefield).unwrap();
     state.objects.get_mut(&token).unwrap().is_token = true;
-    let spell = state.create_card_in_zone(WRATH, 0, ZoneType::Hand);
+    let spell = state.create_card_in_zone(WRATH, 0, ZoneType::Hand).unwrap();
     apply_action(&mut state, &Action::CastSpell { object_id: spell, targets: vec![] });
     state.drain_events();
     for _ in 0..3 { apply_action(&mut state, &Action::PassPriority); }
@@ -222,8 +222,8 @@ fn explicit_destroy_and_later_common_sba_death_keep_separate_contexts() {
             effect: Effect::GainLife { amount: 1 }, description: "death".into(),
         }], ..Default::default() });
     state.card_db = Some(Arc::new(db));
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let cascade = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let cascade = state.create_card_in_zone(SUBJECT, 1, ZoneType::Battlefield).unwrap();
     apply_action(&mut state, &Action::ActivateAbility { object_id: source,
         ability_index: 0, targets: vec![Target::Object(subject)] });
     state.objects.get_mut(&cascade).unwrap().damage_marked = 2;

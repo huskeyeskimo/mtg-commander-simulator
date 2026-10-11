@@ -15,7 +15,7 @@ fn land_choice(card_id: u64) -> (GameState, u64) {
     state.card_db = Some(Arc::new(sample::build_sample_db()));
     state.phase = Phase::PreCombatMain;
     state.turn_number = 2;
-    let land = state.create_card_in_zone(card_id, 0, ZoneType::Hand);
+    let land = state.create_card_in_zone(card_id, 0, ZoneType::Hand).unwrap();
     (state, land)
 }
 
@@ -45,9 +45,9 @@ fn unseen_state_casts_affordable_spell_as_current_concrete_action() {
     state.card_db = Some(Arc::new(sample::build_sample_db()));
     state.phase = Phase::PreCombatMain;
     state.turn_number = 2;
-    let spell = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Hand);
+    let spell = state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Hand).unwrap();
     for _ in 0..2 {
-        state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::FOREST, 0, ZoneType::Battlefield).unwrap();
     }
     let expected = Action::CastSpell { object_id: spell, targets: vec![] };
     assert!(legal_actions(&state).contains(&expected));
@@ -82,7 +82,7 @@ fn unseen_pending_copy_order_returns_only_mandatory_legal_choice() {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     state.phase = Phase::PreCombatMain;
-    let object_id = state.create_card_in_zone(DRAW, 0, ZoneType::Hand);
+    let object_id = state.create_card_in_zone(DRAW, 0, ZoneType::Hand).unwrap();
     rules::apply_action(&mut state, &Action::CastSpell { object_id, targets: vec![] });
     let snapshot = snapshot_stack_spell(&state, state.stack.last().unwrap().id).unwrap();
     let copy = prepare_spell_copy(&state, &snapshot, 0, CopyTargetPolicy::Preserve).unwrap();

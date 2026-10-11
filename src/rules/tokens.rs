@@ -88,9 +88,18 @@ pub(super) fn build_dynamic_context(state: &GameState, controller: PlayerIndex) 
 /// which clones only if needed) and creates a CardInstance marked as a token.
 /// Fires ETB triggers for the token.
 pub(super) fn create_token(state: &mut GameState, token_def: &TokenDef, controller: PlayerIndex) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if token_def.subtypes.iter().any(|s| s.0 == "Aura") {
+        super::aura::record_entry_failure(state, super::transitions::TransitionError::UnsupportedPath); return;
+    }
     let card_id = token_card_id(token_def);
 
+    let candidate = token_to_card_def(token_def, card_id);
+    match state.prospective_aura(crate::card::CardInstance::new(state.next_object_id, card_id, controller), &candidate) {
+        Ok(false) => {},
+        Ok(true) => { super::aura::record_entry_failure(state, super::transitions::TransitionError::UnsupportedPath); return; },
+        Err(error) => { super::aura::record_entry_failure(state, error); return; }
+    }
     // Register token CardDef in the database if not already present
     let needs_registration = state.card_db().get(card_id).is_none();
     if needs_registration {
@@ -104,7 +113,9 @@ pub(super) fn create_token(state: &mut GameState, token_def: &TokenDef, controll
     }
 
     // Create the token instance on the battlefield
-    let obj_id = state.create_card_in_zone(card_id, controller, ZoneType::Battlefield);
+    let obj_id = match state.create_card_in_zone(card_id, controller, ZoneType::Battlefield) {
+        Ok(id) => id, Err(error) => { super::aura::record_entry_failure(state, error); return; }
+    };
     if let Some(inst) = state.objects.get_mut(&obj_id) {
         inst.controller = controller;
         inst.is_token = true;
@@ -113,6 +124,7 @@ pub(super) fn create_token(state: &mut GameState, token_def: &TokenDef, controll
 
     // Refresh continuous effects for any static abilities on the token
     state.refresh_continuous_effects();
+        if state.gameplay_stopped() { return; }
 
     // Fire ETB triggers (self-ETB for the token, and watcher ETBs for other permanents)
     let _ = super::triggers::fire_triggers(state, TriggerCondition::EntersBattlefield, Some(obj_id));
@@ -132,6 +144,9 @@ pub(crate) fn create_token_from_combo(
     controller: PlayerIndex,
 ) {
     if state.pending_copy_order.is_some() { return; }
+    if token_def.subtypes.iter().any(|s| s.0 == "Aura") {
+        super::aura::record_entry_failure(state, super::transitions::TransitionError::UnsupportedPath); return;
+    }
     let card_id = token_card_id(token_def);
 
     let needs_registration = state.card_db().get(card_id).is_none();
@@ -145,7 +160,9 @@ pub(crate) fn create_token_from_combo(
         }
     }
 
-    let obj_id = state.create_card_in_zone(card_id, controller, ZoneType::Battlefield);
+    let obj_id = match state.create_card_in_zone(card_id, controller, ZoneType::Battlefield) {
+        Ok(id) => id, Err(error) => { super::aura::record_entry_failure(state, error); return; }
+    };
     if let Some(inst) = state.objects.get_mut(&obj_id) {
         inst.controller = controller;
         inst.is_token = true;

@@ -11,6 +11,11 @@ pub enum SpellTargeting {
 }
 
 pub fn spell_targeting(def: &CardDef) -> SpellTargeting {
+    if def.is_aura() {
+        return if def.enchant == crate::card::EnchantRestriction::Creature {
+            SpellTargeting::Single(TargetSpec::AnyCreature)
+        } else { SpellTargeting::Unsupported };
+    }
     def.spell_effect
         .as_ref()
         .map(effect_targeting)
@@ -280,16 +285,16 @@ pub(crate) fn equip_activation_cost(state: &GameState, source: crate::card::Obje
 /// is encoding failure and must not be repaired as part of an Equip action.
 fn validate_equip_endpoint_membership(state: &GameState, id: crate::card::ObjectId)
     -> Result<(), crate::simulation::TerminationReason> {
-    use crate::{game::StackSource, simulation::TerminationReason::StateEncoding};
+    use crate::simulation::TerminationReason::StateEncoding;
     let mut residents = state.battlefield.iter().filter(|&&object| object == id).count();
     for player in &state.players {
         for zone in [&player.hand, &player.library, &player.graveyard, &player.exile, &player.command_zone] {
             residents += zone.iter().filter(|&&object| object == id).count();
         }
     }
-    residents += state.stack.iter().filter(|entry| matches!(entry.source, StackSource::Spell(object) if object == id)).count();
+    residents += state.stack.iter().filter(|entry| entry.source.physical_object() == Some(id)).count();
     if state.pending_copy_order.as_ref().and_then(crate::game::PendingCopyOrder::resolving_entry)
-        .is_some_and(|entry| matches!(entry.source, StackSource::Spell(object) if object == id)) { residents += 1; }
+        .is_some_and(|entry| entry.source.physical_object() == Some(id)) { residents += 1; }
     if residents != usize::from(state.objects.contains_key(&id)) { return Err(StateEncoding); }
     Ok(())
 }
@@ -648,4 +653,134 @@ mod tests {
             SpellTargeting::Unsupported
         );
     }
+}
+
+/// Owned physical Aura shape, checked independently from ordinary target legality.
+pub(crate) fn aura_entry_endpoints<'a>(entry: &crate::game::StackEntry,
+    db: &crate::game::CardDatabase, players: usize,
+    object: impl Fn(crate::card::ObjectId) -> Option<&'a crate::card::CardInstance>,
+) -> Result<Option<(crate::card::ExactObjectRef, crate::card::ExactObjectRef)>, crate::simulation::TerminationReason> {
+    use crate::{card::EnchantRestriction, game::StackSource, simulation::TerminationReason::StateEncoding};
+    let StackSource::AuraSpell { source, source_card_id, source_owner, target, target_card_id,
+        target_owner, target_controller, target_is_token, restriction } = &entry.source else { return Ok(None); };
+    if entry.controller >= players || *source_owner >= players || *target_owner >= players
+        || *target_controller >= players || source.id == target.id
+        || *restriction != EnchantRestriction::Creature
+        || db.get(*source_card_id).is_none_or(|def| !def.is_aura() || def.enchant != *restriction)
+        || db.get(*target_card_id).is_none()
+        || entry.targets != [Target::Object(target.id)]
+        || entry.target_generations != [Some(target.generation)] { return Err(StateEncoding); }
+    // A physical spell source must exist in this exact incarnation.
+    let inst = object(source.id).ok_or(StateEncoding)?;
+    if inst.object_id != source.id || inst.zone_change_count != source.generation
+        || inst.card_def_id != *source_card_id || inst.owner != *source_owner || inst.is_token
+        || inst.controller >= players || inst.attachment_link().is_some() { return Err(StateEncoding); }
+    if let Some(inst) = object(target.id) {
+        if inst.object_id != target.id || inst.zone_change_count < target.generation
+            || (inst.zone_change_count == target.generation && (inst.card_def_id != *target_card_id
+                || inst.owner != *target_owner || inst.is_token != *target_is_token
+                || inst.controller >= players)) { return Err(StateEncoding); }
+    }
+    Ok(Some((*source, *target)))
+}
+
+pub(crate) fn validate_pending_auras(state: &GameState) -> Result<(), crate::simulation::TerminationReason> {
+    use crate::{game::StackSource, simulation::TerminationReason::StateEncoding};
+    let mut ids = std::collections::HashSet::new();
+    let mut facts = std::collections::HashMap::new();
+    for entry in &state.stack {
+        if !ids.insert(entry.id) { return Err(StateEncoding); }
+        if let StackSource::Spell(id) = entry.source {
+            if state.objects.get(&id).and_then(|inst| state.card_db.as_ref()?.get(inst.card_def_id))
+                .is_some_and(|def| def.is_aura()) { return Err(StateEncoding); }
+        }
+        let endpoints = if matches!(entry.source, StackSource::AuraSpell { .. }) {
+            let db = state.card_db.as_ref().ok_or(StateEncoding)?;
+            aura_entry_endpoints(entry, db, state.players.len(), |id| state.objects.get(&id))?
+        } else { None };
+        if let Some((source, target)) = endpoints {
+            let StackSource::AuraSpell { source_card_id, source_owner, target_card_id, target_owner, target_is_token, .. } = &entry.source else { unreachable!() };
+            // Only tokens can cease to exist in the represented lifecycle.
+            // The public-view helper cannot inspect absent hidden objects;
+            // this authoritative check uses the complete object inventory.
+            if !state.objects.contains_key(&target.id) && !*target_is_token { return Err(StateEncoding); }
+            for (exact, fact) in [(source, (*source_card_id, *source_owner, false)), (target, (*target_card_id, *target_owner, *target_is_token))] {
+                if facts.insert(exact, fact).is_some_and(|old| old != fact) { return Err(StateEncoding); }
+            }
+            validate_equip_endpoint_membership(state, source.id)?;
+            if state.get_characteristics(source.id).is_none_or(|chars| chars.controller >= state.players.len()) { return Err(StateEncoding); }
+            if state.exact_object(target.id) == Some(target) {
+                validate_equip_endpoint_membership(state, target.id)?;
+                if state.get_characteristics(target.id).is_none_or(|chars| chars.controller >= state.players.len()) { return Err(StateEncoding); }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn aura_cast_context(state: &GameState, source: crate::card::ObjectId) -> bool {
+    let player = state.priority_player;
+    if player >= state.players.len() || state.players[player].has_lost || state.pending_tutor.is_some()
+        || state.pending_copy_order.is_some() || state.cleanup_discard_in_progress
+        || !state.pending_triggers.is_empty() || state.trigger_order_resume.is_some() { return false; }
+    state.get_characteristics(source).is_some_and(|chars|
+        chars.subtypes.iter().any(|s| s.0 == "Aura") && chars.card_types.contains(&CardType::Enchantment)
+        && !chars.card_types.contains(&CardType::Creature)
+        && chars.enchant == crate::card::ComputedEnchant::Restriction(crate::card::EnchantRestriction::Creature)
+        && (chars.keywords.contains(&KeywordAbility::Flash)
+            || (state.active_player == player && state.phase.is_main_phase() && state.stack.is_empty())))
+}
+
+pub(crate) fn preflight_aura_cast(state: &GameState, source: crate::card::ObjectId, targets: &[Target])
+    -> Result<(), crate::simulation::TerminationReason> {
+    use crate::simulation::TerminationReason::StateEncoding;
+    if state.priority_player >= state.players.len() || state.active_player >= state.players.len() { return Err(StateEncoding); }
+    state.validate_attachment_structure().map_err(|_| StateEncoding)?;
+    validate_equip_endpoint_membership(state, source)?;
+    let inst = state.objects.get(&source).ok_or(StateEncoding)?;
+    if inst.object_id != source || inst.owner >= state.players.len() || inst.controller >= state.players.len()
+        || inst.zone_change_count.checked_add(2).is_none() || state.next_stack_id == u64::MAX { return Err(StateEncoding); }
+    if state.get_characteristics(source).is_none_or(|chars| chars.controller >= state.players.len())
+        || state.players.iter().enumerate().any(|(owner, player)| owner != inst.owner
+            && [&player.hand, &player.library, &player.graveyard, &player.exile, &player.command_zone]
+                .iter().any(|zone| zone.contains(&source))) { return Err(StateEncoding); }
+    state.pending_events.len().checked_add(2).ok_or(StateEncoding)?;
+    let mut cast_triggers = 1u64; // physical Aura stack entry
+    for &id in &state.battlefield {
+        let watcher = state.objects.get(&id).ok_or(StateEncoding)?;
+        if watcher.object_id != id || watcher.owner >= state.players.len() || watcher.controller >= state.players.len()
+            || state.get_characteristics(id).is_none_or(|chars| chars.controller >= state.players.len()) { return Err(StateEncoding); }
+        let def = state.card_db().get(watcher.card_def_id).ok_or(StateEncoding)?;
+        let count = def.triggered_abilities.iter().filter(|ability| matches!(ability.trigger,
+            crate::card::TriggerCondition::YouCastSpell | crate::card::TriggerCondition::OpponentCastsSpell
+            | crate::card::TriggerCondition::OpponentCastsNoncreatureSpell)).count();
+        cast_triggers = cast_triggers.checked_add(u64::try_from(count).map_err(|_| StateEncoding)?).ok_or(StateEncoding)?;
+    }
+    state.next_stack_id.checked_add(cast_triggers).ok_or(StateEncoding)?;
+    state.spells_cast_this_turn.checked_add(1).ok_or(StateEncoding)?;
+    let prowess = state.battlefield.iter().filter(|&&id|
+        state.objects.get(&id).is_some_and(|inst| inst.controller == state.priority_player)
+            && state.has_keyword(id, KeywordAbility::Prowess)).count();
+    state.next_timestamp.checked_add(u32::try_from(prowess).map_err(|_| StateEncoding)?).ok_or(StateEncoding)?;
+    state.continuous_effects.len().checked_add(prowess).ok_or(StateEncoding)?;
+    // The existing cast hook also performs represented Extort arithmetic.
+    // Check its exact current participants before the Aura payment transaction.
+    let extort = i32::try_from(state.battlefield.iter().filter(|&&id|
+        state.objects.get(&id).is_some_and(|inst| inst.controller == state.priority_player)
+            && state.has_keyword(id, KeywordAbility::Extort)).count()).map_err(|_| StateEncoding)?;
+    if extort > 0 {
+        let opponents = state.opponents(state.priority_player);
+        for &opponent in &opponents { state.players[opponent].life.checked_sub(extort).ok_or(StateEncoding)?; }
+        let gain = extort.checked_mul(i32::try_from(opponents.len()).map_err(|_| StateEncoding)?).ok_or(StateEncoding)?;
+        state.players.get(state.priority_player).ok_or(StateEncoding)?.life.checked_add(gain).ok_or(StateEncoding)?;
+    }
+    if let [Target::Object(target)] = targets {
+        validate_equip_endpoint_membership(state, *target)?;
+        if let Some(inst) = state.objects.get(target) {
+            if inst.object_id != *target || inst.owner >= state.players.len() || inst.controller >= state.players.len()
+                || state.card_db().get(inst.card_def_id).is_none()
+                || state.get_characteristics(*target).is_none_or(|chars| chars.controller >= state.players.len()) { return Err(StateEncoding); }
+        }
+    }
+    Ok(())
 }

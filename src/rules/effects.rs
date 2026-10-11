@@ -1,6 +1,6 @@
 use crate::card::{CardId, Effect, KeywordAbility, ObjectId, TriggerCondition, ZoneType};
 use crate::events::GameEvent;
-use crate::game::{CastSpellSnapshot, GameState, PlayerIndex, StackSource, Target, TriggerContext};
+use crate::game::{CastSpellSnapshot, GameState, PlayerIndex, Target, TriggerContext};
 
 #[cfg(test)]
 mod destruction_migration_tests {
@@ -49,9 +49,9 @@ mod destruction_migration_tests {
     #[test]
     fn destroy_all_captures_simultaneous_departed_watcher() {
         let mut state = fixture();
-        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
-        let a = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
-        let b = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield).unwrap();
+        let a = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield).unwrap();
+        let b = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap();
         resolve_effect(&mut state, &Effect::DestroyAll, 0, &[], &[], None);
         let seen: Vec<_> = state.pending_triggers.iter().filter(|p| p.source_id == watcher)
             .filter_map(|p| p.context.zone_transition.as_ref()).collect();
@@ -64,7 +64,7 @@ mod destruction_migration_tests {
     #[test]
     fn indestructible_single_destroy_does_not_collect_self_death() {
         let mut state = fixture();
-        let id = state.create_card_in_zone(995_003, 0, ZoneType::Battlefield);
+        let id = state.create_card_in_zone(995_003, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&id).unwrap().temp_keywords.push(KeywordAbility::Indestructible);
         let generation = state.objects[&id].zone_change_count;
         resolve_effect(&mut state, &Effect::DestroyTarget { target: TargetSpec::AnyCreature },
@@ -80,8 +80,8 @@ mod destruction_migration_tests {
     #[test]
     fn mass_bounce_is_one_event_and_departing_watcher_observes_every_member() {
         let mut state = fixture();
-        let watcher = state.create_card_in_zone(995_005, 1, ZoneType::Battlefield);
-        let other = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        let watcher = state.create_card_in_zone(995_005, 1, ZoneType::Battlefield).unwrap();
+        let other = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap();
         resolve_effect(&mut state, &Effect::BounceAllNonlandOpponents, 0, &[], &[], None);
         let contexts: Vec<_> = state.pending_triggers.iter()
             .filter(|p| p.source_id == watcher)
@@ -96,10 +96,10 @@ mod destruction_migration_tests {
     #[test]
     fn successive_bounces_have_distinct_groups_and_earlier_watcher_cannot_observe() {
         let mut state = fixture();
-        let watcher = state.create_card_in_zone(995_005, 1, ZoneType::Battlefield);
+        let watcher = state.create_card_in_zone(995_005, 1, ZoneType::Battlefield).unwrap();
         let subjects = [watcher,
-            state.create_card_in_zone(995_001, 1, ZoneType::Battlefield),
-            state.create_card_in_zone(995_004, 1, ZoneType::Battlefield)];
+            state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap(),
+            state.create_card_in_zone(995_004, 1, ZoneType::Battlefield).unwrap()];
         let effect = Effect::BounceTo { zone: ZoneType::Hand, target: TargetSpec::AnyPermanent };
         for &subject in &subjects {
             let generation = state.objects[&subject].zone_change_count;
@@ -123,8 +123,8 @@ mod destruction_migration_tests {
             Effect::PutOnBottomOfLibrary { target: TargetSpec::AnyPermanent },
         ] {
             let mut state = fixture();
-            let first = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
-            let stale = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+            let first = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap();
+            let stale = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap();
             let generations = [Some(state.objects[&first].zone_change_count), Some(99)];
             let before = serde_json::to_value(&state).unwrap();
             resolve_effect(&mut state, &effect, 0,
@@ -136,8 +136,8 @@ mod destruction_migration_tests {
     #[test]
     fn mass_bounce_invalid_member_rejects_complete_instruction_atomically() {
         let mut state = fixture();
-        state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
-        let invalid = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap();
+        let invalid = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&invalid).unwrap().owner = 99;
         let before = serde_json::to_value(&state).unwrap();
         resolve_effect(&mut state, &Effect::BounceAllNonlandOpponents, 0, &[], &[], None);
@@ -147,10 +147,10 @@ mod destruction_migration_tests {
     #[test]
     fn bounce_instruction_group_relationship_survives_identical_placement_window() {
         let mut simultaneous = fixture();
-        simultaneous.create_card_in_zone(995_005, 0, ZoneType::Battlefield);
+        simultaneous.create_card_in_zone(995_005, 0, ZoneType::Battlefield).unwrap();
         let subjects = [
-            simultaneous.create_card_in_zone(995_004, 1, ZoneType::Battlefield),
-            simultaneous.create_card_in_zone(995_004, 1, ZoneType::Battlefield),
+            simultaneous.create_card_in_zone(995_004, 1, ZoneType::Battlefield).unwrap(),
+            simultaneous.create_card_in_zone(995_004, 1, ZoneType::Battlefield).unwrap(),
         ];
         let mut successive = simultaneous.clone();
         resolve_effect(&mut simultaneous, &Effect::BounceAllNonlandOpponents, 0, &[], &[], None);
@@ -180,9 +180,9 @@ mod destruction_migration_tests {
     #[test]
     fn single_destroy_emits_once_with_owned_death_and_noncreature_is_not_death() {
         let mut state = fixture();
-        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
-        let creature = state.create_card_in_zone(995_003, 1, ZoneType::Battlefield);
-        let artifact = state.create_card_in_zone(995_004, 1, ZoneType::Battlefield);
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield).unwrap();
+        let creature = state.create_card_in_zone(995_003, 1, ZoneType::Battlefield).unwrap();
+        let artifact = state.create_card_in_zone(995_004, 1, ZoneType::Battlefield).unwrap();
         let creature_ref = exact(&state, creature);
         let first = destroy_batch(&mut state, &[creature_ref]).unwrap().unwrap();
         assert_eq!(first.transitions.len(), 1);
@@ -206,8 +206,8 @@ mod destruction_migration_tests {
     #[test]
     fn destruction_validates_all_intents_before_filtering_protected_members() {
         let mut state = fixture();
-        let valid = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
-        let protected = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        let valid = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield).unwrap();
+        let protected = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&protected).unwrap().temp_keywords.push(KeywordAbility::Indestructible);
         let before = serde_json::to_value(&state).unwrap();
         let stale = ExactObjectRef { id: protected, generation: exact(&state, protected).generation + 1 };
@@ -226,7 +226,7 @@ mod destruction_migration_tests {
     #[test]
     fn represented_prevention_and_redirect_control_actual_death() {
         let mut prevented = fixture();
-        let id = prevented.create_card_in_zone(995_003, 0, ZoneType::Battlefield);
+        let id = prevented.create_card_in_zone(995_003, 0, ZoneType::Battlefield).unwrap();
         replacement(&mut prevented, ReplacementAction::Prevent);
         let id_ref = exact(&prevented, id);
         assert!(destroy_batch(&mut prevented, &[id_ref]).unwrap().is_none());
@@ -236,7 +236,7 @@ mod destruction_migration_tests {
             GameEvent::ZoneChange { object, from: Zone::Battlefield, .. } if *object == id)));
 
         let mut redirected = fixture();
-        let id = redirected.create_card_in_zone(995_003, 0, ZoneType::Battlefield);
+        let id = redirected.create_card_in_zone(995_003, 0, ZoneType::Battlefield).unwrap();
         replacement(&mut redirected, ReplacementAction::RedirectToZone(ZoneType::Exile));
         let id_ref = exact(&redirected, id);
         let batch = destroy_batch(&mut redirected, &[id_ref]).unwrap().unwrap();
@@ -248,8 +248,8 @@ mod destruction_migration_tests {
     #[test]
     fn token_death_survives_purge_and_commander_redirect_is_not_death() {
         let mut state = fixture();
-        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
-        let token = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield).unwrap();
+        let token = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&token).unwrap().is_token = true;
         let token_ref = exact(&state, token);
         let batch = destroy_batch(&mut state, &[token_ref]).unwrap().unwrap();
@@ -268,7 +268,7 @@ mod destruction_migration_tests {
 
         let mut commander = GameState::new_commander(2);
         commander.card_db = state.card_db.clone();
-        let id = commander.create_card_in_zone(995_003, 0, ZoneType::Battlefield);
+        let id = commander.create_card_in_zone(995_003, 0, ZoneType::Battlefield).unwrap();
         commander.players[0].commander_object_id = Some(id);
         let id_ref = exact(&commander, id);
         let batch = destroy_batch(&mut commander, &[id_ref]).unwrap().unwrap();
@@ -280,15 +280,15 @@ mod destruction_migration_tests {
     #[test]
     fn mass_destroy_only_commits_actual_movers_from_one_view() {
         let mut state = fixture();
-        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
-        let protected = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
-        let second_protected = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield).unwrap();
+        let protected = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield).unwrap();
+        let second_protected = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap();
         for id in [protected, second_protected] {
             state.objects.get_mut(&id).unwrap().temp_keywords.push(KeywordAbility::Indestructible);
         }
-        let a = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
-        let b = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
-        let token = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        let a = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield).unwrap();
+        let b = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap();
+        let token = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&token).unwrap().is_token = true;
         resolve_effect(&mut state, &Effect::DestroyAll, 0, &[], &[], None);
         for id in [protected, second_protected] { assert!(state.battlefield.contains(&id)); }
@@ -305,10 +305,10 @@ mod destruction_migration_tests {
     #[test]
     fn different_destroy_instructions_have_distinct_groups() {
         let mut state = fixture();
-        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&watcher).unwrap().temp_keywords.push(KeywordAbility::Indestructible);
-        let a = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
-        let b = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        let a = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield).unwrap();
+        let b = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield).unwrap();
         for id in [a, b] {
             let generation = state.objects[&id].zone_change_count;
             resolve_effect(&mut state, &Effect::DestroyTarget { target: TargetSpec::AnyCreature },
@@ -323,8 +323,8 @@ mod destruction_migration_tests {
     #[test]
     fn mixed_type_destruction_batch_has_only_creature_death() {
         let mut state = fixture();
-        let creature = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
-        let artifact = state.create_card_in_zone(995_004, 0, ZoneType::Battlefield);
+        let creature = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield).unwrap();
+        let artifact = state.create_card_in_zone(995_004, 0, ZoneType::Battlefield).unwrap();
         let subjects = [exact(&state, creature), exact(&state, artifact)];
         let batch = destroy_batch(&mut state, &subjects).unwrap().unwrap();
         assert_eq!(batch.transitions.len(), 2);
@@ -335,8 +335,8 @@ mod destruction_migration_tests {
     #[test]
     fn departed_watcher_cannot_observe_later_destroy() {
         let mut state = fixture();
-        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield);
-        let later = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield);
+        let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield).unwrap();
+        let later = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield).unwrap();
         let first = exact(&state, watcher);
         let second = exact(&state, later);
         destroy_batch(&mut state, &[first]).unwrap();
@@ -350,8 +350,8 @@ mod destruction_migration_tests {
     #[test]
     fn represented_replacement_source_departing_in_batch_is_checked_before_commit() {
         let mut state = fixture();
-        let source = state.create_card_in_zone(995_003, 0, ZoneType::Battlefield);
-        let other = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(995_003, 0, ZoneType::Battlefield).unwrap();
+        let other = state.create_card_in_zone(995_001, 1, ZoneType::Battlefield).unwrap();
         state.replacement_effects.push(ReplacementEffect {
             source_id: source, controller: 0, applies_to: ReplacementEventKind::WouldDie,
             action: ReplacementAction::RedirectToZone(ZoneType::Exile),
@@ -461,7 +461,9 @@ pub(super) fn resolve_trigger_effect(
         if let Some(zone) = &context.zone_transition {
             // Only the owned instruction can identify the historical subject.
             // A generic effect/source lookup must never substitute a new object.
-            let _ = super::transitions::return_death_keyword(state, zone, keyword);
+            if let Err(error) = super::transitions::return_death_keyword(state, zone, keyword) {
+                super::aura::record_entry_failure(state, error);
+            }
         }
         return;
     }
@@ -483,6 +485,7 @@ fn resolve_effect_inner(
     cast_context: Option<CastEffectContext<'_>>,
     terminal: bool,
 ) {
+    if state.sba_failure.is_some() { return; }
     let previous_terminal = state.effect_terminal_position.replace(terminal);
     // Spell targets and untargeted recipients are different. Interpret each
     // leaf's declaration, including leaves nested inside Multiple, before its
@@ -731,6 +734,7 @@ fn resolve_effect_inner(
             let n = state.evaluate_dynamic_value(count, controller, None);
             for _ in 0..n.max(0) {
                 super::tokens::create_token(state, token, controller);
+                if state.gameplay_stopped() { break; }
             }
         }
 
@@ -742,7 +746,7 @@ fn resolve_effect_inner(
                     entry.id == *target_id && entry.source.is_spell()
                 }) {
                     let countered = state.stack.remove(idx);
-                    if let StackSource::Spell(obj_id) = countered.source {
+                    if let Some(obj_id) = countered.source.physical_object() {
                         state.move_object(obj_id, ZoneType::Stack, ZoneType::Graveyard);
                     }
                 }
@@ -960,7 +964,9 @@ fn resolve_effect_inner(
                 // Legacy behavior: no tutor targets configured, take top card.
                 if let Some(index) = state.first_library_card(controller) {
                     let card_obj = state.players[controller].library[index];
-                    state.move_object(card_obj, ZoneType::Library, *destination);
+                    if let Err(error) = state.try_move_object(card_obj, ZoneType::Library, *destination) {
+                        super::aura::record_entry_failure(state, error);
+                    }
                 }
             } else {
                 // Set pending tutor — the player will choose via ChooseTutorTarget.
@@ -1041,11 +1047,22 @@ fn resolve_effect_inner(
             for target in targets {
                 if let Target::Object(id) = target {
                     if state.is_card(*id) && state.players.iter().any(|p| p.graveyard.contains(id)) {
-                        state.move_object(*id, ZoneType::Graveyard, ZoneType::Battlefield);
-                        if let Some(inst) = state.objects.get_mut(id) {
-                            inst.controller = controller;
+                        if let Err(error) = state.preflight_noncast_entry_for_controller(*id, ZoneType::Battlefield, controller) {
+                            super::aura::record_entry_failure(state, error);
+                            state.effect_terminal_position = previous_terminal; return;
+                        }
+                    }
+                }
+            }
+            for target in targets {
+                if let Target::Object(id) = target {
+                    if state.is_card(*id) && state.players.iter().any(|p| p.graveyard.contains(id)) {
+                        if let Err(error) = state.try_enter_battlefield(*id, ZoneType::Graveyard, controller) {
+                            super::aura::record_entry_failure(state, error);
+                            state.effect_terminal_position = previous_terminal; return;
                         }
                         state.refresh_continuous_effects();
+        if state.gameplay_stopped() { state.effect_terminal_position = previous_terminal; return; }
                         let _ = super::triggers::fire_triggers(state, TriggerCondition::EntersBattlefield, Some(*id));
                     }
                 }
@@ -1362,6 +1379,7 @@ fn resolve_effect_inner(
             let token_def = token_type.to_token_def();
             for _ in 0..*count {
                 super::tokens::create_token(state, &token_def, controller);
+                if state.gameplay_stopped() { break; }
             }
         }
 
@@ -1489,13 +1507,17 @@ fn resolve_effect_inner(
             // The token inherits all abilities (e.g., Scute Swarm copies get landfall).
             if let Some(cid) = source_id.and_then(|sid| state.objects.get(&sid).map(|i| i.card_def_id))
                 .or(last_known_source_card_id) {
-                    let obj_id = state.create_card_in_zone(cid, controller, ZoneType::Battlefield);
+                    let obj_id = match state.create_card_in_zone(cid, controller, ZoneType::Battlefield) {
+                        Ok(id) => id, Err(error) => { super::aura::record_entry_failure(state, error);
+                            state.effect_terminal_position = previous_terminal; return; }
+                    };
                     if let Some(inst) = state.objects.get_mut(&obj_id) {
                         inst.controller = controller;
                         inst.is_token = true;
                         inst.summoning_sick = true;
                     }
                     state.refresh_continuous_effects();
+        if state.gameplay_stopped() { state.effect_terminal_position = previous_terminal; return; }
                     let _ = super::triggers::fire_triggers(
                         state,
                         TriggerCondition::EntersBattlefield,
@@ -1512,13 +1534,17 @@ fn resolve_effect_inner(
 
         Effect::CreateTokenFromDef { card_def_id } => {
             // Create a token from a pre-registered CardDef in the database.
-            let obj_id = state.create_card_in_zone(*card_def_id, controller, ZoneType::Battlefield);
+            let obj_id = match state.create_card_in_zone(*card_def_id, controller, ZoneType::Battlefield) {
+                Ok(id) => id, Err(error) => { super::aura::record_entry_failure(state, error);
+                    state.effect_terminal_position = previous_terminal; return; }
+            };
             if let Some(inst) = state.objects.get_mut(&obj_id) {
                 inst.controller = controller;
                 inst.is_token = true;
                 inst.summoning_sick = true;
             }
             state.refresh_continuous_effects();
+        if state.gameplay_stopped() { state.effect_terminal_position = previous_terminal; return; }
             let _ = super::triggers::fire_triggers(
                 state,
                 TriggerCondition::EntersBattlefield,
@@ -1607,7 +1633,7 @@ mod each_opponent_sacrifice_tests {
         state.active_player = 2;
         state.players[1].has_lost = true;
         state.players[3].has_lost = true;
-        let ids: Vec<_> = (0..4).map(|p| state.create_card_in_zone(996_201, p, ZoneType::Battlefield)).collect();
+        let ids: Vec<_> = (0..4).map(|p| state.create_card_in_zone(996_201, p, ZoneType::Battlefield).unwrap()).collect();
         resolve_effect(&mut state, &Effect::EachOpponentSacrifices { count: 1 }, 1, &[], &[], None);
         for (p, id) in ids.into_iter().enumerate() {
             assert_eq!(state.players[p].graveyard.contains(&id), p == 0 || p == 2);
@@ -1620,10 +1646,10 @@ mod each_opponent_sacrifice_tests {
         for prevented in [false, true] {
             let mut state = fixture();
             state.active_player = 3;
-            let _a = state.create_card_in_zone(996_201, 1, ZoneType::Battlefield);
-            let b = state.create_card_in_zone(996_201, 2, ZoneType::Battlefield);
+            let _a = state.create_card_in_zone(996_201, 1, ZoneType::Battlefield).unwrap();
+            let b = state.create_card_in_zone(996_201, 2, ZoneType::Battlefield).unwrap();
             state.objects.get_mut(&b).unwrap().is_token = true;
-            let linked = state.create_card_in_zone(996_201, 3, ZoneType::Exile);
+            let linked = state.create_card_in_zone(996_201, 3, ZoneType::Exile).unwrap();
             state.objects.get_mut(&linked).unwrap().exiled_by = Some(b);
             state.objects.get_mut(&linked).unwrap().zone_change_count = u32::MAX;
             if prevented {
@@ -1664,7 +1690,7 @@ mod token_lifecycle_tests {
         s
     }
     fn token(s: &mut GameState, zone: ZoneType) -> ObjectId {
-        let id = s.create_card_in_zone(1, 0, zone);
+        let id = s.create_card_in_zone(1, 0, zone).unwrap();
         s.objects.get_mut(&id).unwrap().is_token = true;
         id
     }
@@ -1678,7 +1704,7 @@ mod token_lifecycle_tests {
             let mut s = fixture();
             let id = token(&mut s, ZoneType::Battlefield);
             if real_card {
-                s.create_card_in_zone(1, 0, ZoneType::Hand);
+                s.create_card_in_zone(1, 0, ZoneType::Hand).unwrap();
             }
             effect(
                 &mut s,
@@ -1719,7 +1745,7 @@ mod token_lifecycle_tests {
         ] {
             let mut s = fixture();
             let id = token(&mut s, ZoneType::Battlefield);
-            let card = s.create_card_in_zone(1, 0, ZoneType::Library);
+            let card = s.create_card_in_zone(1, 0, ZoneType::Library).unwrap();
             effect(
                 &mut s,
                 Effect::Multiple(vec![
@@ -1744,7 +1770,7 @@ mod token_lifecycle_tests {
         let mut s = fixture();
         let id = token(&mut s, ZoneType::Battlefield);
         let cards: Vec<_> = (0..8)
-            .map(|_| s.create_card_in_zone(1, 0, ZoneType::Library))
+            .map(|_| s.create_card_in_zone(1, 0, ZoneType::Library).unwrap())
             .collect();
         effect(
             &mut s,
@@ -1762,7 +1788,7 @@ mod token_lifecycle_tests {
             let mut s = fixture();
             let id = token(&mut s, ZoneType::Battlefield);
             let mut expected: Vec<_> = (0..24)
-                .map(|_| s.create_card_in_zone(1, 0, ZoneType::Library))
+                .map(|_| s.create_card_in_zone(1, 0, ZoneType::Library).unwrap())
                 .collect();
             expected.push(id);
             effect(
@@ -1806,7 +1832,7 @@ mod token_lifecycle_tests {
             assert!(s.pending_events.is_empty());
         }
         let mut s = fixture();
-        let source = s.create_card_in_zone(1, 0, ZoneType::Battlefield);
+        let source = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
         let id = token(&mut s, ZoneType::Exile);
         s.objects.get_mut(&id).unwrap().exiled_by = Some(source);
         let before = serde_json::to_value(&s).unwrap();
@@ -1825,7 +1851,7 @@ mod token_lifecycle_tests {
     fn departing_token_source_performs_only_its_real_linked_followup() {
         let mut s = fixture();
         let source = token(&mut s, ZoneType::Battlefield);
-        let card = s.create_card_in_zone(1, 0, ZoneType::Exile);
+        let card = s.create_card_in_zone(1, 0, ZoneType::Exile).unwrap();
         s.objects.get_mut(&card).unwrap().exiled_by = Some(source);
         let t = token(&mut s, ZoneType::Exile);
         s.objects.get_mut(&t).unwrap().exiled_by = Some(source);
@@ -1910,11 +1936,11 @@ mod token_lifecycle_tests {
                 card_types: vec![CardType::Land],
                 ..Default::default()
             });
-            s.create_card_in_zone(2, 0, ZoneType::Battlefield);
+            s.create_card_in_zone(2, 0, ZoneType::Battlefield).unwrap();
             let library_token = token(&mut s, ZoneType::Library);
             let hand_token = token(&mut s, ZoneType::Hand);
-            let first = s.create_card_in_zone(1, 0, ZoneType::Library);
-            let land = s.create_card_in_zone(3, 0, ZoneType::Library);
+            let first = s.create_card_in_zone(1, 0, ZoneType::Library).unwrap();
+            let land = s.create_card_in_zone(3, 0, ZoneType::Library).unwrap();
             super::super::draw_cards(&mut s, 0, 1);
             assert!(s.players[0].library.contains(&library_token));
             assert!(s.players[0].hand.contains(&hand_token));
@@ -1927,6 +1953,76 @@ mod token_lifecycle_tests {
             } else {
                 assert!(s.players[0].hand.contains(&first));
                 assert!(s.players[0].hand.contains(&land));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod aura_ingress_tests {
+    use super::*;
+    use crate::card::{CardDef, CardType, Subtype, EnchantRestriction};
+    use std::sync::Arc;
+    fn state() -> (GameState, u64) {
+        let mut db = crate::game::CardDatabase::new();
+        db.insert(CardDef { id: 979001, card_types: vec![CardType::Enchantment],
+            subtypes: vec![Subtype("Aura".into())], enchant: EnchantRestriction::Creature, ..Default::default() });
+        let mut state = GameState::new(2); state.card_db = Some(Arc::new(db));
+        let id = state.create_card_in_zone(979001, 0, ZoneType::Graveyard).unwrap();
+        (state, id)
+    }
+    #[test]
+    fn noncast_return_token_from_definition_and_source_copy_stop_without_entry_mutation() {
+        for case in 0..3 {
+            let (mut state, id) = state();
+            let before = state.clone();
+            let effect = match case { 0 => Effect::ReturnFromGraveyardToBattlefield { target: crate::card::TargetSpec::AnyCreature },
+                1 => Effect::CreateTokenFromDef { card_def_id: 979001 }, _ => Effect::CreateTokenCopyOfSource };
+            resolve_effect(&mut state, &effect, 0, &[Target::Object(id)], &[Some(0)], Some(id));
+            assert_eq!(state.invalid_gameplay_reason(), Some(crate::simulation::TerminationReason::PreparedSbaFailure));
+            state.sba_failure = None;
+            assert_eq!(bincode::serialize(&state).unwrap(), bincode::serialize(&before).unwrap());
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod entry_controller_tests {
+    use super::*;
+    use crate::{card::{CardDef, CardType, Subtype, TargetSpec}, layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification}};
+    use std::sync::Arc;
+    #[test]
+    fn graveyard_return_admission_and_movement_use_the_effect_controller() {
+        for (owner, stored_controller, entry_controller) in [(0, 1, 0), (0, 0, 1), (1, 0, 1)] {
+            for aura_controller in [stored_controller, entry_controller] {
+                let mut db = crate::game::CardDatabase::new();
+                db.insert(CardDef { id: 979712, card_types: vec![CardType::Enchantment], ..Default::default() });
+                let mut s = GameState::new(2); s.card_db = Some(Arc::new(db));
+                let id = s.create_card_in_zone(979712, owner, ZoneType::Graveyard).unwrap();
+                s.objects.get_mut(&id).unwrap().controller = stored_controller;
+                s.continuous_effects.push(ContinuousEffect { source_id: id, controller: aura_controller,
+                    timestamp: 1, duration: Duration::Permanent,
+                    affected: AffectedObjects::PermanentsControlledBy(aura_controller),
+                    modification: LayerModification::AddSubtype(Subtype("Aura".into())) });
+                s.next_timestamp = 2;
+                let before = s.clone();
+                resolve_effect(&mut s, &Effect::ReturnFromGraveyardToBattlefield { target: TargetSpec::AnyCreature },
+                    entry_controller, &[Target::Object(id)], &[Some(0)], None);
+                if aura_controller == entry_controller {
+                    assert_eq!(s.invalid_gameplay_reason(), Some(crate::simulation::TerminationReason::PreparedSbaFailure));
+                    s.sba_failure = before.sba_failure.clone();
+                    assert_eq!(bincode::serialize(&s).unwrap(), bincode::serialize(&before).unwrap());
+                } else {
+                    assert!(s.sba_failure.is_none());
+                    assert!(s.battlefield.contains(&id));
+                    assert!(!s.players[owner].graveyard.contains(&id));
+                    assert_eq!((s.objects[&id].owner, s.objects[&id].controller), (owner, entry_controller));
+                    assert_eq!(s.objects[&id].zone_change_count, 1);
+                    assert_eq!(s.pending_events.iter().filter(|event| matches!(event,
+                        crate::events::GameEvent::ZoneChange { object, from: crate::events::Zone::Graveyard,
+                            to: crate::events::Zone::Battlefield } if *object == id)).count(), 1);
+                }
             }
         }
     }

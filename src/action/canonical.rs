@@ -957,8 +957,8 @@ mod tests {
 
         // Libraries so no one decks out
         for _ in 0..20 {
-            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-            state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+            state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
         }
 
         state
@@ -990,7 +990,7 @@ mod tests {
     fn test_canonicalize_play_land_roundtrip() {
         let mut state = setup_test_state();
         let land_id =
-            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand);
+            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand).unwrap();
 
         state.active_player = 0;
         state.priority_player = 0;
@@ -1008,13 +1008,13 @@ mod tests {
 
         // Put a Lightning Bolt in hand with a Mountain on the battlefield
         let bolt_id =
-            state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
+            state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
         let _mountain =
-            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
+            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
 
         // Put a creature on the battlefield as a target
         let bear_id =
-            state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield);
+            state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 1, ZoneType::Battlefield).unwrap();
 
         state.active_player = 0;
         state.priority_player = 0;
@@ -1033,9 +1033,9 @@ mod tests {
     fn test_canonicalize_cast_spell_targeting_player_roundtrip() {
         let mut state = setup_test_state();
         let bolt_id =
-            state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
+            state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
         let _mountain =
-            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
+            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
 
         state.active_player = 0;
         state.priority_player = 0;
@@ -1054,7 +1054,7 @@ mod tests {
     fn test_canonicalize_discard_roundtrip() {
         let mut state = setup_test_state();
         let card_id =
-            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand);
+            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand).unwrap();
 
         state.active_player = 0;
         state.priority_player = 0;
@@ -1073,9 +1073,9 @@ mod tests {
         let mut state = setup_test_state();
 
         let bear1 =
-            state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield);
+            state.create_card_in_zone(sample::ids::GRIZZLY_BEARS, 0, ZoneType::Battlefield).unwrap();
         let bear2 =
-            state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Battlefield);
+            state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Battlefield).unwrap();
         for &id in &[bear1, bear2] {
             if let Some(inst) = state.objects.get_mut(&id) {
                 inst.tapped = false;
@@ -1112,13 +1112,13 @@ mod tests {
 
         // Set up a rich game state with various possible actions
         // Player 0: hand with land, creature, bolt; battlefield with lands
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand);
-        state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Hand);
-        state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand).unwrap();
+        state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Hand).unwrap();
+        state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
 
-        let f1 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
-        let f2 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
-        let f3 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
+        let f1 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
+        let f2 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
+        let f3 = state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
         for &id in &[f1, f2, f3] {
             if let Some(inst) = state.objects.get_mut(&id) {
                 inst.tapped = false;
@@ -1131,7 +1131,7 @@ mod tests {
             sample::ids::GRIZZLY_BEARS,
             1,
             ZoneType::Battlefield,
-        );
+        ).unwrap();
 
         state.active_player = 0;
         state.priority_player = 0;
@@ -1196,7 +1196,7 @@ mod retained_normalization_reuse_tests {
         state.card_db = Some(std::sync::Arc::new(db));
         state.phase = Phase::PreCombatMain;
         let requests: Vec<_> = (0..6).map(|_| {
-            let id = state.create_card_in_zone(999_290, 0, ZoneType::Battlefield);
+            let id = state.create_card_in_zone(999_290, 0, ZoneType::Battlefield).unwrap();
             TransitionRequest { object: ExactObjectRef { id, generation: 0 },
                 from: ZoneType::Battlefield, to: ZoneType::Exile, kind: MovementKind::Put }
         }).collect();

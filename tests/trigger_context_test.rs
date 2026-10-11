@@ -89,14 +89,14 @@ fn setup() -> (GameState, u64, u64) {
     state.phase = Phase::PreCombatMain;
     state.active_player = 0;
     state.priority_player = 0;
-    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield);
-    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    for _ in 0..3 { state.create_card_in_zone(CREATURE, 0, ZoneType::Library); }
+    let watcher = state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
+    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    for _ in 0..3 { state.create_card_in_zone(CREATURE, 0, ZoneType::Library).unwrap(); }
     (state, watcher, creature)
 }
 
 fn cast(state: &mut GameState, creature: u64) -> (u64, u64) {
-    let card = state.create_card_in_zone(SPELL, 0, ZoneType::Hand);
+    let card = state.create_card_in_zone(SPELL, 0, ZoneType::Hand).unwrap();
     rules::apply_action(state, &Action::CastSpell {
         object_id: card, targets: vec![Target::Object(creature)],
     });
@@ -167,7 +167,7 @@ fn countered_original_still_has_usable_trigger_snapshot() {
         _ => panic!("missing trigger"),
     };
     state.priority_player = 1;
-    let counter_card = state.create_card_in_zone(COUNTER, 1, ZoneType::Hand);
+    let counter_card = state.create_card_in_zone(COUNTER, 1, ZoneType::Hand).unwrap();
     rules::apply_action(&mut state, &Action::CastSpell {
         object_id: counter_card, targets: vec![Target::StackEntry(original)],
     });
@@ -309,7 +309,7 @@ fn live_stack_copy_api_still_works() {
 #[test]
 fn copy_of_trigger_source_uses_last_known_source_after_departure() {
     let (mut state, _, _) = setup();
-    let source = state.create_card_in_zone(COPY_SOURCE, 0, ZoneType::Battlefield);
+    let source = state.create_card_in_zone(COPY_SOURCE, 0, ZoneType::Battlefield).unwrap();
     assert!(rules::fire_triggers(&mut state, TriggerCondition::ALandYouControlEnters, Some(source)));
     state.move_object(source, ZoneType::Battlefield, ZoneType::Graveyard);
     resolve_top(&mut state);
@@ -320,7 +320,7 @@ fn copy_of_trigger_source_uses_last_known_source_after_departure() {
 fn copy_of_trigger_source_uses_live_or_captured_incarnation() {
     for mode in 0..3 {
         let (mut state, _, _) = setup();
-        let source = state.create_card_in_zone(COPY_SOURCE, 0, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(COPY_SOURCE, 0, ZoneType::Battlefield).unwrap();
         assert!(rules::fire_triggers(&mut state, TriggerCondition::ALandYouControlEnters, Some(source)));
         match mode {
             0 => {}, // original remains live
@@ -349,7 +349,7 @@ fn copy_of_trigger_source_uses_live_or_captured_incarnation() {
 fn self_dies_captures_pre_move_incarnation_and_uses_last_known_source() {
     for returns in [false, true] {
         let (mut state, _, _) = setup();
-        let source = state.create_card_in_zone(DIES_SOURCE, 0, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(DIES_SOURCE, 0, ZoneType::Battlefield).unwrap();
         let generation = state.objects[&source].zone_change_count;
         state.objects.get_mut(&source).unwrap().damage_marked = 1;
         rules::check_state_based_actions(&mut state);
@@ -373,11 +373,11 @@ fn departed_historical_target_summary_ignores_runtime_object_id() {
     fn history(dummy_count: usize, target_def: u64) -> (GameState, u64) {
         let (mut state, _, _) = setup();
         for _ in 0..dummy_count {
-            let id = state.create_card_in_zone(CREATURE, 1, ZoneType::Exile);
+            let id = state.create_card_in_zone(CREATURE, 1, ZoneType::Exile).unwrap();
             state.players[1].exile.retain(|&x| x != id);
             state.objects.remove(&id);
         }
-        let target = state.create_card_in_zone(target_def, 1, ZoneType::Battlefield);
+        let target = state.create_card_in_zone(target_def, 1, ZoneType::Battlefield).unwrap();
         let (spell_card, _) = cast(&mut state, target);
         state.move_object(target, ZoneType::Battlefield, ZoneType::Hand);
         state.move_object(spell_card, ZoneType::Stack, ZoneType::Graveyard);
@@ -403,11 +403,11 @@ fn command_and_graveyard_casts_capture_durable_snapshots() {
     for from_command in [true, false] {
         let (mut state, _, _) = setup();
         let (card, action) = if from_command {
-            let card = state.create_card_in_zone(CREATURE, 0, ZoneType::Command);
+            let card = state.create_card_in_zone(CREATURE, 0, ZoneType::Command).unwrap();
             state.players[0].commander_object_id = Some(card);
             (card, Action::CastCommander { object_id: card, targets: vec![] })
         } else {
-            let card = state.create_card_in_zone(FLASHBACK_SPELL, 0, ZoneType::Graveyard);
+            let card = state.create_card_in_zone(FLASHBACK_SPELL, 0, ZoneType::Graveyard).unwrap();
             (card, Action::CastFromGraveyard { object_id: card, targets: vec![] })
         };
         rules::apply_action(&mut state, &action);

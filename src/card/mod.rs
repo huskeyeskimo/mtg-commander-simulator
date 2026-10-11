@@ -17,7 +17,7 @@ pub use effects::{DynamicContext, DynamicValue, Effect, TargetSpec, TokenDef};
 pub use keywords::KeywordAbility;
 pub use attachments::{AttachmentContext, AttachmentError, AttachmentEvidence, AttachmentKind,
     AttachmentLink, PreparedAttachment};
-pub(crate) use attachments::AttachmentInventory;
+pub(crate) use attachments::{AttachmentInventory, PreparedAuraAttachment};
 
 /// Unique identifier for a card definition (template).
 pub type CardId = u64;
@@ -30,6 +30,22 @@ pub type ObjectId = u64;
 pub struct ExactObjectRef {
     pub id: ObjectId,
     pub generation: u32,
+}
+
+/// Printed enchant clause. Missing and unsupported metadata never imply a restriction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EnchantRestriction {
+    #[default]
+    Missing,
+    Creature,
+    Unsupported,
+}
+
+/// Computed enchant ability, including explicit represented ability removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ComputedEnchant {
+    Restriction(EnchantRestriction),
+    Removed,
 }
 
 /// Top-level card types in MTG.
@@ -283,6 +299,9 @@ pub struct CardDef {
     #[serde(default)]
     pub equip_cost: Option<ManaCost>,
 
+    #[serde(default)]
+    pub enchant: EnchantRestriction,
+
     /// Flashback cost — cast from graveyard for this cost, then exile.
     #[serde(default)]
     pub flashback_cost: Option<ManaCost>,
@@ -427,6 +446,7 @@ impl Default for CardDef {
             cost_reduction: None,
             cost_increase: None,
             equip_cost: None,
+            enchant: EnchantRestriction::Missing,
             flashback_cost: None,
             kicker_cost: None,
             overload_cost: None,

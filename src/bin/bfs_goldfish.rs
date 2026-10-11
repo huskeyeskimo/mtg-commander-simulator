@@ -1176,7 +1176,7 @@ mod outcome_tests {
         state.phase = Phase::Cleanup;
         state.cleanup_discard_in_progress = true;
         for _ in 0..8 {
-            state.create_card_in_zone(91_001, 0, mtg_gto::card::ZoneType::Hand);
+            state.create_card_in_zone(91_001, 0, mtg_gto::card::ZoneType::Hand).unwrap();
         }
         assert!(!invalid_cleanup_state(&state));
         let mut best_turn = 10;

@@ -395,11 +395,11 @@ fn stack_entry_to_info(
             .unwrap_or(0),
         StackSource::TriggeredAbility { context, .. } => context.source_card_id,
         StackSource::SpellCopy { definition } => definition.id,
-        StackSource::EquipAbility { source_card_id, .. } => *source_card_id,
+        StackSource::EquipAbility { source_card_id, .. } | StackSource::AuraSpell { source_card_id, .. } => *source_card_id,
     };
 
     let target_summary = match &entry.source {
-        StackSource::EquipAbility { target_card_id, .. } => {
+        StackSource::EquipAbility { target_card_id, .. } | StackSource::AuraSpell { target_card_id, .. } => {
             // The joint witness carries endpoint incidence. This owned summary
             // never falls back to a raw missing ID or a newer current object.
             let mut h = DefaultHasher::new();
@@ -842,8 +842,8 @@ mod tests {
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
         for _ in 0..20 {
-            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library);
-            state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library);
+            state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+            state.create_card_in_zone(sample::ids::FOREST, 1, ZoneType::Library).unwrap();
         }
         state
     }
@@ -865,8 +865,8 @@ mod tests {
     #[test]
     fn test_info_set_from_view_basic() {
         let mut state = setup_test_state();
-        state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
         state.active_player = 0;
         state.priority_player = 0;
         state.phase = Phase::PreCombatMain;
@@ -886,8 +886,8 @@ mod tests {
     #[test]
     fn test_info_set_hash_deterministic() {
         let mut state = setup_test_state();
-        state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
         state.active_player = 0;
         state.priority_player = 0;
         state.phase = Phase::PreCombatMain;
@@ -904,13 +904,13 @@ mod tests {
     #[test]
     fn test_info_set_different_hands_different_hash() {
         let mut state1 = setup_test_state();
-        state1.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
+        state1.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
         state1.active_player = 0;
         state1.priority_player = 0;
         state1.phase = Phase::PreCombatMain;
 
         let mut state2 = setup_test_state();
-        state2.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Hand);
+        state2.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Hand).unwrap();
         state2.active_player = 0;
         state2.priority_player = 0;
         state2.phase = Phase::PreCombatMain;
@@ -930,19 +930,19 @@ mod tests {
         // should produce the same info set hash, even if opponent's hidden
         // state differs.
         let mut state1 = setup_test_state();
-        state1.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
-        state1.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
+        state1.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
+        state1.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
         // Opponent has bolt in hand (hidden from player 0)
-        state1.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 1, ZoneType::Hand);
+        state1.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 1, ZoneType::Hand).unwrap();
         state1.active_player = 0;
         state1.priority_player = 0;
         state1.phase = Phase::PreCombatMain;
 
         let mut state2 = setup_test_state();
-        state2.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
-        state2.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield);
+        state2.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
+        state2.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Battlefield).unwrap();
         // Opponent has Grey Ogre in hand instead (hidden from player 0)
-        state2.create_card_in_zone(sample::ids::GREY_OGRE, 1, ZoneType::Hand);
+        state2.create_card_in_zone(sample::ids::GREY_OGRE, 1, ZoneType::Hand).unwrap();
         state2.active_player = 0;
         state2.priority_player = 0;
         state2.phase = Phase::PreCombatMain;
@@ -964,7 +964,7 @@ mod tests {
     #[test]
     fn test_identity_abstraction_matches_hash() {
         let mut state = setup_test_state();
-        state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
+        state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
         state.active_player = 0;
         state.priority_player = 0;
         state.phase = Phase::PreCombatMain;
@@ -1110,9 +1110,9 @@ mod tests {
     fn test_card_aware_bucketed_abstraction() {
         let db = sample::build_sample_db();
         let mut state = setup_test_state();
-        state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand);
-        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand);
-        state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Battlefield);
+        state.create_card_in_zone(sample::ids::LIGHTNING_BOLT, 0, ZoneType::Hand).unwrap();
+        state.create_card_in_zone(sample::ids::MOUNTAIN, 0, ZoneType::Hand).unwrap();
+        state.create_card_in_zone(sample::ids::GREY_OGRE, 0, ZoneType::Battlefield).unwrap();
         state.active_player = 0;
         state.priority_player = 0;
         state.phase = Phase::PreCombatMain;

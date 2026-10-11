@@ -1,3 +1,4 @@
+mod aura;
 mod combat;
 mod loss;
 mod effects;
@@ -54,6 +55,13 @@ fn mandatory_trigger_order_chooser(state: &GameState) -> Option<PlayerIndex> {
 /// Apply an action to the game state, advancing it.
 pub fn apply_action(state: &mut GameState, action: &Action) {
     if state.gameplay_stopped() { return; }
+    if let Err(reason) = aura::preflight_action(state, action) {
+        state.sba_failure = Some(reason); return;
+    }
+    if matches!(action, Action::ChooseTutorTarget { .. })
+        && state.pending_tutor.as_ref().is_some_and(|pending|
+            pending.controller != state.priority_player || pending.controller >= state.players.len())
+    { return; }
     if state.loss_action_in_progress {
         apply_action_at_boundary(state, action);
         return;
@@ -307,18 +315,18 @@ mod settlement_2b3a_boundary_tests {
             base.phase = Phase::PreCombatMain;
             base.loss_boundary.accepted_actions = 41;
             for player in 0..players {
-                for _ in 0..3 { base.create_card_in_zone(995113, player, ZoneType::Library); }
+                for _ in 0..3 { base.create_card_in_zone(995113, player, ZoneType::Library).unwrap(); }
             }
-            let hand = base.create_card_in_zone(995111, 0, ZoneType::Hand);
-            let grave = base.create_card_in_zone(995111, 0, ZoneType::Graveyard);
-            let command = base.create_card_in_zone(995111, 0, ZoneType::Command);
-            let unpaid = base.create_card_in_zone(995112, 0, ZoneType::Hand);
-            let land = base.create_card_in_zone(995113, 0, ZoneType::Hand);
-            let grave_land = base.create_card_in_zone(995113, 0, ZoneType::Graveyard);
-            let mana_source = base.create_card_in_zone(995113, 0, ZoneType::Battlefield);
-            let departing = base.create_card_in_zone(995114, 0, ZoneType::Battlefield);
+            let hand = base.create_card_in_zone(995111, 0, ZoneType::Hand).unwrap();
+            let grave = base.create_card_in_zone(995111, 0, ZoneType::Graveyard).unwrap();
+            let command = base.create_card_in_zone(995111, 0, ZoneType::Command).unwrap();
+            let unpaid = base.create_card_in_zone(995112, 0, ZoneType::Hand).unwrap();
+            let land = base.create_card_in_zone(995113, 0, ZoneType::Hand).unwrap();
+            let grave_land = base.create_card_in_zone(995113, 0, ZoneType::Graveyard).unwrap();
+            let mana_source = base.create_card_in_zone(995113, 0, ZoneType::Battlefield).unwrap();
+            let departing = base.create_card_in_zone(995114, 0, ZoneType::Battlefield).unwrap();
             base.objects.get_mut(&departing).unwrap().summoning_sick = false;
-            let ability = base.create_card_in_zone(995115, 0, ZoneType::Battlefield);
+            let ability = base.create_card_in_zone(995115, 0, ZoneType::Battlefield).unwrap();
             let actions = [
                 Action::CastSpell { object_id: hand, targets: vec![] },
                 Action::CastSpell { object_id: unpaid, targets: vec![] },
@@ -410,9 +418,9 @@ mod settlement_2b3a_boundary_tests {
         let mut state = GameState::new(2);
         state.card_db = Some(Arc::new(db));
         state.phase = Phase::PreCombatMain;
-        let equipment_id = state.create_card_in_zone(995102, 0, ZoneType::Battlefield);
-        let target_id = state.create_card_in_zone(995101, 0, ZoneType::Battlefield);
-        let victim = state.create_card_in_zone(995101, 0, ZoneType::Battlefield);
+        let equipment_id = state.create_card_in_zone(995102, 0, ZoneType::Battlefield).unwrap();
+        let target_id = state.create_card_in_zone(995101, 0, ZoneType::Battlefield).unwrap();
+        let victim = state.create_card_in_zone(995101, 0, ZoneType::Battlefield).unwrap();
         state.objects.get_mut(&victim).unwrap().temp_toughness_mod = -1;
         state.invalidate_characteristics_cache();
         (state, Action::Equip { equipment_id, target_id }, victim)
@@ -502,6 +510,12 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         };
         if !zone_cards.contains(&id) || !state.is_card(id) { return false; }
         let Some(def) = state.objects.get(&id).and_then(|inst| state.card_db().get(inst.card_def_id)) else { return false; };
+        if def.is_aura() {
+            if zone != ZoneType::Hand || def.enchant != crate::card::EnchantRestriction::Creature {
+                aura::record_entry_failure(state, transitions::TransitionError::UnsupportedPath); return false;
+            }
+            if !crate::targeting::aura_cast_context(state, id) { return false; }
+        }
         if !crate::targeting::valid_spell_targets(state, player, def, targets) { return false; }
     }
     match action {
@@ -564,6 +578,9 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         Action::PlayLand { object_id } => {
             let obj_id = *object_id;
             if !state.is_card(obj_id) { return false; }
+            if let Err(error) = state.preflight_noncast_entry(obj_id, ZoneType::Battlefield) {
+                aura::record_entry_failure(state, error); return false;
+            }
             let player = state.priority_player;
             state.players[player].land_plays_remaining -= 1;
             state.move_object(obj_id, ZoneType::Hand, ZoneType::Battlefield);
@@ -573,6 +590,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                 inst.summoning_sick = false; // lands don't have summoning sickness
             }
             state.refresh_continuous_effects();
+            if state.gameplay_stopped() { return false; }
             // Fire ETB triggers on the land itself (e.g., Mystic Sanctuary)
             triggers::check_triggers(state, TriggerCondition::EntersBattlefield, Some(obj_id));
             // Fire landfall triggers on all permanents
@@ -585,6 +603,9 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         Action::PlayLandFromGraveyard { object_id } => {
             let obj_id = *object_id;
             if !state.is_card(obj_id) { return false; }
+            if let Err(error) = state.preflight_noncast_entry(obj_id, ZoneType::Battlefield) {
+                aura::record_entry_failure(state, error); return false;
+            }
             let player = state.priority_player;
             state.players[player].land_plays_remaining -= 1;
             state.move_object(obj_id, ZoneType::Graveyard, ZoneType::Battlefield);
@@ -593,6 +614,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                 inst.summoning_sick = false;
             }
             state.refresh_continuous_effects();
+            if state.gameplay_stopped() { return false; }
             // Fire ETB triggers on the land itself
             triggers::check_triggers(state, TriggerCondition::EntersBattlefield, Some(obj_id));
             // Fire landfall triggers on all permanents
@@ -630,7 +652,16 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
             let stack_id = state.new_stack_id();
             state.stack.push(StackEntry {
                 id: stack_id,
-                source: StackSource::Spell(obj_id),
+                source: if def.is_aura() {
+                    let crate::game::Target::Object(target) = targets[0] else { unreachable!() };
+                    let inst = &state.objects[&obj_id];
+                    let target_inst = &state.objects[&target];
+                    StackSource::AuraSpell { source: crate::card::ExactObjectRef { id: obj_id, generation: inst.zone_change_count + 1 },
+                        source_card_id: inst.card_def_id, source_owner: inst.owner,
+                        target: state.exact_object(target).unwrap(), target_card_id: target_inst.card_def_id,
+                        target_owner: target_inst.owner, target_controller: state.get_characteristics(target).unwrap().controller,
+                        target_is_token: target_inst.is_token, restriction: def.enchant }
+                } else { StackSource::Spell(obj_id) },
                 controller: player,
                 targets: targets.clone(),
                 target_generations: crate::targeting::target_generations(state, targets),
@@ -777,6 +808,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                     Some(SacrificeCost::SelfSacrifice) => {
                         // Sacrifice the source permanent itself (e.g., fetch lands)
                         state.move_object(obj_id, ZoneType::Battlefield, ZoneType::Graveyard);
+                        if state.gameplay_stopped() { return false; }
                     }
                     Some(SacrificeCost::AnyCreature) | Some(SacrificeCost::CreatureWithSubtype(_)) => {
                         // Sacrifice another creature — for now, this is handled
@@ -832,6 +864,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                 // Annihilator: for each attacker with Annihilator N, the defending
                 // player sacrifices N permanents (simplified: random selection).
                 triggers::apply_annihilator(state, attackers);
+                if state.gameplay_stopped() { return false; }
 
                 // Batch-check attack triggers for all attackers before flushing
                 for &attacker_id in attackers {

@@ -25,8 +25,8 @@ fn base_state() -> GameState {
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
     for _ in 0..30 {
-        state.create_card_in_zone(ids::MOUNTAIN, 0, ZoneType::Library);
-        state.create_card_in_zone(ids::FOREST, 1, ZoneType::Library);
+        state.create_card_in_zone(ids::MOUNTAIN, 0, ZoneType::Library).unwrap();
+        state.create_card_in_zone(ids::FOREST, 1, ZoneType::Library).unwrap();
     }
     state.active_player = 0;
     state.priority_player = 0;
@@ -37,7 +37,7 @@ fn base_state() -> GameState {
 /// Put a creature on the battlefield for a player, ready to attack (untapped,
 /// not summoning sick).
 fn add_creature(state: &mut GameState, card_id: u64, player: usize) -> u64 {
-    let obj_id = state.create_card_in_zone(card_id, player, ZoneType::Battlefield);
+    let obj_id = state.create_card_in_zone(card_id, player, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&obj_id) {
         inst.tapped = false;
         inst.summoning_sick = false;
@@ -47,7 +47,7 @@ fn add_creature(state: &mut GameState, card_id: u64, player: usize) -> u64 {
 
 /// Put a land on the battlefield for a player, untapped.
 fn add_land(state: &mut GameState, card_id: u64, player: usize) -> u64 {
-    let obj_id = state.create_card_in_zone(card_id, player, ZoneType::Battlefield);
+    let obj_id = state.create_card_in_zone(card_id, player, ZoneType::Battlefield).unwrap();
     if let Some(inst) = state.objects.get_mut(&obj_id) {
         inst.tapped = false;
     }
@@ -56,7 +56,7 @@ fn add_land(state: &mut GameState, card_id: u64, player: usize) -> u64 {
 
 /// Put a card in a player's hand.
 fn add_to_hand(state: &mut GameState, card_id: u64, player: usize) -> u64 {
-    state.create_card_in_zone(card_id, player, ZoneType::Hand)
+    state.create_card_in_zone(card_id, player, ZoneType::Hand).unwrap()
 }
 
 /// Advance through priority passes until the stack is empty.

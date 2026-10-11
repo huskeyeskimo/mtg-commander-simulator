@@ -1367,7 +1367,7 @@ mod cleanup_continuation_tests {
         state.phase = Phase::Cleanup;
         state.turn_number = GOLDFISH_MAX_TURNS;
         state.cleanup_discard_in_progress = true;
-        for _ in 0..8 { state.create_card_in_zone(90_123, 0, ZoneType::Hand); }
+        for _ in 0..8 { state.create_card_in_zone(90_123, 0, ZoneType::Hand).unwrap(); }
         state
     }
 
@@ -1376,7 +1376,7 @@ mod cleanup_continuation_tests {
         let mut state = mandatory_cleanup();
         state.active_player = 1;
         state.priority_player = 0;
-        for _ in 0..8 { state.create_card_in_zone(90_123, 1, ZoneType::Hand); }
+        for _ in 0..8 { state.create_card_in_zone(90_123, 1, ZoneType::Hand).unwrap(); }
         let json = serde_json::to_string(&state).unwrap();
         let mut restored: GameState = serde_json::from_str(&json).unwrap();
         restored.card_db = state.card_db.clone();
@@ -1469,8 +1469,8 @@ mod cleanup_continuation_tests {
         state.priority_player = 1;
         state.turn_number = GOLDFISH_MAX_TURNS;
         state.phase = Phase::Cleanup;
-        state.create_card_in_zone(90_121, 1, ZoneType::Battlefield);
-        for _ in 0..9 { state.create_card_in_zone(90_122, 1, ZoneType::Hand); }
+        state.create_card_in_zone(90_121, 1, ZoneType::Battlefield).unwrap();
+        for _ in 0..9 { state.create_card_in_zone(90_122, 1, ZoneType::Hand).unwrap(); }
         let first = state.players[1].hand[0];
         rules::apply_action(&mut state, &Action::Discard { object_id: first });
         assert!(state.cleanup_discard_in_progress);
@@ -1650,7 +1650,7 @@ mod completed_invalid_action_tests {
         state.phase = Phase::PreCombatMain;
         state.players[0].life = 1;
         state.loss_boundary.accepted_actions = 41;
-        let source = state.create_card_in_zone(987_101, 0, ZoneType::Battlefield);
+        let source = state.create_card_in_zone(987_101, 0, ZoneType::Battlefield).unwrap();
         let strategy = PayLastLife(source);
         assert!(legal_actions(&state).contains(&strategy.choose_action(&state, 0).unwrap()));
         let result = run_game_loop(&mut state.clone(), &strategy, &GoldfishStrategy, false);

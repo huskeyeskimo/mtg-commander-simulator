@@ -76,13 +76,13 @@ fn state() -> GameState {
     game.phase = Phase::PreCombatMain;
     game.players[0].mana_pool.colorless = 10;
     for _ in 0..8 {
-        game.create_card_in_zone(CREATURE, 0, ZoneType::Library);
+        game.create_card_in_zone(CREATURE, 0, ZoneType::Library).unwrap();
     }
     game
 }
 
 fn cast(state: &mut GameState, card: u64, targets: Vec<Target>) -> u64 {
-    let object = state.create_card_in_zone(card, 0, ZoneType::Hand);
+    let object = state.create_card_in_zone(card, 0, ZoneType::Hand).unwrap();
     let action = Action::CastSpell {
         object_id: object,
         targets,
@@ -147,7 +147,7 @@ fn copy_bypasses_prowess_extort_and_cast_triggers() {
         ..Default::default()
     });
     state.card_db = Some(Arc::new(db));
-    let watcher = state.create_card_in_zone(970006, 0, ZoneType::Battlefield);
+    let watcher = state.create_card_in_zone(970006, 0, ZoneType::Battlefield).unwrap();
     cast(&mut state, DRAW, vec![]);
     let original = state
         .stack
@@ -173,8 +173,8 @@ fn copy_bypasses_prowess_extort_and_cast_triggers() {
 fn targets_generations_and_controller_sensitive_replacement() {
     use mtg_gto::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
     let mut state = state();
-    let selected = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
-    let replacement = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield);
+    let selected = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
+    let replacement = state.create_card_in_zone(CREATURE, 1, ZoneType::Battlefield).unwrap();
     let original = cast(&mut state, HASTE_DRAW, vec![Target::Object(selected)]);
     let id = state.stack[0].id;
     let old_generations = state.stack[0].target_generations.clone();
@@ -235,7 +235,7 @@ fn targets_generations_and_controller_sensitive_replacement() {
 #[test]
 fn invalid_sources_effects_and_targets_are_atomic() {
     let mut state = state();
-    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     let original = cast(&mut state, HASTE_DRAW, vec![Target::Object(creature)]);
     let id = state.stack[0].id;
     let ability_id = state.new_stack_id();
@@ -394,7 +394,7 @@ fn counters_original_or_copy_without_collateral_cleanup() {
 #[test]
 fn stale_permanent_target_skips_entire_composite() {
     let mut state = state();
-    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     let original = cast(&mut state, HASTE_DRAW, vec![Target::Object(creature)]);
     let source = state.stack[0].id;
     let copy_id = copy(&mut state, source);
@@ -457,7 +457,7 @@ fn sibling_copies_canonical_info_and_display() {
     let original_id = state.stack[0].id;
     let a = copy(&mut state, original_id);
     let b = copy(&mut state, original_id);
-    let counter = state.create_card_in_zone(COUNTER, 0, ZoneType::Hand);
+    let counter = state.create_card_in_zone(COUNTER, 0, ZoneType::Hand).unwrap();
     let mut equivalent = state.clone();
     for entry in &mut equivalent.stack {
         entry.id += 1000;
@@ -610,7 +610,7 @@ fn sibling_copies_counter_independently() {
 #[test]
 fn preserve_rejects_structurally_wrong_target_kinds_atomically() {
     let mut state = state();
-    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     cast(&mut state, DRAW, vec![]);
     let draw_id = state.stack[0].id;
     let counter = cast(&mut state, COUNTER, vec![Target::StackEntry(draw_id)]);
@@ -662,7 +662,7 @@ fn preserve_rejects_structurally_wrong_target_kinds_atomically() {
 #[test]
 fn preserved_structural_targets_do_not_recheck_current_legality() {
     let mut permanent_state = state();
-    let creature = permanent_state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let creature = permanent_state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     cast(
         &mut permanent_state,
         HASTE_DRAW,
@@ -713,7 +713,7 @@ fn preserved_structural_targets_do_not_recheck_current_legality() {
 #[test]
 fn targeted_copies_persist_object_and_stack_targets() {
     let mut permanent_state = state();
-    let creature = permanent_state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let creature = permanent_state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     cast(
         &mut permanent_state,
         HASTE_DRAW,
@@ -811,7 +811,7 @@ fn assert_targeted_copy_roundtrips(
 #[test]
 fn mixed_stack_canonicalization_counts_abilities_and_is_id_independent() {
     let mut state = state();
-    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield);
+    let creature = state.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     let original_card = cast(&mut state, DRAW, vec![]);
     let original_id = state.stack[0].id;
     let ability_id = state.new_stack_id();
@@ -830,7 +830,7 @@ fn mixed_stack_canonicalization_counts_abilities_and_is_id_independent() {
         state.stack.iter().map(|entry| entry.id).collect::<Vec<_>>(),
         vec![original_id, ability_id, copy_id]
     );
-    let counter = state.create_card_in_zone(COUNTER, 0, ZoneType::Hand);
+    let counter = state.create_card_in_zone(COUNTER, 0, ZoneType::Hand).unwrap();
     let original_action = Action::CastSpell {
         object_id: counter,
         targets: vec![Target::StackEntry(original_id)],

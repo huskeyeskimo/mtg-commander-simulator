@@ -148,8 +148,8 @@ pub struct RegretTable {
     usable: bool,
 }
 
-/// Pending Equip changes observation and action semantics; prior keys are incompatible.
-pub const SEMANTIC_FORMAT: &str = "mtg-joint-public-2d2-v1";
+/// Pending Aura spells change observation and action semantics; prior keys are incompatible.
+pub const SEMANTIC_FORMAT: &str = "mtg-joint-public-2d3-v1";
 
 #[derive(Serialize, Deserialize)]
 struct SemanticTable {
@@ -289,6 +289,7 @@ mod tests {
 
     #[test]
     fn solver_semantic_format_rejects_prior_and_unversioned_keys() {
+        assert_eq!(SEMANTIC_FORMAT, "mtg-joint-public-2d3-v1");
         let table = RegretTable::new();
         let current = table.to_bytes().unwrap();
         assert_eq!(RegretTable::from_bytes(&current).unwrap().num_info_sets(), Ok(0));
@@ -298,9 +299,15 @@ mod tests {
             semantic_format: "mtg-joint-public-2d1-v1".into(), data: HashMap::new(),
         }).unwrap();
         assert!(RegretTable::from_bytes(&incompatible).is_err());
+        let prior_equip = bincode::serialize(&SemanticTable {
+            semantic_format: "mtg-joint-public-2d2-v1".into(), data: HashMap::new(),
+        }).unwrap();
+        assert!(RegretTable::from_bytes(&prior_equip).is_err());
         assert!(serde_json::from_str::<RegretTable>("{\"data\":{}}").is_err());
         let current_json = serde_json::to_string(&table).unwrap();
         assert!(serde_json::from_str::<RegretTable>(&current_json).is_ok());
+        assert!(serde_json::from_str::<RegretTable>(&current_json.replace(SEMANTIC_FORMAT,
+            "mtg-joint-public-2d2-v1")).is_err());
         assert!(serde_json::from_str::<RegretTable>(&current_json.replace(SEMANTIC_FORMAT, "old")).is_err());
     }
 
