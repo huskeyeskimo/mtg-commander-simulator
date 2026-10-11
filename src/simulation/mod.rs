@@ -1292,6 +1292,7 @@ pub fn format_action_name(state: &GameState, action: &crate::action::Action) -> 
         crate::action::Action::ActivateMacro { combo_id } => {
             format!("Activate combo #{}", combo_id)
         }
+        crate::action::Action::ChooseNextTrigger { handle } => crate::action::trigger_choice_label(state, *handle),
         crate::action::Action::OrderTriggers { ordering } => {
             format!("Order {} triggers", ordering.len())
         }

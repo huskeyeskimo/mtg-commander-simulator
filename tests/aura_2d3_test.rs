@@ -1,3 +1,7 @@
+#[path = "support/trigger_ordering.rs"]
+mod trigger_ordering_support;
+use trigger_ordering_support::finish_controller;
+
 use mtg_gto::{
     action::{canonical, legal_actions, Action},
     card::{
@@ -1268,9 +1272,9 @@ fn aura_etb_and_departure_apnap_order_persists_and_reconstructs_all_choices() {
                 .iter()
                 .all(|action| matches!(action, Action::Concede)
                     || if chooser == 0 {
-                        matches!(action, Action::OrderTriggers { .. })
+                        matches!(action, Action::ChooseNextTrigger { .. })
                     } else {
-                        matches!(action, Action::OrderTriggerOccurrences { .. })
+                        matches!(action, Action::ChooseNextTrigger { .. })
                     }));
             let keys = canonical::canonicalize_actions(&actions, &restored, &n).unwrap();
             assert_eq!(keys.len(), 3);
@@ -1281,7 +1285,7 @@ fn aura_etb_and_departure_apnap_order_persists_and_reconstructs_all_choices() {
                 );
                 assert_eq!(canonical::canonicalize(action, &restored).unwrap(), *key);
             }
-            rules::apply_action(&mut restored, &actions[0]);
+            finish_controller(&mut restored, &actions[0]);
         }
         assert_eq!(
             restored
@@ -1538,9 +1542,9 @@ fn pending_aura_survives_unrelated_mandatory_order_and_all_restore_forms() {
         assert_eq!(actions.len(), 3);
         assert!(actions.iter().all(|action| matches!(
             action,
-            Action::OrderTriggerOccurrences { .. } | Action::Concede
+            Action::ChooseNextTrigger { .. } | Action::Concede
         )));
-        rules::apply_action(&mut copy, &actions[0]);
+        finish_controller(&mut copy, &actions[0]);
         assert_eq!(copy.stack.len(), 3);
         assert_eq!(
             serde_json::to_value(&copy.stack[0]).unwrap(),
@@ -1633,7 +1637,7 @@ fn four_mandatory_occurrences_preserve_complete_keys_and_outcomes_across_raw_id_
             )
             .unwrap()
             .unwrap();
-            rules::apply_action(s, &action);
+            finish_controller(s, &action);
         }
     }
     for s in &mut states {

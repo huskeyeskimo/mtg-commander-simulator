@@ -234,7 +234,7 @@ impl App {
         }
         legal_actions(&self.state).iter().any(|action| matches!(action,
             Action::ChooseNextCopy { .. }
-                | Action::OrderTriggers { .. }
+                | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
                 | Action::OrderTriggerOccurrences { .. }
                 | Action::ChooseTutorTarget { .. }
                 | Action::ChooseReplacementOrder { .. }
@@ -1082,6 +1082,7 @@ pub fn format_action_short(state: &GameState, action: &Action, db: &CardDatabase
         Action::CastFromGraveyard { object_id, .. } => {
             format!("Flashback: {}", card_name(state, *object_id, db))
         }
+        Action::ChooseNextTrigger { handle } => crate::action::trigger_choice_label(state, *handle),
         Action::OrderTriggers { ordering } => format!("Order {} triggers", ordering.len()),
         Action::OrderTriggerOccurrences { ordering } => {
             let subjects: Vec<_> = ordering.iter().filter_map(|&slot| {

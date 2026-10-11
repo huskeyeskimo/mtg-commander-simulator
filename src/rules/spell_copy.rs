@@ -523,7 +523,7 @@ mod terminal_position_tests {
         let item = prepare_spell_copy(&state, &snapshot, 0, CopyTargetPolicy::Preserve).unwrap();
         state.next_stack_id = u64::MAX - 2;
         begin_terminal_copy_batch(&mut state, vec![item.clone(), item], true).unwrap();
-        state.pending_triggers.push(crate::game::PendingTrigger { source_id: 99, ability_index: 0,
+        state.pending_triggers.push(crate::game::PendingTrigger { placement: None, source_id: 99, ability_index: 0,
             controller: 0, targets: vec![], context: crate::game::TriggerContext {
                 source_card_id: 982004, source_generation: 0,
                 effect: Effect::GainLife { amount: 1 }, cast_spell: None,

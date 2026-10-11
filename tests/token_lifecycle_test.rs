@@ -1,4 +1,7 @@
 //! Milestone 2C: token residence is movement; later cessation is nonmovement.
+#[path = "support/trigger_ordering.rs"]
+mod trigger_ordering_support;
+use trigger_ordering_support::finish_controller;
 use mtg_gto::{
     card::{CardDef, CardType, DynamicValue, Effect, TriggerCondition, TriggeredAbility, ZoneType},
     game::{CardDatabase, GameState, Phase},
@@ -179,7 +182,7 @@ fn finish(s: &mut GameState) {
         if let Some(action) = legal_actions(s).into_iter().find(|a| {
             matches!(
                 a,
-                Action::OrderTriggerOccurrences { .. } | Action::OrderTriggers { .. }
+                Action::ChooseNextTrigger { .. }
             )
         }) {
             rules::apply_action(s, &action);
@@ -483,7 +486,7 @@ fn six_or_fewer_canonical_orders_survive_residence_and_cessation() {
         assert_eq!(ca, cb);
         for action in actions_a
             .iter()
-            .filter(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+            .filter(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         {
             let canonical = canonicalize(action, &a).unwrap();
             let rebuilt = resolve(&canonical, &b, b.priority_player).unwrap().unwrap();
@@ -497,7 +500,7 @@ fn six_or_fewer_canonical_orders_survive_residence_and_cessation() {
     }
 }
 #[test]
-fn more_than_six_preserves_semantic_projection_and_own_fifo_boundary() {
+fn more_than_six_preserves_semantic_projection_and_incremental_choices() {
     let mut a = ordering_fixture(8, false, 0);
     let mut b = ordering_fixture(8, true, 5);
     rules::check_state_based_actions(&mut a);
@@ -506,9 +509,9 @@ fn more_than_six_preserves_semantic_projection_and_own_fifo_boundary() {
     for s in [&mut a, &mut b] {
         let orders: Vec<_> = legal_actions(s)
             .into_iter()
-            .filter(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+            .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
             .collect();
-        assert_eq!(orders.len(), 1);
+        assert_eq!(orders.len(), 8);
         let c = canonicalize(&orders[0], s).unwrap();
         let rebuilt = resolve(&c, s, s.priority_player).unwrap().unwrap();
         assert_eq!(rebuilt, orders[0]);
@@ -823,9 +826,9 @@ fn token_cessation_precedes_multicontroller_apnap_ordering() {
         assert_eq!(s.priority_player, player);
         let action = legal_actions(&s)
             .into_iter()
-            .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+            .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
             .unwrap();
-        rules::apply_action(&mut s, &action);
+        finish_controller(&mut s, &action);
     }
     assert_eq!(
         s.stack

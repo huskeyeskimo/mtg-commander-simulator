@@ -1,3 +1,7 @@
+#[path = "support/trigger_ordering.rs"]
+mod trigger_ordering_support;
+use trigger_ordering_support::finish_controller;
+
 use std::sync::Arc;
 
 use mtg_gto::action::{canonical::{canonicalize, resolve}, legal_actions, Action};
@@ -346,11 +350,11 @@ fn assert_continuations(state: GameState) {
             assert_eq!(coordinates(game, viewer), expected_views[viewer]);
         }
         while let Some(choice) = legal_actions(game).into_iter()
-            .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. })) {
+            .find(|a| matches!(a, Action::ChooseNextTrigger { .. })) {
             let key = canonicalize(&choice, game).unwrap();
             let action = resolve(&key, game, game.priority_player).unwrap().unwrap();
             assert_eq!(canonicalize(&action, game).unwrap(), key);
-            apply_action(game, &action);
+            finish_controller(game, &action);
         }
         assert!(game.pending_triggers.is_empty());
         let controllers: Vec<_> = game.stack.iter().map(|e| e.controller).collect();
@@ -757,7 +761,7 @@ fn assert_source_projection(state: &GameState, source: u64, viewer: usize, visib
 fn place_owned_sources(state: &mut GameState) {
     let _ = mtg_gto::rules::fire_triggers(state, TriggerCondition::BeginningOfUpkeep, None);
     while let Some(choice) = legal_actions(state).into_iter()
-        .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. })) {
+        .find(|a| matches!(a, Action::ChooseNextTrigger { .. })) {
         let key = canonicalize(&choice, state).unwrap();
         let action = resolve(&key, state, state.priority_player).unwrap().unwrap();
         apply_action(state, &action);
@@ -868,11 +872,11 @@ fn hidden_current_source_mutations_ids_history_and_storage_preserve_visible_sema
                 // Independently taking raw permutation [0, 1] would choose
                 // opposite stack orders after reversing the pending storage.
                 let choice = legal_actions(&a).into_iter()
-                    .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. })).unwrap();
+                    .find(|action| matches!(action, Action::ChooseNextTrigger { .. })).unwrap();
                 let key = canonicalize(&choice, &a).unwrap();
                 for game in [&mut a, &mut b] {
                     let action = resolve(&key, game, game.priority_player).unwrap().unwrap();
-                    apply_action(game, &action);
+                    finish_controller(game, &action);
                     assert!(game.pending_triggers.is_empty());
                 }
             }

@@ -240,12 +240,16 @@ fn queued_trigger_survives_source_leaving_and_ordering() {
     }
     state.restore(saved).unwrap();
     let before = state.players[0].life;
-    let order = Action::OrderTriggers {
-        ordering: vec![(watcher, 0), (watcher, 1)],
-    };
-    let canonical = canonicalize(&order, &state).unwrap();
-    assert_eq!(resolve(&canonical, &state, 0).unwrap(), Some(order.clone()));
-    rules::apply_action(&mut state, &order);
+    for ability_index in [0, 1] {
+        let trigger = state.pending_triggers.iter().find(|t|
+            t.source_id == watcher && t.ability_index == ability_index).unwrap();
+        let choice = Action::ChooseNextTrigger { handle: trigger.placement.unwrap() };
+        let canonical = canonicalize(&choice, &state).unwrap();
+        assert_eq!(resolve(&canonical, &state, 0).unwrap(), Some(choice.clone()));
+        let stack_len = state.stack.len();
+        rules::apply_action(&mut state, &choice);
+        assert_eq!(state.stack.len(), stack_len + 1);
+    }
     assert!(state.pending_triggers.is_empty());
     resolve_top(&mut state);
     resolve_top(&mut state);

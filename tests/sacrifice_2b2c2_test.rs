@@ -1,3 +1,7 @@
+#[path = "support/trigger_ordering.rs"]
+mod trigger_ordering_support;
+use trigger_ordering_support::finish_controller;
+
 use mtg_gto::action::Action;
 use mtg_gto::card::ActivatedAbility;
 use mtg_gto::card::{
@@ -145,7 +149,7 @@ fn finish(state: &mut GameState) {
         if !state.pending_triggers.is_empty() {
             let choice = legal_actions(state)
                 .into_iter()
-                .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }));
+                .find(|a| matches!(a, Action::ChooseNextTrigger { .. }));
             if let Some(choice) = choice {
                 let key = canonicalize(&choice, state).unwrap();
                 let reconstructed = resolve(&key, state, state.priority_player).unwrap().unwrap();
@@ -566,9 +570,9 @@ fn each_departing_cross_player_and_stolen_observers_common_group() {
     assert_eq!(state.priority_player, 3);
     let order = legal_actions(&state)
         .into_iter()
-        .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+        .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .unwrap();
-    apply_action(&mut state, &order);
+    finish_controller(&mut state, &order);
     assert!(state.stack.iter().all(|s| s.controller == 3));
     assert_eq!(state.priority_player, 0);
     finish(&mut state);
@@ -692,9 +696,9 @@ fn each_multiplayer_persistence_every_continuation_checkpoint() {
         }
         let order = legal_actions(&state)
             .into_iter()
-            .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }));
+            .find(|a| matches!(a, Action::ChooseNextTrigger { .. }));
         if let Some(order) = order {
-            apply_action(&mut state, &order);
+            finish_controller(&mut state, &order);
         } else {
             apply_action(&mut state, &Action::PassPriority);
         }
@@ -1001,7 +1005,7 @@ fn each_six_occurrences_production_cross_state_every_ordering_window() {
                 }
                 let order = expected
                     .iter()
-                    .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+                    .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
                     .unwrap();
                 let key = canonicalize(order, &reference).unwrap();
                 let reconstructed = resolve(&key, &state, state.priority_player).unwrap().unwrap();

@@ -151,12 +151,14 @@ pub enum Action {
     /// same source/ability triggered for distinct transition subjects.
     /// Appended to preserve existing serialized Action discriminants.
     OrderTriggerOccurrences { ordering: Vec<usize> },
+    /// Place one occurrence next (bottom to top). Appended for binary tag stability.
+    ChooseNextTrigger { handle: crate::game::TriggerOccurrenceHandle },
 }
 
 impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Action::ChooseNextCopy { item_index } => write!(f, "Place copy {} next (bottom to top)", item_index),
+            Action::ChooseNextTrigger { handle } => write!(f, "Place trigger {} next", handle.occurrence),            Action::ChooseNextCopy { item_index } => write!(f, "Place copy {} next (bottom to top)", item_index),
             Action::PassPriority => write!(f, "Pass"),
             Action::Discard { object_id } => write!(f, "Discard (obj {})", object_id),
             Action::PlayLand { object_id } => write!(f, "Play land (obj {})", object_id),
@@ -232,7 +234,7 @@ pub const MAX_MULLIGANS: u32 = 4;
 
 /// Core action enumeration with configurable combat abstraction level.
 fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<Action> {
-    if state.gameplay_stopped() { return Vec::new(); }
+    if state.gameplay_stopped() || state.validate_trigger_placement().is_err() { return Vec::new(); }
     use crate::game::Phase;
 
     let player = state.priority_player;
@@ -290,39 +292,12 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
         return actions;
     }
 
-    // Before normal priority actions, check for pending triggers needing ordering.
-    // When a player controls multiple pending triggers, they must choose the
-    // order to place them on the stack. This is a real strategic decision that
-    // MCCFR must be able to observe and optimize over.
-    if !state.pending_triggers.is_empty() {
-        let player_triggers: Vec<&crate::game::PendingTrigger> = state
-            .pending_triggers
-            .iter()
-            .filter(|t| t.controller == player)
-            .collect();
-
-        if player_triggers.len() > 1 {
-            if player_triggers.iter().any(|t| t.context.zone_transition.is_some()) {
-                let slots: Vec<usize> = state.pending_triggers.iter().enumerate()
-                    .filter(|(_, t)| t.controller == player)
-                    .map(|(index, _)| index).collect();
-                for ordering in generate_permutations(&slots) {
-                    actions.push(Action::OrderTriggerOccurrences { ordering });
-                }
-                actions.push(Action::Concede);
-                return actions;
-            }
-            let keys: Vec<(ObjectId, usize)> = player_triggers
-                .iter()
-                .map(|t| (t.source_id, t.ability_index))
-                .collect();
-
-            for perm in generate_permutations(&keys) {
-                actions.push(Action::OrderTriggers { ordering: perm });
-            }
-            actions.push(Action::Concede);
-            return actions;
-        }
+    if let Some(op) = &state.trigger_placement {
+        if state.validate_trigger_placement().is_err() { return actions; }
+        actions.extend(state.pending_triggers.iter().filter(|t|t.controller == op.controller)
+            .filter_map(|t|t.placement.map(|handle|Action::ChooseNextTrigger { handle })));
+        actions.push(Action::Concede);
+        return actions;
     }
 
     // ---- Pending tutor: controller must choose a card from their library ----
@@ -1420,43 +1395,18 @@ fn combinations_helper(
     }
 }
 
-/// Generate all permutations of the given items.
-/// Caps at 6 items (720 permutations) to avoid combinatorial explosion;
-/// beyond that, returns only the original order (FIFO fallback).
-fn generate_permutations<T: Clone>(items: &[T]) -> Vec<Vec<T>> {
-    if items.len() <= 1 {
-        return vec![items.to_vec()];
-    }
-    if items.len() > 6 {
-        // Too many permutations; fall back to single FIFO ordering
-        return vec![items.to_vec()];
-    }
 
-    let mut result = Vec::new();
-    let mut current = Vec::with_capacity(items.len());
-    let mut used = vec![false; items.len()];
-    permute_helper(items, &mut current, &mut used, &mut result);
-    result
-}
-
-fn permute_helper<T: Clone>(
-    items: &[T],
-    current: &mut Vec<T>,
-    used: &mut Vec<bool>,
-    result: &mut Vec<Vec<T>>,
-) {
-    if current.len() == items.len() {
-        result.push(current.clone());
-        return;
-    }
-    for i in 0..items.len() {
-        if used[i] {
-            continue;
-        }
-        used[i] = true;
-        current.push(items[i].clone());
-        permute_helper(items, current, used, result);
-        current.pop();
-        used[i] = false;
-    }
+/// Public captured context identifies a choice even after its source departs.
+pub fn trigger_choice_label(state: &GameState, handle: crate::game::TriggerOccurrenceHandle) -> String {
+    let Some(trigger) = state.pending_triggers.iter().find(|t| t.placement == Some(handle)) else {
+        return "Unavailable trigger occurrence".into();
+    };
+    let name = state.card_db().get(trigger.context.source_card_id).map(|d| d.name.as_str()).unwrap_or("Unknown source");
+    let subject = trigger.context.zone_transition.as_ref().map(|zone| {
+        let name = state.card_db().get(zone.subject.before.card_id).map(|d| d.name.as_str()).unwrap_or("departed object");
+        format!("; subject {name}")
+    }).unwrap_or_default();
+    let cast = trigger.context.cast_spell.as_ref().map(|spell|
+        format!("; cast {} by player {}", spell.definition.name, spell.controller)).unwrap_or_default();
+    format!("Place {name} ability #{} occurrence #{} next (on top){subject}{cast}", trigger.ability_index, handle.occurrence)
 }

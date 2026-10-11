@@ -79,6 +79,7 @@ pub struct InformationSet {
     /// Complete exact retained projection, not only refinement colors/labels.
     pub zone_normalization: Vec<u8>,
     pub trigger_order_resume: Option<TriggerOrderResume>,
+    pub trigger_placement: Option<(u32, usize, usize, usize, usize)>,
     pub cleanup_needs_repeat: bool,
     pub cleanup_discard_in_progress: bool,
     pub pending_copy_order: Option<PendingCopyInfo>,
@@ -291,6 +292,7 @@ impl InformationSet {
             pending_zone_triggers,
             zone_normalization: joint.encoding.clone(),
             trigger_order_resume: view.trigger_order_resume,
+            trigger_placement: view.trigger_placement,
             cleanup_needs_repeat: view.cleanup_needs_repeat,
             cleanup_discard_in_progress: view.cleanup_discard_in_progress,
             pending_copy_order,
@@ -333,6 +335,7 @@ impl InformationSet {
         self.pending_zone_triggers.hash(&mut hasher);
         if !self.zone_normalization.is_empty() { self.zone_normalization.hash(&mut hasher); }
         self.trigger_order_resume.hash(&mut hasher);
+        self.trigger_placement.hash(&mut hasher);
         self.cleanup_needs_repeat.hash(&mut hasher);
         self.cleanup_discard_in_progress.hash(&mut hasher);
         self.pending_copy_order.hash(&mut hasher);
@@ -641,6 +644,7 @@ impl InfoSetAbstraction for BucketedAbstraction {
             info_set.pending_failed_draws.hash(&mut hasher);
         }
         info_set.trigger_order_resume.hash(&mut hasher);
+        info_set.trigger_placement.hash(&mut hasher);
         info_set.cleanup_needs_repeat.hash(&mut hasher);
         info_set.cleanup_discard_in_progress.hash(&mut hasher);
 
@@ -800,6 +804,7 @@ impl<'a> InfoSetAbstraction for CardAwareBucketedAbstraction<'a> {
             info_set.pending_failed_draws.hash(&mut hasher);
         }
         info_set.trigger_order_resume.hash(&mut hasher);
+        info_set.trigger_placement.hash(&mut hasher);
         info_set.cleanup_needs_repeat.hash(&mut hasher);
         info_set.cleanup_discard_in_progress.hash(&mut hasher);
 

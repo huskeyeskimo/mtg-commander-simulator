@@ -1,3 +1,7 @@
+#[path = "support/trigger_ordering.rs"]
+mod trigger_ordering_support;
+use trigger_ordering_support::finish_controller;
+
 use mtg_gto::action::Action;
 use mtg_gto::card::ActivatedAbility;
 use mtg_gto::card::{
@@ -525,7 +529,7 @@ fn finish(state: &mut GameState) {
         if !state.pending_triggers.is_empty() {
             let choice = legal_actions(state)
                 .into_iter()
-                .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }));
+                .find(|a| matches!(a, Action::ChooseNextTrigger { .. }));
             if let Some(choice) = choice {
                 let key = canonicalize(&choice, state).unwrap();
                 let reconstructed = resolve(&key, state, state.priority_player).unwrap().unwrap();
@@ -587,9 +591,9 @@ fn pending_and_stacked_final_continuations_preserve_purged_stolen_history() {
     // Also restore after mandatory placement, through the actual final effects.
     let order = legal_actions(&state)
         .into_iter()
-        .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+        .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .unwrap();
-    apply_action(&mut state, &order);
+    finish_controller(&mut state, &order);
     assert!(state.pending_triggers.is_empty());
     assert_eq!(state.stack.len(), 8);
     for mut game in restores(&state) {
@@ -601,7 +605,7 @@ fn pending_and_stacked_final_continuations_preserve_purged_stolen_history() {
     }
 }
 #[test]
-fn thirteen_occurrence_state_invariance_and_own_fifo_roundtrips() {
+fn thirteen_occurrence_state_invariance_and_incremental_roundtrips() {
     let mut expected = None;
     for offset in [0, 7] {
         for reverse in [false, true] {
@@ -690,19 +694,15 @@ fn thirteen_occurrence_state_invariance_and_own_fifo_roundtrips() {
                 } else {
                     expected = Some(observed);
                 }
-                // Above six occurrences, the inherited sole FIFO action depends
-                // on occurrence storage order. Cross-state ACTION-SET equality
-                // is outside this accepted contract and remains 2E debt, not
-                // rules-complete trigger ordering. Each own-state choice must
-                // still be legal and reconstruct exactly; state/event invariants
-                // above remain mandatory for the full 13-occurrence fixture.
+                // Freeze the complete window and retain all thirteen choices.
+                mtg_gto::rules::check_state_based_actions(&mut state);
                 let actions = legal_actions(&state);
                 assert_eq!(
                     actions
                         .iter()
-                        .filter(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+                        .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
                         .count(),
-                    1
+                    13
                 );
                 for action in &actions {
                     let key = canonicalize(action, &state).unwrap();
@@ -748,6 +748,7 @@ fn six_occurrence_cross_state_actions_reconstruct_and_finish_equivalently() {
                 if reverse_pending {
                     state.pending_triggers.reverse();
                 }
+                mtg_gto::rules::check_state_based_actions(&mut state);
                 if baseline.is_none() {
                     baseline = Some(state.clone());
                 }
@@ -777,7 +778,7 @@ fn six_occurrence_cross_state_actions_reconstruct_and_finish_equivalently() {
                 // action in B with the same key, not merely round-trip in A.
                 for action in reference_actions
                     .iter()
-                    .filter(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+                    .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
                 {
                     let key = canonicalize(action, reference).unwrap();
                     let reconstructed = resolve(&key, &state, state.priority_player).unwrap().unwrap();
@@ -787,14 +788,14 @@ fn six_occurrence_cross_state_actions_reconstruct_and_finish_equivalently() {
                 // A common key also produces equivalent final represented play.
                 let ordering = reference_actions
                     .iter()
-                    .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+                    .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
                     .unwrap();
                 let key = canonicalize(ordering, reference).unwrap();
                 let mut a = reference.clone();
                 let mut b = state.clone();
                 let choice = resolve(&key, &b, b.priority_player).unwrap().unwrap();
-                apply_action(&mut a, ordering);
-                apply_action(&mut b, &choice);
+                finish_controller(&mut a, ordering);
+                finish_controller(&mut b, &choice);
                 finish(&mut a);
                 finish(&mut b);
                 assert_eq!(

@@ -45,6 +45,7 @@ pub enum CanonicalTarget {
 /// to the same `CanonicalAction`. MCCFR regret tables key on this type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CanonicalAction {
+    ChooseNextTrigger { occurrence: crate::rules::transitions::ZoneOccurrenceInfo },
     ChooseNextCopy { item_index: usize },
     PassPriority,
 
@@ -208,6 +209,14 @@ fn canonicalize_with_normalization(
 ) -> Result<CanonicalAction, crate::simulation::TerminationReason> {
     validate_action_references(action, state, normalized)?;
     Ok(match action {
+        Action::ChooseNextTrigger { handle } => {
+            state.validate_trigger_placement()?;
+            let slot = state.pending_triggers.iter().position(|t| t.placement == Some(*handle)
+                && t.controller == state.priority_player)
+                .ok_or(crate::simulation::TerminationReason::StateEncoding)?;
+            CanonicalAction::ChooseNextTrigger { occurrence: canonical_pending_occurrence(state, slot, &normalized.retained)
+                .ok_or(crate::simulation::TerminationReason::StateEncoding)? }
+        }
         Action::ChooseNextCopy { item_index } => CanonicalAction::ChooseNextCopy { item_index: *item_index },
         Action::PassPriority => CanonicalAction::PassPriority,
         Action::Concede => CanonicalAction::Concede,
@@ -471,6 +480,15 @@ pub fn resolve_with_normalization(
 ) -> Result<Option<Action>, crate::simulation::TerminationReason> {
     Ok((|| -> Option<Action> {
     match canonical {
+        CanonicalAction::ChooseNextTrigger { occurrence } => {
+            let op = state.trigger_placement.as_ref()?;
+            if player != op.controller { return None; }
+            let slot = state.pending_triggers.iter().enumerate().position(|(slot, trigger)|
+                trigger.controller == player && trigger.placement.is_some()
+                && canonical_pending_occurrence(state, slot, &normalized.retained).as_ref() == Some(occurrence))?;
+            let trigger = state.pending_triggers.get(slot)?;
+            (trigger.controller == player).then_some(Action::ChooseNextTrigger { handle: trigger.placement? })
+        }
         CanonicalAction::ChooseNextCopy { item_index } => {
             let pending = state.pending_copy_order.as_ref()?;
             (player == pending.controller() && *item_index < pending.items().len()
@@ -733,9 +751,7 @@ fn pending_sources_with_card(state: &GameState, card_id: CardId, normalized: &cr
             sources.push(trigger.source_id);
         }
     }
-    // Preserve the accepted >6 own-state FIFO boundary. Bounded ordering
-    // decisions use the source identity from this same immutable witness.
-    if state.pending_triggers.len() <= 6 {
+    {
         sources.sort_by_key(|id| state.pending_triggers.iter().find(|trigger| trigger.source_id == *id && trigger.context.source_card_id == card_id)
             .and_then(|trigger| normalized.exact_to_coordinate.get(&crate::card::ExactObjectRef { id: *id, generation: trigger.context.source_generation })).copied());
     }
@@ -1185,7 +1201,7 @@ mod retained_normalization_reuse_tests {
     use crate::rules::transitions::{transition_batch, ExactObjectRef, MovementKind, TransitionRequest,
         NORMALIZATION_CALLS};
     #[test]
-    fn seven_hundred_twenty_actions_and_observation_normalize_once() {
+    fn six_incremental_actions_and_observation_normalize_once() {
         let mut db = CardDatabase::new();
         db.insert(CardDef { id: 999_290, card_types: vec![CardType::Creature],
             power: Some(2), toughness: Some(2), triggered_abilities: vec![TriggeredAbility {
@@ -1203,18 +1219,18 @@ mod retained_normalization_reuse_tests {
         transition_batch(&mut state, &requests).unwrap();
         crate::rules::check_state_based_actions(&mut state);
         let actions: Vec<_> = crate::action::legal_actions(&state).into_iter()
-            .filter(|a| matches!(a, Action::OrderTriggerOccurrences { .. })).collect();
-        assert_eq!(actions.len(), 720);
+            .filter(|a| matches!(a, Action::ChooseNextTrigger { .. })).collect();
+        assert_eq!(actions.len(), 6);
         let view = state.visible_state(0);
         NORMALIZATION_CALLS.with(|calls| calls.set(0));
         let normalized = InformationSet::normalize_retained_view(&view).unwrap();
         let keys = canonicalize_actions(&actions, &state, &normalized).unwrap();
         let info = InformationSet::from_view_with_normalization(&view, state.card_db(), &normalized).unwrap();
         NORMALIZATION_CALLS.with(|calls| assert_eq!(calls.get(), 1));
-        assert_eq!(keys.len(), 720);
-        assert_eq!(keys.iter().collect::<std::collections::HashSet<_>>().len(), 720);
+        assert_eq!(keys.len(), 6);
+        assert_eq!(keys.iter().collect::<std::collections::HashSet<_>>().len(), 6);
         assert_eq!(info.zone_normalization, normalized.encoding);
-        println!("720 actions + information set: calls=1, nodes={}, rounds={}, cells={:?}, components={:?}, encoding_bytes={}, elapsed_ns={}",
+        println!("6 actions + information set: calls=1, nodes={}, rounds={}, cells={:?}, components={:?}, encoding_bytes={}, elapsed_ns={}",
             normalized.stats.search_nodes, normalized.stats.refinement_rounds,
             normalized.stats.tied_cell_sizes, normalized.stats.component_sizes,
             normalized.encoding.len(), normalized.stats.elapsed_nanos);

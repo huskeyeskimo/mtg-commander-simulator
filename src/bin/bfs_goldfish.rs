@@ -332,11 +332,12 @@ fn prune_actions(
         return Ok(vec![win]);
     }
 
-    // 2. Forced ordering — no strategic value in goldfish.
+    // 2. Existing goldfish heuristic: choose the first ordering action.
+    // This deliberately prunes strategically distinct trigger orders.
     for action in actions {
         if matches!(
             action,
-            Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }
+            Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }
                 | Action::ChooseReplacementOrder { .. }
         ) {
             return Ok(vec![action.clone()]);

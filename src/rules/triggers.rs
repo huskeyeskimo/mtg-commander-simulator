@@ -68,7 +68,7 @@ fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint:
 
             for (i, trigger) in def.triggered_abilities.iter().enumerate() {
                 if trigger.trigger == condition {
-                    found.push(PendingTrigger {
+                    found.push(PendingTrigger { placement: None,
                         source_id: obj_id,
                         ability_index: i,
                         controller,
@@ -85,7 +85,7 @@ fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint:
 /// Flush pending triggers onto the stack in APNAP order
 /// (Active Player first, then clockwise through all non-active players).
 /// When a player controls multiple triggers in one placement window, they choose
-/// the ordering — this is surfaced as an `Action::OrderTriggers` decision
+/// the ordering — this is surfaced as an `Action::ChooseNextTrigger` decision
 /// point for MCCFR to observe.
 ///
 /// If a player has >1 trigger, this function pauses (leaves triggers in
@@ -95,57 +95,73 @@ fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint:
 #[must_use]
 pub(super) fn flush_triggers(state: &mut GameState) -> bool {
     if state.gameplay_stopped() || state.pending_copy_order.is_some()
-        || state.trigger_placement_deferred
-        || state.cleanup_discard_in_progress
-    {
-        return false;
+        || state.trigger_placement_deferred || state.cleanup_discard_in_progress { return false; }
+    if state.validate_trigger_placement().is_err() {
+        state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return false;
     }
-    if state.pending_triggers.is_empty() {
-        return true;
+    if state.trigger_placement.is_some() { return false; }
+    if state.pending_triggers.is_empty() { return true; }
+    if state.players.is_empty() || state.active_player >= state.players.len()
+        || state.pending_triggers.iter().any(|t| t.controller >= state.players.len() || state.players[t.controller].has_lost)
+    { state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return false; }
+    loop {
+        let Some(controller) = state.pending_triggers.iter().map(|t|t.controller)
+            .min_by_key(|p| (p + state.players.len() - state.active_player) % state.players.len()) else { return true; };
+        if state.pending_triggers.iter().filter(|t|t.controller == controller).count() != 1 { break; }
+        if state.next_stack_id.checked_add(1).is_none() {
+            state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return false;
+        }
+        let slot = state.pending_triggers.iter().position(|t|t.controller == controller).unwrap();
+        let trigger = state.pending_triggers.remove(slot);
+        push_trigger_to_stack(state, &trigger);
     }
-
-    let active = state.active_player;
-    let num_players = state.players.len();
-
-    // Process players in APNAP order: active player first, then clockwise
-    for offset in 0..num_players {
-        let player = (active + offset) % num_players;
-        if state.players[player].has_lost {
-            continue;
-        }
-
-        let player_count = state
-            .pending_triggers
-            .iter()
-            .filter(|t| t.controller == player)
-            .count();
-
-        if player_count == 0 {
-            continue;
-        }
-
-        if player_count > 1 {
-            // Player has multiple triggers — pause for ordering decision
-            state.trigger_order_resume.get_or_insert(
-                crate::game::TriggerOrderResume::Player(state.priority_player));
-            state.priority_player = player;
-            return false;
-        }
-
-        // Player has exactly 1 trigger: auto-push it
-        let triggers: Vec<PendingTrigger> = state
-            .pending_triggers
-            .iter()
-            .filter(|t| t.controller == player)
-            .cloned()
-            .collect();
-        for trigger in triggers {
-            push_trigger_to_stack(state, &trigger);
-        }
-        state.pending_triggers.retain(|t| t.controller != player);
+    let Some(next_window) = state.next_trigger_window.checked_add(1) else {
+        state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return false;
+    };
+    let controller = state.pending_triggers.iter().map(|t|t.controller)
+        .min_by_key(|p| (p + state.players.len() - state.active_player) % state.players.len()).unwrap();
+    let window = state.next_trigger_window;
+    for (index, trigger) in state.pending_triggers.iter_mut().enumerate() {
+        trigger.placement = Some(crate::game::TriggerOccurrenceHandle { window, occurrence: index as u64 });
     }
+    state.trigger_order_resume.get_or_insert(crate::game::TriggerOrderResume::Player(state.priority_player));
+    state.next_trigger_window = next_window;
+    state.trigger_placement = Some(crate::game::TriggerPlacement {
+        version: 1, window, active_player: state.active_player, controller,
+        initial_count: state.pending_triggers.len(), placed: Vec::new(),
+        occurrences: state.pending_triggers.clone(),
+        initial_stack_len: state.stack.len(), initial_stack_id: state.next_stack_id,
+    });
+    state.priority_player = controller;
+    false
+}
 
-    true
+/// Commit exactly one represented occurrence; no priority or SBA within a window.
+pub(super) fn choose_next_trigger(state: &mut GameState, handle: crate::game::TriggerOccurrenceHandle) {
+    if state.validate_trigger_placement().is_err() { return; }
+    let Some(op) = &state.trigger_placement else { return; };
+    if op.window != handle.window { return; }
+    let Some(slot) = state.pending_triggers.iter().position(|t|
+        t.placement == Some(handle) && t.controller == op.controller) else { return; };
+    if state.next_stack_id.checked_add(1).is_none() {
+        state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return;
+    }
+    let trigger = state.pending_triggers.remove(slot);
+    push_trigger_to_stack(state, &trigger);
+    state.trigger_placement.as_mut().unwrap().placed.push(handle.occurrence);
+    let controller = state.pending_triggers.iter().filter(|t|t.placement.is_some())
+        .map(|t|t.controller).min_by_key(|p| (p + state.players.len() - state.active_player) % state.players.len());
+    if let Some(controller) = controller {
+        state.trigger_placement.as_mut().unwrap().controller = controller;
+        state.priority_player = controller;
+    } else {
+        state.trigger_placement = None;
+        // CR 117.5/704.3: only a completed placement window re-enters settlement.
+        super::sba::check_state_based_actions(state);
+        if !state.gameplay_stopped() && state.trigger_placement.is_none() {
+            super::resume_after_trigger_placement(state);
+        }
+    }
 }
 
 /// Push a single trigger onto the stack as a TriggeredAbility entry.
@@ -277,7 +293,7 @@ pub(super) fn fire_spell_cast_triggers(state: &mut GameState, caster: PlayerInde
                         super::spell_copy::snapshot_stack_spell(state, spell_stack_id)
                             .expect("a newly cast spell must be present on the stack")
                     );
-                    found.push(PendingTrigger {
+                    found.push(PendingTrigger { placement: None,
                         source_id: obj_id,
                         ability_index: i,
                         controller,
@@ -361,7 +377,7 @@ pub(super) fn fire_card_draw_triggers(state: &mut GameState, drawing_player: Pla
                 if trigger.trigger == TriggerCondition::OpponentDrawsCard
                     && controller != drawing_player
                 {
-                    found.push(PendingTrigger {
+                    found.push(PendingTrigger { placement: None,
                         source_id: obj_id,
                         ability_index: i,
                         controller,

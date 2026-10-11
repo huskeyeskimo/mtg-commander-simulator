@@ -193,7 +193,7 @@ impl Strategy for GreedyStrategy {
         // the first ordering (FIFO). A real MCCFR solver would evaluate all
         // orderings; greedy just uses FIFO.
         for action in &actions {
-            if matches!(action, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }
+            if matches!(action, Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }
                 | Action::ChooseReplacementOrder { .. }) {
                 return action.clone();
             }
@@ -593,7 +593,7 @@ impl Strategy for GoldfishStrategy {
         for action in &actions {
             if matches!(
                 action,
-                Action::OrderTriggers { .. }
+                Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
                     | Action::OrderTriggerOccurrences { .. }
                     | Action::ChooseReplacementOrder { .. }
                     | Action::OrderDamageAssignment { .. }

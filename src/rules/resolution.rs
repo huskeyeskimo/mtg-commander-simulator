@@ -3,7 +3,7 @@ use crate::game::{GameState, PlayerIndex, StackSource, Target};
 
 /// Resolve the top entry on the stack.
 pub(super) fn resolve_top_of_stack(state: &mut GameState) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() { return; }
     if crate::targeting::validate_pending_equips(state).is_err() {
         state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding);
         return;
@@ -580,8 +580,10 @@ mod terminal_copy_integration_tests {
         assert_eq!(state.pending_triggers.len(), 2);
         assert_eq!(state.priority_player, 1);
         let order = crate::action::legal_actions(&state).into_iter()
-            .find(|action| matches!(action, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. })).unwrap();
+            .find(|action| matches!(action, Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. })).unwrap();
         super::super::apply_action(&mut state, &order);
+        let last = crate::action::legal_actions(&state).into_iter().find(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+        super::super::apply_action(&mut state, &last);
         assert_eq!(state.priority_player, 0);
         assert!(state.pending_triggers.is_empty());
         assert_eq!(state.stack.len(), 4);

@@ -12,7 +12,7 @@ use crate::card::{ExactObjectRef, ObjectId, ZoneType};
 use crate::game::{GameState, PlayerView, StackSource, Target, TriggerContext};
 use crate::simulation::TerminationReason;
 
-pub const PROJECTION_SCHEMA: u16 = 1;
+pub const PROJECTION_SCHEMA: u16 = 2;
 type EncodingResult<T> = Result<T, TerminationReason>;
 
 pub fn encode<T: Serialize>(value: &T) -> EncodingResult<Vec<u8>> {
@@ -1802,7 +1802,14 @@ impl<'v, 'a> Inventory<'v, 'a> {
                 &trigger.context,
                 None,
             )?;
+            // Membership is unary: there is one active window. Encoding it on
+            // the occurrence avoids artificial cycles between symmetric sources.
+            self.graph.vertices[occurrence].facts = encode(&(
+                &self.graph.vertices[occurrence].facts, trigger.placement.is_some()))?;
             self.pending_vertices.push(occurrence);
+        }
+        if let Some(summary) = self.view.trigger_placement {
+            self.graph.vertex(VertexKind::StackOrOperation, &(4u8, summary))?;
         }
         let mut records = HashMap::new();
         for (position, entry) in self.view.stack.iter().enumerate() {
@@ -1831,6 +1838,12 @@ impl<'v, 'a> Inventory<'v, 'a> {
             if records.insert(entry.id, record).is_some() {
                 return Err(TerminationReason::StateEncoding);
             }
+        }
+        for (slot, trigger) in self.view.pending_triggers.iter().enumerate() {
+            let generations: Vec<_> = trigger.targets.iter().map(|target| match target {
+                Target::Object(id) => self.view.visible_current_generation(*id), _ => None,
+            }).collect();
+            self.targets(self.pending_vertices[slot], &trigger.targets, &generations, EdgeKind::ContinuationTarget, &records)?;
         }
         for (position, entry) in self.view.stack.iter().enumerate() {
             let record = records[&entry.id];

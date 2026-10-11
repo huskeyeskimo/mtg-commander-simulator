@@ -362,6 +362,8 @@ impl CombatState {
 /// is the minimal set of fields needed to reconstruct the full state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameState {
+    #[serde(deserialize_with = "deserialize_game_state_format")]
+    state_format: u32,
     /// Card definitions (shared, immutable). Wrapped in `Arc` so that
     /// `GameState::clone()` is O(1) for the DB — critical for MCTS/CFR search.
     #[serde(skip)]
@@ -426,6 +428,9 @@ pub struct GameState {
     /// Where priority resumes after a mandatory trigger-order choice.
     #[serde(default)]
     pub trigger_order_resume: Option<TriggerOrderResume>,
+    #[serde(deserialize_with = "deserialize_trigger_placement")]
+    pub trigger_placement: Option<TriggerPlacement>,
+    pub next_trigger_window: u64,
 
     /// Cleanup had trigger or SBA activity and must repeat after priority passes.
     #[serde(default)]
@@ -582,9 +587,34 @@ pub struct LossBoundary {
     pub turns_taken: Vec<u32>,
 }
 
+/// Runtime action freshness. IDs are local to one persisted placement window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TriggerOccurrenceHandle {
+    pub window: u64,
+    pub occurrence: u64,
+}
+
+/// Versioned ordinary-trigger placement (CR 603.3b, September 25, 2026).
+/// Trigger-of-trigger conditions are not represented by this engine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerPlacement {
+    pub version: u32,
+    pub window: u64,
+    pub active_player: PlayerIndex,
+    pub controller: PlayerIndex,
+    pub initial_count: usize,
+    pub occurrences: Vec<PendingTrigger>,
+    pub placed: Vec<u64>,
+    pub initial_stack_len: usize,
+    pub initial_stack_id: StackId,
+}
+
 /// A trigger that has been queued but not yet placed on the stack.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingTrigger {
+    /// Runtime identity in a frozen placement window; never a semantic key.
+    #[serde(default)]
+    pub placement: Option<TriggerOccurrenceHandle>,
     pub source_id: ObjectId,
     pub ability_index: usize,
     pub controller: PlayerIndex,
@@ -714,6 +744,7 @@ impl PendingTrigger {
         let inst = state.objects.get(&source_id)?;
         let ability = state.card_db().get(inst.card_def_id)?.triggered_abilities.get(ability_index)?;
         Some(Self {
+            placement: None,
             source_id,
             ability_index,
             controller,
@@ -778,6 +809,8 @@ pub struct GameStateSnapshot {
     next_zone_event_group_id: u64,
     pending_triggers: Vec<PendingTrigger>,
     trigger_order_resume: Option<TriggerOrderResume>,
+    trigger_placement: Option<TriggerPlacement>,
+    next_trigger_window: u64,
     cleanup_needs_repeat: bool,
     cleanup_discard_in_progress: bool,
     pending_copy_order: Option<PendingCopyOrder>,
@@ -827,6 +860,7 @@ pub struct PlayerView<'a> {
     /// Triggered abilities waiting to be placed on the stack.
     pub pending_triggers: &'a [PendingTrigger],
     pub trigger_order_resume: Option<TriggerOrderResume>,
+    pub trigger_placement: Option<(u32, usize, usize, usize, usize)>,
     pub cleanup_needs_repeat: bool,
     pub cleanup_discard_in_progress: bool,
     pub pending_copy_order: Option<&'a PendingCopyOrder>,
@@ -1084,6 +1118,7 @@ impl GameState {
             combat: &self.combat,
             pending_triggers: &self.pending_triggers,
             trigger_order_resume: self.trigger_order_resume,
+            trigger_placement: self.trigger_placement.as_ref().map(|p| (p.version, p.active_player, p.controller, p.initial_count, p.placed.len())),
             cleanup_needs_repeat: self.cleanup_needs_repeat,
             cleanup_discard_in_progress: self.cleanup_discard_in_progress,
             pending_copy_order: self.pending_copy_order.as_ref(),
@@ -1115,7 +1150,7 @@ impl GameState {
             pending_tutor: self.pending_tutor.clone(),
 
             objects: visible,
-            state_encoding_failed: matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)),
+            state_encoding_failed: self.validate_trigger_placement().is_err() || matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)),
             visible_locations,
             represented_characteristics,
             commander_objects,
@@ -1138,6 +1173,7 @@ impl GameState {
 impl GameState {
     pub fn new(num_players: usize) -> Self {
         GameState {
+            state_format: GAME_STATE_FORMAT,
             card_db: None,
             combo_registry: None,
             format: GameFormat::Standard,
@@ -1156,6 +1192,8 @@ impl GameState {
             next_zone_event_group_id: 0,
             pending_triggers: Vec::new(),
             trigger_order_resume: None,
+            trigger_placement: None,
+            next_trigger_window: 0,
             cleanup_needs_repeat: false,
             cleanup_discard_in_progress: false,
             pending_copy_order: None,
@@ -1181,6 +1219,7 @@ impl GameState {
     /// Create a new game state configured for Commander format.
     pub fn new_commander(num_players: usize) -> Self {
         let mut state = GameState {
+            state_format: GAME_STATE_FORMAT,
             card_db: None,
             combo_registry: None,
             format: GameFormat::Commander,
@@ -1201,6 +1240,8 @@ impl GameState {
             next_zone_event_group_id: 0,
             pending_triggers: Vec::new(),
             trigger_order_resume: None,
+            trigger_placement: None,
+            next_trigger_window: 0,
             cleanup_needs_repeat: false,
             cleanup_discard_in_progress: false,
             pending_copy_order: None,
@@ -1293,6 +1334,8 @@ impl GameState {
             next_zone_event_group_id: self.next_zone_event_group_id,
             pending_triggers: self.pending_triggers.clone(),
             trigger_order_resume: self.trigger_order_resume,
+            trigger_placement: self.trigger_placement.clone(),
+            next_trigger_window: self.next_trigger_window,
             cleanup_needs_repeat: self.cleanup_needs_repeat,
             cleanup_discard_in_progress: self.cleanup_discard_in_progress,
             pending_copy_order: self.pending_copy_order.clone(),
@@ -1329,6 +1372,8 @@ impl GameState {
         self.next_zone_event_group_id = snap.next_zone_event_group_id;
         self.pending_triggers = snap.pending_triggers;
         self.trigger_order_resume = snap.trigger_order_resume;
+        self.trigger_placement = snap.trigger_placement;
+        self.next_trigger_window = snap.next_trigger_window;
         self.cleanup_needs_repeat = snap.cleanup_needs_repeat;
         self.cleanup_discard_in_progress = snap.cleanup_discard_in_progress;
         self.pending_copy_order = snap.pending_copy_order;
@@ -1349,6 +1394,10 @@ impl GameState {
         self.pending_events.clear();
         self.invalidate_characteristics_cache();
 
+        if self.validate_trigger_placement().is_err() {
+            self.sba_failure = Some(crate::rules::sba::PreparedPassFailure::StateEncoding);
+            return Err(crate::card::AttachmentError::Source);
+        }
         self.validate_attachment_state(true)
     }
 
@@ -2233,4 +2282,75 @@ mod player_view_zone_visibility_tests {
             }
         }
     }
+}
+
+impl GameState {
+    /// Validate authoritative placement ownership before actions or observations.
+    pub fn validate_trigger_placement(&self) -> Result<(), crate::simulation::TerminationReason> {
+        use crate::simulation::TerminationReason::StateEncoding;
+        let Some(op) = &self.trigger_placement else {
+            return if self.pending_triggers.iter().any(|t| t.placement.is_some()) { Err(StateEncoding) } else { Ok(()) };
+        };
+        if op.version != 1 || op.window >= self.next_trigger_window
+            || op.active_player != self.active_player || op.active_player >= self.players.len()
+            || op.controller >= self.players.len() || self.priority_player != op.controller
+            || (self.players[op.controller].has_lost && !self.gameplay_stopped()) || self.trigger_order_resume.is_none()
+            || matches!(self.trigger_order_resume, Some(TriggerOrderResume::Player(p)) if p >= self.players.len() || (self.players[p].has_lost && !self.gameplay_stopped()))
+            || matches!(self.trigger_order_resume, Some(TriggerOrderResume::AfterAttackers)) && self.phase != Phase::DeclareAttackers
+            || op.occurrences.len() != op.initial_count
+            || self.pending_copy_order.is_some() || self.cleanup_discard_in_progress
+            || self.trigger_placement_deferred || self.phase == Phase::Mulligan || op.initial_count == 0
+            || op.placed.len() >= op.initial_count
+            || op.initial_stack_len.checked_add(op.placed.len()) != Some(self.stack.len())
+            || op.initial_stack_id.checked_add(op.placed.len() as u64) != Some(self.next_stack_id)
+        { return Err(StateEncoding); }
+        for (index, trigger) in op.occurrences.iter().enumerate() {
+            if trigger.placement != Some(TriggerOccurrenceHandle { window: op.window, occurrence: index as u64 })
+                || trigger.controller >= self.players.len() || (self.players[trigger.controller].has_lost && !self.gameplay_stopped()) { return Err(StateEncoding); }
+        }
+        let mut seen: HashSet<u64> = op.placed.iter().copied().collect();
+        if seen.len() != op.placed.len() || seen.iter().any(|id| *id >= op.initial_count as u64) { return Err(StateEncoding); }
+        let mut chooser = None;
+        for t in &self.pending_triggers {
+            if t.controller >= self.players.len() { return Err(StateEncoding); }
+            if let Some(handle) = t.placement {
+                if handle.window != op.window || handle.occurrence >= op.initial_count as u64
+                    || !seen.insert(handle.occurrence) || !same_trigger_record(&op.occurrences[handle.occurrence as usize], t)? || (self.players[t.controller].has_lost && !self.gameplay_stopped()) { return Err(StateEncoding); }
+                let rank = (t.controller + self.players.len() - op.active_player) % self.players.len();
+                if chooser.is_none_or(|(old, _)| rank < old) { chooser = Some((rank, t.controller)); }
+            }
+        }
+        if seen.len() != op.initial_count || chooser.map(|(_,p)|p) != Some(op.controller) { return Err(StateEncoding); }
+        let mut previous_rank = 0;
+        for (offset, entry) in self.stack[op.initial_stack_len..].iter().enumerate() {
+            let trigger = &op.occurrences[op.placed[offset] as usize];
+            let rank = (trigger.controller + self.players.len() - op.active_player) % self.players.len();
+            let StackSource::TriggeredAbility { source_id, ability_index, context } = &entry.source else { return Err(StateEncoding); };
+            if entry.id != op.initial_stack_id + offset as u64 || entry.controller != trigger.controller
+                || *source_id != trigger.source_id || *ability_index != trigger.ability_index
+                || !same_trigger_record(context.as_ref(), &trigger.context)? || entry.targets != trigger.targets
+                || entry.target_generations != crate::targeting::target_generations(self, &trigger.targets)
+                || rank < previous_rank || rank > chooser.unwrap().0 { return Err(StateEncoding); }
+            previous_rank = rank;
+        }
+        Ok(())
+    }
+}
+
+fn same_trigger_record<T: Serialize>(a: &T, b: &T) -> Result<bool, crate::simulation::TerminationReason> {
+    Ok(bincode::serialize(a).map_err(|_| crate::simulation::TerminationReason::StateEncoding)?
+        == bincode::serialize(b).map_err(|_| crate::simulation::TerminationReason::StateEncoding)?)
+}
+
+fn deserialize_trigger_placement<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<TriggerPlacement>, D::Error> {
+    Option::<TriggerPlacement>::deserialize(d)
+}
+
+// The leading tag rejects historical positional bincode before interpreting any
+// changed layout. JSON must carry the same explicit version.
+const GAME_STATE_FORMAT: u32 = 0x3245_4754;
+fn deserialize_game_state_format<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let version = u32::deserialize(d)?;
+    if version != GAME_STATE_FORMAT { return Err(serde::de::Error::custom("incompatible GameState trigger format")); }
+    Ok(version)
 }

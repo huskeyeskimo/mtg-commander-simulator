@@ -1,3 +1,6 @@
+#[path = "support/trigger_ordering.rs"]
+mod trigger_ordering_support;
+use trigger_ordering_support::finish_controller;
 use std::sync::Arc;
 
 use mtg_gto::action::{canonical::{canonicalize, resolve}, legal_actions, Action};
@@ -181,12 +184,12 @@ fn three_player_wrath_token_occurrences_continue_identically_after_restores() {
         for controller in 0..3 {
             assert_eq!(game.priority_player, controller);
             let choice = legal_actions(game).into_iter()
-                .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+                .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
                 .expect("mandatory owned occurrence ordering");
             let key = canonicalize(&choice, game).unwrap();
             let reconstructed = resolve(&key, game, controller).unwrap().unwrap();
             assert_eq!(canonicalize(&reconstructed, game).unwrap(), key);
-            apply_action(game, &reconstructed);
+            finish_controller(game, &reconstructed);
         }
         assert!(game.pending_triggers.is_empty());
         assert_eq!(game.stack.len(), 6);

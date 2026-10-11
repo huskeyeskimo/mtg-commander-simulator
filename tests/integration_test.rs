@@ -22,6 +22,17 @@ fn queue_test_trigger(state: &mut GameState, source_id: u64, ability_index: usiz
     state.pending_triggers.push(trigger);
 }
 
+// Older interaction regressions operated on one complete controller group.
+// Keep those assertions while exercising the new one-occurrence actions.
+fn finish_test_trigger_group(state: &mut GameState, first: &Action) {
+    let controller = state.priority_player;
+    rules::apply_action(state, first);
+    while state.trigger_placement.is_some() && state.priority_player == controller {
+        let action = legal_actions(state).into_iter().find(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+        rules::apply_action(state, &action);
+    }
+}
+
 // Ordinary keyword prerequisite: generic executable fixtures, no card certification.
 mod ordinary_keyword_prerequisite {
     use super::*;
@@ -131,7 +142,7 @@ mod ordinary_keyword_prerequisite {
         rules::check_state_based_actions(state);
         while !state.pending_triggers.is_empty() {
             let action = legal_actions(state).into_iter().find(|action|
-                matches!(action, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }))
+                matches!(action, Action::ChooseNextTrigger { .. }))
                 .expect("ordinary ordering action");
             rules::apply_action(state, &action);
         }
@@ -504,12 +515,12 @@ mod ordinary_keyword_prerequisite {
         assert_eq!(InformationSet::from_view(&a.visible_state(0), a.card_db()).unwrap().hash_value(),
             InformationSet::from_view(&b.visible_state(0), b.card_db()).unwrap().hash_value());
         let choices = |state: &GameState| legal_actions(state).into_iter().filter(|action|
-            matches!(action, Action::OrderTriggerOccurrences { .. })).map(|action|
+            matches!(action, Action::ChooseNextTrigger { .. })).map(|action|
             canonicalize(&action, state).unwrap()).collect::<std::collections::HashSet<_>>();
-        assert_eq!(choices(&a).len(), 6);
+        assert_eq!(choices(&a).len(), 3);
         assert_eq!(choices(&a), choices(&b));
         for action in legal_actions(&a).into_iter().filter(|action|
-            matches!(action, Action::OrderTriggerOccurrences { .. })) {
+            matches!(action, Action::ChooseNextTrigger { .. })) {
             let canonical = canonicalize(&action, &a).unwrap();
             let translated = resolve(&canonical, &b, 0).unwrap().unwrap();
             let mut first = a.clone(); let mut second = b.clone();
@@ -521,7 +532,7 @@ mod ordinary_keyword_prerequisite {
     }
 
     #[test]
-    fn test_keyword_prerequisite_seven_occurrences_semantic_and_own_fifo_boundary() {
+    fn test_keyword_prerequisite_seven_occurrences_semantic_and_incremental_boundary() {
         use mtg_gto::info_set::InformationSet;
         let (mut a, _) = simultaneous_fixture(false, 0, 7);
         let (mut b, _) = simultaneous_fixture(true, 2, 7);
@@ -532,11 +543,11 @@ mod ordinary_keyword_prerequisite {
         for state in [&mut a, &mut b] {
             let original = state.pending_triggers.clone();
             let choices: Vec<_> = legal_actions(state).into_iter().filter(|action|
-                matches!(action, Action::OrderTriggerOccurrences { .. })).collect();
-            assert_eq!(choices.len(), 1);
+                matches!(action, Action::ChooseNextTrigger { .. })).collect();
+            assert_eq!(choices.len(), 7);
             let action = &choices[0];
             assert_eq!(resolve(&canonicalize(action, state).unwrap(), state, 0).unwrap(), Some(action.clone()));
-            rules::apply_action(state, action);
+            finish_test_trigger_group(state, action);
             assert_eq!(state.stack.iter().map(|entry| match entry.source {
                 mtg_gto::game::StackSource::TriggeredAbility { source_id, .. } => source_id,
                 _ => panic!("keyword entry"),
@@ -1047,7 +1058,7 @@ fn test_new_sample_cards_in_db() {
 fn test_order_triggers_surfaced_for_multiple_simultaneous_triggers() {
     // When a player controls two permanents that both trigger on the same event,
     // they must choose the order to place them on the stack. This should be
-    // surfaced as Action::OrderTriggers, not silently ordered FIFO.
+    // surfaced as incremental occurrence choices.
     let db = sample::build_sample_db();
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
@@ -1072,21 +1083,22 @@ fn test_order_triggers_surfaced_for_multiple_simultaneous_triggers() {
     // Manually queue two simultaneous ETB triggers for player 0
     queue_test_trigger(&mut state, vis1, 0, 0);
     queue_test_trigger(&mut state, vis2, 0, 0);
+    rules::check_state_based_actions(&mut state);
 
     // Attempt to flush — should pause because player 0 has >1 trigger
     // (flush_triggers is internal, but we can observe via legal_actions)
     let actions = legal_actions(&state);
 
-    // Should contain OrderTriggers actions (2! = 2 permutations) plus Concede
+    // Should contain two occurrence choices plus Concede
     let order_trigger_actions: Vec<&Action> = actions
         .iter()
-        .filter(|a| matches!(a, Action::OrderTriggers { .. }))
+        .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .collect();
 
     assert_eq!(
         order_trigger_actions.len(),
         2,
-        "Should have 2 orderings (2! permutations) for 2 triggers, got {:?}",
+        "Should have 2 occurrence choices for 2 triggers, got {:?}",
         actions
     );
 
@@ -1098,7 +1110,7 @@ fn test_order_triggers_surfaced_for_multiple_simultaneous_triggers() {
 
     // Apply the first ordering
     let chosen = order_trigger_actions[0].clone();
-    rules::apply_action(&mut state, &chosen);
+    finish_test_trigger_group(&mut state, &chosen);
 
     // After ordering, triggers should be on the stack and pending_triggers empty
     assert!(
@@ -1146,7 +1158,7 @@ fn test_single_trigger_auto_flushes_without_ordering() {
     let actions = legal_actions(&state);
     let has_order_triggers = actions
         .iter()
-        .any(|a| matches!(a, Action::OrderTriggers { .. }));
+        .any(|a| matches!(a, Action::ChooseNextTrigger { .. }));
 
     assert!(
         !has_order_triggers,
@@ -1366,7 +1378,7 @@ fn test_2a_cleanup_multiple_discards_order_and_restore() {
     assert!(state.cleanup_needs_repeat);
     assert!(legal_actions(&state)
         .iter()
-        .all(|a| matches!(a, Action::OrderTriggers { .. } | Action::Concede)));
+        .all(|a| matches!(a, Action::ChooseNextTrigger { .. } | Action::Concede)));
 
     let mut no_continuation = state.clone();
     no_continuation.cleanup_needs_repeat = false;
@@ -1396,9 +1408,9 @@ fn test_2a_cleanup_multiple_discards_order_and_restore() {
         );
         let order = legal_actions(variant)
             .into_iter()
-            .find(|a| matches!(a, Action::OrderTriggers { .. }))
+            .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
             .unwrap();
-        rules::apply_action(variant, &order);
+        finish_test_trigger_group(variant, &order);
         assert!(variant.pending_triggers.is_empty());
         assert_eq!(variant.stack.len(), 4);
         assert_eq!((variant.active_player, variant.phase), (0, Phase::Cleanup));
@@ -1498,7 +1510,7 @@ fn test_2a_cleanup_auto_paths_settle_discard_trigger() {
         assert_eq!(state.pending_triggers.len(), 2);
         assert!(legal_actions(&state)
             .iter()
-            .any(|a| matches!(a, Action::OrderTriggers { .. })));
+            .any(|a| matches!(a, Action::ChooseNextTrigger { .. })));
     }
 }
 
@@ -1656,14 +1668,14 @@ fn test_2a_partial_cleanup_external_sba_and_restored_continuation() {
         assert!(variant.stack.is_empty());
         assert_eq!(variant.priority_player, 0);
         let ap_order = legal_actions(variant).into_iter()
-            .find(|a| matches!(a, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. })).unwrap();
-        rules::apply_action(variant, &ap_order);
+            .find(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+        finish_test_trigger_group(variant, &ap_order);
         assert_eq!(variant.priority_player, 1);
         assert_eq!(variant.stack.len(), 4);
         assert!(variant.stack.iter().all(|entry| entry.controller == 0));
         let nap_order = legal_actions(variant).into_iter()
-            .find(|a| matches!(a, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. })).unwrap();
-        rules::apply_action(variant, &nap_order);
+            .find(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+        finish_test_trigger_group(variant, &nap_order);
         assert_eq!(variant.stack.len(), 6);
         assert!(variant.stack[..4].iter().all(|entry| entry.controller == 0));
         assert!(variant.stack[4..].iter().all(|entry| entry.controller == 1));
@@ -1705,7 +1717,7 @@ fn test_2a_partial_cleanup_single_trigger_external_sba() {
     rules::apply_action(&mut state, &Action::Discard { object_id: second });
     assert_eq!(state.pending_triggers.len(), 2);
     assert!(state.stack.is_empty());
-    assert!(legal_actions(&state).iter().any(|a| matches!(a, Action::OrderTriggers { .. })));
+    assert!(legal_actions(&state).iter().any(|a| matches!(a, Action::ChooseNextTrigger { .. })));
 }
 
 #[cfg(feature = "tui")]
@@ -1747,13 +1759,18 @@ fn test_2a_tui_human_order_pause_and_resume_on_opponent_turn() {
         let mut app = App::new(state, db);
         app.auto_advance();
         assert_eq!((app.state.active_player, app.state.priority_player), (1, 0));
-        assert!(app.cached_actions.iter().any(|a| matches!(a, Action::OrderTriggers { .. })));
-        let first = app.cached_actions.iter().position(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+        assert!(app.cached_actions.iter().any(|a| matches!(a, Action::ChooseNextTrigger { .. })));
+        let first = app.cached_actions.iter().position(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
         app.execute_action(first);
+        assert_eq!(app.state.pending_triggers.len(), 1);
+        let remainder = app.cached_actions.iter().position(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+        app.execute_action(remainder);
         assert_eq!((app.state.active_player, app.state.priority_player), (1, 0));
-        assert!(app.cached_actions.iter().any(|a| matches!(a, Action::OrderTriggers { .. })));
-        let second = app.cached_actions.iter().position(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
+        assert!(app.cached_actions.iter().any(|a| matches!(a, Action::ChooseNextTrigger { .. })));
+        let second = app.cached_actions.iter().position(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
         app.execute_action(second);
+        let remainder = app.cached_actions.iter().position(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+        app.execute_action(remainder);
         tx.send((app.state.active_player, app.state.turn_number, app.state.players[0].life,
             app.state.pending_triggers.len())).unwrap();
     });
@@ -1795,7 +1812,7 @@ fn test_2a_tui_two_cleanup_discards_keep_one_placement_window() {
     assert_eq!(app.state.pending_triggers.len(), 2);
     assert!(app.state.stack.is_empty());
     assert_eq!((app.state.active_player, app.state.turn_number, app.state.phase), (0, 1, Phase::Cleanup));
-    assert!(app.cached_actions.iter().any(|a| matches!(a, Action::OrderTriggers { .. })));
+    assert!(app.cached_actions.iter().any(|a| matches!(a, Action::ChooseNextTrigger { .. })));
 }
 
 #[cfg(feature = "tui")]
@@ -1991,8 +2008,8 @@ fn test_2a_interrupted_cleanup_manual_tui_goldfish_apnap_agree() {
     for controller in [1, 0] {
         assert_eq!(manual.priority_player, controller);
         let order = legal_actions(&manual).into_iter()
-            .find(|a| matches!(a, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. })).unwrap();
-        rules::apply_action(&mut manual, &order);
+            .find(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+        finish_test_trigger_group(&mut manual, &order);
     }
     assert_eq!(manual.stack.iter().map(|entry| entry.controller).collect::<Vec<_>>(),
         vec![1, 1, 1, 1, 0, 0]);
@@ -2013,8 +2030,8 @@ fn test_2a_interrupted_cleanup_manual_tui_goldfish_apnap_agree() {
         vec![1, 1, 1, 1]);
     assert_eq!(tui.pending_triggers.len(), 2);
     let human_order = legal_actions(&tui).into_iter()
-        .find(|a| matches!(a, Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. })).unwrap();
-    rules::apply_action(&mut tui, &human_order);
+        .find(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+    finish_test_trigger_group(&mut tui, &human_order);
     assert!(rules::fast_forward_goldfish_turn_until_copy_choice(&mut tui, 0) > 0);
 
     let outcome = |state: &GameState| (state.active_player, state.turn_number, state.phase,
@@ -2058,6 +2075,7 @@ fn test_apnap_both_players_multiple_triggers() {
     queue_test_trigger(&mut state, vis_p0_b, 0, 0);
     queue_test_trigger(&mut state, vis_p1_a, 0, 1);
     queue_test_trigger(&mut state, vis_p1_b, 0, 1);
+    rules::check_state_based_actions(&mut state);
 
     // AP (player 0) should order first
     let actions = legal_actions(&state);
@@ -2067,16 +2085,16 @@ fn test_apnap_both_players_multiple_triggers() {
     );
     let order_actions: Vec<&Action> = actions
         .iter()
-        .filter(|a| matches!(a, Action::OrderTriggers { .. }))
+        .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .collect();
     assert_eq!(
         order_actions.len(),
         2,
-        "AP should see 2! = 2 orderings for their 2 triggers"
+        "AP should see 2 occurrence choices for their 2 triggers"
     );
 
     // AP orders their triggers
-    rules::apply_action(&mut state, order_actions[0]);
+    finish_test_trigger_group(&mut state, order_actions[0]);
 
     // Now NAP (player 1) should have priority to order their triggers
     assert_eq!(
@@ -2091,16 +2109,16 @@ fn test_apnap_both_players_multiple_triggers() {
     let actions2 = legal_actions(&state);
     let order_actions2: Vec<&Action> = actions2
         .iter()
-        .filter(|a| matches!(a, Action::OrderTriggers { .. }))
+        .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .collect();
     assert_eq!(
         order_actions2.len(),
         2,
-        "NAP should see 2! = 2 orderings for their 2 triggers"
+        "NAP should see 2 occurrence choices for their 2 triggers"
     );
 
     // NAP orders their triggers
-    rules::apply_action(&mut state, order_actions2[0]);
+    finish_test_trigger_group(&mut state, order_actions2[0]);
 
     // All 4 triggers should now be on the stack
     assert!(
@@ -2122,9 +2140,8 @@ fn test_apnap_both_players_multiple_triggers() {
 }
 
 #[test]
-fn test_more_than_six_triggers_fifo_fallback() {
-    // When a player has >6 simultaneous triggers, the permutation generator
-    // falls back to a single FIFO ordering to avoid combinatorial explosion.
+fn test_more_than_six_triggers_all_incremental_choices() {
+    // Every remaining occurrence stays selectable above six, without permutations.
     let db = sample::build_sample_db();
     let mut state = GameState::new(2);
     state.card_db = Some(Arc::new(db));
@@ -2153,23 +2170,24 @@ fn test_more_than_six_triggers_fifo_fallback() {
     for &vis_id in &vis_ids {
         queue_test_trigger(&mut state, vis_id, 0, 0);
     }
+    rules::check_state_based_actions(&mut state);
 
     let actions = legal_actions(&state);
     let order_actions: Vec<&Action> = actions
         .iter()
-        .filter(|a| matches!(a, Action::OrderTriggers { .. }))
+        .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .collect();
 
-    // 7! = 5040 would be too many; should fall back to exactly 1 FIFO ordering
+    // Seven immediate choices preserve every complete ordering as a path.
     assert_eq!(
         order_actions.len(),
-        1,
-        "Should have exactly 1 ordering (FIFO fallback) for >6 triggers, got {}",
+        7,
+        "Should have seven occurrence choices, got {}",
         order_actions.len()
     );
 
     // Apply the single ordering — all triggers should end up on the stack
-    rules::apply_action(&mut state, order_actions[0]);
+    finish_test_trigger_group(&mut state, order_actions[0]);
     assert!(state.pending_triggers.is_empty());
     assert_eq!(
         state.stack.len(),
@@ -2797,11 +2815,12 @@ fn test_canonical_roundtrip_trigger_ordering() {
 
     queue_test_trigger(&mut state, vis1, 0, 0);
     queue_test_trigger(&mut state, vis2, 0, 0);
+    rules::check_state_based_actions(&mut state);
 
     let actions = legal_actions(&state);
     let order_actions: Vec<&Action> = actions
         .iter()
-        .filter(|a| matches!(a, Action::OrderTriggers { .. }))
+        .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .collect();
 
     assert_eq!(order_actions.len(), 2, "Should have 2 orderings");
@@ -2857,7 +2876,7 @@ fn test_canonical_roundtrip_full_game_all_actions() {
 
         // Choose random action and advance
         let chosen = actions.choose(&mut rng).unwrap().clone();
-        rules::apply_action(&mut state, &chosen);
+        finish_test_trigger_group(&mut state, &chosen);
         if state.phase == Phase::Untap {
             turns += 1;
         }
@@ -4995,6 +5014,7 @@ fn test_multi_phase_abstraction() {
         pending_zone_triggers: vec![],
         zone_normalization: vec![],
         trigger_order_resume: None,
+        trigger_placement: None,
         cleanup_needs_repeat: false,
         cleanup_discard_in_progress: false,
         pending_copy_order: None,
@@ -8363,7 +8383,7 @@ fn test_2a_successive_draw_events_wait_and_remain_two_occurrences() {
     assert_eq!(state.priority_player, 1);
     assert!(legal_actions(&state)
         .iter()
-        .all(|action| matches!(action, Action::OrderTriggers { .. } | Action::Concede)));
+        .all(|action| matches!(action, Action::ChooseNextTrigger { .. } | Action::Concede)));
     // J: the currently supported pending-trigger representation survives all
     // save/restore paths before the mandatory ordering decision.
     let snap = state.snapshot();
@@ -8383,7 +8403,7 @@ fn test_2a_successive_draw_events_wait_and_remain_two_occurrences() {
 }
 
 #[test]
-fn test_2a_seven_pending_exposes_existing_ordering_limit() {
+fn test_2a_seven_pending_exposes_every_occurrence() {
     use mtg_gto::card::{Effect, TriggeredAbility};
     let mut state = settlement_fixture(Effect::DrawCards { count: 1 });
     let db = Arc::make_mut(state.card_db.as_mut().unwrap());
@@ -8400,13 +8420,13 @@ fn test_2a_seven_pending_exposes_existing_ordering_limit() {
     settlement_resolve(&mut state);
     assert_eq!(state.pending_triggers.len(), 7);
     assert!(state.stack.is_empty());
-    // The one FIFO choice above six remains a documented 2E limitation.
+    // Every one of the seven occurrences is selectable.
     assert_eq!(
         legal_actions(&state)
             .iter()
-            .filter(|action| matches!(action, Action::OrderTriggers { .. }))
+            .filter(|action| matches!(action, Action::ChooseNextTrigger { .. }))
             .count(),
-        1
+        7
     );
 }
 
@@ -8667,9 +8687,9 @@ fn test_2a_fast_forward_preserves_apnap_for_pending_window() {
         assert_eq!(manual.priority_player, controller);
         let order = legal_actions(&manual)
             .into_iter()
-            .find(|action| matches!(action, Action::OrderTriggers { .. }))
+            .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
             .expect("legal order");
-        rules::apply_action(&mut manual, &order);
+        finish_test_trigger_group(&mut manual, &order);
     }
     let manual_order: Vec<_> = manual
         .drain_events()
@@ -8731,9 +8751,9 @@ fn test_2a_draw_step_preserves_mandatory_trigger_chooser() {
     assert_eq!(state.pending_triggers.len(), 2);
     let order = legal_actions(&state)
         .into_iter()
-        .find(|action| matches!(action, Action::OrderTriggers { .. }))
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         .expect("mandatory order");
-    rules::apply_action(&mut state, &order);
+    finish_test_trigger_group(&mut state, &order);
     assert_eq!(state.priority_player, 0);
     assert_eq!(state.stack.len(), 2);
 }
@@ -8772,7 +8792,7 @@ fn test_2a_land_play_collects_self_etb_and_landfall_before_choice() {
     assert_eq!(state.priority_player, 0);
     assert!(legal_actions(&state)
         .iter()
-        .any(|action| matches!(action, Action::OrderTriggers { .. })));
+        .any(|action| matches!(action, Action::ChooseNextTrigger { .. })));
 
     let mut graveyard_state = GameState::new(2);
     graveyard_state.card_db = state.card_db.clone();
@@ -8789,7 +8809,7 @@ fn test_2a_land_play_collects_self_etb_and_landfall_before_choice() {
     assert!(graveyard_state.stack.is_empty());
     assert!(legal_actions(&graveyard_state)
         .iter()
-        .any(|action| matches!(action, Action::OrderTriggers { .. })));
+        .any(|action| matches!(action, Action::ChooseNextTrigger { .. })));
 }
 
 fn sba_window_fixture() -> GameState {
@@ -8915,7 +8935,7 @@ fn test_2a_sba_multiple_passes_keep_all_occurrences_pending_for_choice() {
     assert!(!events.iter().any(|event| matches!(event, GameEvent::AbilityTriggered { .. })));
     assert_eq!(state.pending_triggers.len(), 2);
     assert!(state.stack.is_empty());
-    assert!(legal_actions(&state).iter().any(|action| matches!(action, Action::OrderTriggerOccurrences { .. })));
+    assert!(legal_actions(&state).iter().any(|action| matches!(action, Action::ChooseNextTrigger { .. })));
 }
 
 #[test]
@@ -9130,9 +9150,9 @@ fn test_2b3a_attack_consequences_settle_before_ordering_and_progression() {
     assert_eq!(state.phase, Phase::DeclareAttackers);
     assert_eq!(state.priority_player, 0);
     assert_eq!(state.pending_triggers.len(), 2);
-    assert!(legal_actions(&state).iter().all(|a| matches!(a, Action::OrderTriggers { .. } | Action::Concede)));
-    let order = legal_actions(&state).into_iter().find(|a| matches!(a, Action::OrderTriggers { .. })).unwrap();
-    rules::apply_action(&mut state, &order);
+    assert!(legal_actions(&state).iter().all(|a| matches!(a, Action::ChooseNextTrigger { .. } | Action::Concede)));
+    let order = legal_actions(&state).into_iter().find(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+    finish_test_trigger_group(&mut state, &order);
     assert_eq!(state.phase, Phase::DeclareBlockers);
     assert_eq!(state.priority_player, 1);
 }
@@ -9309,11 +9329,11 @@ fn test_2b3a_equip_death_triggers_order_only_after_settlement() {
     assert!(state.stack.is_empty());
     assert_eq!(state.priority_player, 0);
     let legal = legal_actions(&state);
-    assert!(legal.iter().all(|a| matches!(a, Action::OrderTriggerOccurrences { .. } | Action::Concede)));
+    assert!(legal.iter().all(|a| matches!(a, Action::ChooseNextTrigger { .. } | Action::Concede)));
     let before = bincode::serialize(&state).unwrap();
     rules::check_state_based_actions(&mut state);
     assert_eq!(before, bincode::serialize(&state).unwrap(), "periodic recheck must not duplicate death");
-    rules::apply_action(&mut state, legal.iter().find(|a| matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap());
+    finish_test_trigger_group(&mut state, legal.iter().find(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap());
     assert_eq!(state.stack.len(), 2);
     assert!(state.pending_triggers.is_empty());
     assert_eq!(state.priority_player, 0);
@@ -9333,12 +9353,13 @@ fn test_2b3a_concession_during_ordering_resumes_on_live_player() {
         for index in 0..2 { queue_test_trigger(&mut state, source, index, player); }
     }
     state.trigger_order_resume = Some(mtg_gto::game::TriggerOrderResume::Player(0));
+    rules::check_state_based_actions(&mut state);
     boundary_2b3a_concession_controls(&state, 0);
     for chooser in [0, 1] {
         assert_eq!(state.priority_player, chooser);
         let order = legal_actions(&state).into_iter().find(|a|
-            matches!(a, Action::OrderTriggerOccurrences { .. } | Action::OrderTriggers { .. })).unwrap();
-        rules::apply_action(&mut state, &order);
+            matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+        finish_test_trigger_group(&mut state, &order);
     }
     assert!(!state.gameplay_stopped());
     assert!(state.pending_triggers.is_empty());
@@ -9469,8 +9490,8 @@ fn test_2b3a_untap_settles_at_upkeep_before_priority_and_trigger_order() {
     assert_eq!(state.pending_triggers.len(), 2, "upkeep and death share the placement window");
     assert!(state.stack.is_empty());
     let legal = legal_actions(&state);
-    assert!(legal.iter().all(|a| matches!(a, Action::OrderTriggerOccurrences { .. } | Action::Concede)));
-    rules::apply_action(&mut state, legal.iter().find(|a| matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap());
+    assert!(legal.iter().all(|a| matches!(a, Action::ChooseNextTrigger { .. } | Action::Concede)));
+    finish_test_trigger_group(&mut state, legal.iter().find(|a| matches!(a, Action::ChooseNextTrigger { .. })).unwrap());
     assert_eq!(state.priority_player, 0);
     assert_eq!(state.stack.len(), 2);
 }
@@ -9608,8 +9629,8 @@ fn test_2b3a_review_draw_loss_ordering_restores_live_priority_in_all_roundtrips(
         let mut outcomes = Vec::new();
         for mut candidate in boundary_2b3a_review_roundtrips(&state) {
             let order = legal_actions(&candidate).into_iter().find(|a|
-                matches!(a, Action::OrderTriggerOccurrences { .. } | Action::OrderTriggers { .. })).unwrap();
-            rules::apply_action(&mut candidate, &order);
+                matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+            finish_test_trigger_group(&mut candidate, &order);
             assert_eq!(candidate.priority_player, 0, "no-loss draw ordering restores live active priority");
             assert!(!candidate.players[candidate.priority_player].has_lost);
             assert!(candidate.pending_triggers.is_empty());
@@ -9652,8 +9673,8 @@ fn test_2b3a_review_last_chooser_concession_finishes_attack_continuation() {
     let mut outcomes = Vec::new();
     for mut candidate in boundary_2b3a_review_roundtrips(&state) {
         let order = legal_actions(&candidate).into_iter().find(|a|
-            matches!(a, Action::OrderTriggerOccurrences { .. } | Action::OrderTriggers { .. })).unwrap();
-        rules::apply_action(&mut candidate, &order);
+            matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+        finish_test_trigger_group(&mut candidate, &order);
         assert!(!candidate.gameplay_stopped());
         assert!(candidate.pending_triggers.is_empty());
         assert!(candidate.trigger_order_resume.is_none());
@@ -9694,8 +9715,8 @@ fn test_2b3a_review_last_chooser_concession_finishes_resolution_continuation() {
     let mut outcomes = Vec::new();
     for mut candidate in boundary_2b3a_review_roundtrips(&state) {
         let order = legal_actions(&candidate).into_iter().find(|a|
-            matches!(a, Action::OrderTriggerOccurrences { .. } | Action::OrderTriggers { .. })).unwrap();
-        rules::apply_action(&mut candidate, &order);
+            matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+        finish_test_trigger_group(&mut candidate, &order);
         assert!(!candidate.gameplay_stopped());
         assert!(candidate.pending_triggers.is_empty());
         assert!(candidate.trigger_order_resume.is_none());
@@ -9748,8 +9769,8 @@ fn test_2b3a_eliminated_tutor_controller_cannot_resume_choice_after_concession()
         let (mut state, forest) = boundary_2b3a_tutor_ordering_window(0);
         if order_first {
             let order = legal_actions(&state).into_iter().find(|a|
-                matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap();
-            rules::apply_action(&mut state, &order);
+                matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+            finish_test_trigger_group(&mut state, &order);
             assert_eq!(state.priority_player, 0);
             assert!(state.pending_tutor.is_some());
             assert!(state.trigger_order_resume.is_none());
@@ -9760,8 +9781,8 @@ fn test_2b3a_eliminated_tutor_controller_cannot_resume_choice_after_concession()
         for mut candidate in boundary_2b3a_review_roundtrips(&state) {
             if !order_first {
                 let order = legal_actions(&candidate).into_iter().find(|a|
-                    matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap();
-                rules::apply_action(&mut candidate, &order);
+                    matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+                finish_test_trigger_group(&mut candidate, &order);
             }
             assert_eq!(candidate.priority_player, 0);
             assert!(candidate.pending_triggers.is_empty());
@@ -9783,8 +9804,8 @@ fn test_2b3a_live_tutor_continuation_survives_ordering_or_other_chooser_concessi
         let mut outcomes = Vec::new();
         for mut candidate in boundary_2b3a_review_roundtrips(&state) {
             let order = legal_actions(&candidate).into_iter().find(|a|
-                matches!(a, Action::OrderTriggerOccurrences { .. })).unwrap();
-            rules::apply_action(&mut candidate, &order);
+                matches!(a, Action::ChooseNextTrigger { .. })).unwrap();
+            finish_test_trigger_group(&mut candidate, &order);
             assert_eq!(candidate.priority_player, 0);
             assert!(!candidate.players[0].has_lost);
             assert_eq!(candidate.pending_tutor.as_ref().unwrap().controller, 0);
@@ -10686,7 +10707,7 @@ mod common_pass_2b3b {
                 .find(|a| {
                     matches!(
                         a,
-                        Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }
+                        Action::ChooseNextTrigger { .. }
                     )
                 })
                 .cloned()
@@ -11496,7 +11517,7 @@ mod common_pass_2b3b {
         }
     }
     #[test]
-    fn above_six_semantic_info_and_same_state_fifo_only() {
+    fn above_six_semantic_info_and_occurrence_roundtrip() {
         let base = equivalent_common_state(1, false, true);
         let other = equivalent_common_state(800, true, true);
         let n = norm(&base);
@@ -11533,7 +11554,7 @@ mod common_pass_2b3b {
         }
         let first = legal_actions(&reference)
             .into_iter()
-            .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+            .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
             .unwrap();
         rules::apply_action(&mut reference, &first);
         assert!(!reference.stack.is_empty());

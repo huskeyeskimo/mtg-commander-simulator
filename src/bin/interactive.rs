@@ -38,7 +38,7 @@ fn human_mandatory_choice_pending(state: &GameState) -> bool {
     }
     legal_actions(state).iter().any(|action| matches!(action,
         Action::ChooseNextCopy { .. }
-            | Action::OrderTriggers { .. }
+            | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
             | Action::OrderTriggerOccurrences { .. }
             | Action::ChooseTutorTarget { .. }
             | Action::ChooseReplacementOrder { .. }
@@ -290,8 +290,13 @@ mod mandatory_choice_tests {
         assert!(human_mandatory_choice_pending(&state));
         assert_eq!(rules::fast_forward_goldfish_turn_until_copy_choice(&mut state, 0), 0);
         let choice = legal_actions(&state).into_iter()
-            .find(|action| matches!(action, Action::OrderTriggers { .. })).unwrap();
+            .find(|action| matches!(action, Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. })).unwrap();
         rules::apply_action(&mut state, &choice);
+        assert!(human_mandatory_choice_pending(&state));
+        assert_eq!(rules::fast_forward_goldfish_turn_until_copy_choice(&mut state, 0), 0);
+        let last = legal_actions(&state).into_iter()
+            .find(|action| matches!(action, Action::ChooseNextTrigger { .. })).unwrap();
+        rules::apply_action(&mut state, &last);
         assert!(!human_mandatory_choice_pending(&state));
         assert!(rules::fast_forward_goldfish_turn_until_copy_choice(&mut state, 0) > 0);
         assert_eq!(state.players[0].life, 22);
@@ -581,6 +586,7 @@ fn format_action_rich(state: &GameState, action: &Action, db: &CardDatabase) -> 
             }).collect();
             format!("Assign damage from {}: [{}]", name, assigns.join(", "))
         }
+        Action::ChooseNextTrigger { handle } => mtg_gto::action::trigger_choice_label(state, *handle),
         Action::OrderTriggers { ordering } => {
             let descs: Vec<String> = ordering.iter().map(|&(src, idx)| {
                 format!("{}#{}", card_name(state, src, db), idx)

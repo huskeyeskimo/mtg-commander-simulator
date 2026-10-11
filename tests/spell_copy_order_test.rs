@@ -1,4 +1,8 @@
 //! Terminal spell-copy ordering, independent of any card or Zada trigger.
+#[path = "support/trigger_ordering.rs"]
+mod trigger_ordering_support;
+use trigger_ordering_support::finish_controller;
+
 use std::sync::Arc;
 
 use mtg_gto::action::{canonical::{canonicalize, resolve}, legal_actions, Action};
@@ -301,7 +305,7 @@ fn deferred_triggers_flush_only_after_complete_batch_commit() {
     let id = source(&mut state, DRAW, vec![]);
     let item = prepared(&state, id, 0, CopyTargetPolicy::Preserve);
     begin(&mut state, vec![item.clone(), item]);
-    state.pending_triggers.push(PendingTrigger {
+    state.pending_triggers.push(PendingTrigger { placement: None,
         source_id: 987654, ability_index: 0, controller: 0, targets: vec![],
         context: TriggerContext { source_card_id: CREATURE, source_generation: 0,
             effect: Effect::GainLife { amount: 1 }, cast_spell: None,
@@ -329,7 +333,7 @@ fn legacy_single_copy_apis_still_work() {
 }
 
 fn trigger(source_id: u64, controller: usize, ability_index: usize) -> PendingTrigger {
-    PendingTrigger { source_id, ability_index, controller, targets: vec![],
+    PendingTrigger { placement: None, source_id, ability_index, controller, targets: vec![],
         context: TriggerContext { source_card_id: CREATURE, source_generation: 0,
             effect: Effect::GainLife { amount: 1 }, cast_spell: None,
             zone_transition: None } }
@@ -358,9 +362,9 @@ fn resolution_grants_active_priority_unless_a_trigger_order_is_mandatory() {
     assert_eq!(state.pending_triggers.len(), 2);
     assert_eq!(state.priority_player, 1);
     let choices = legal_actions(&state);
-    assert!(choices.iter().all(|action| matches!(action, Action::OrderTriggers { .. } | Action::Concede)));
-    let order = choices.into_iter().find(|action| matches!(action, Action::OrderTriggers { .. })).unwrap();
-    rules::apply_action(&mut state, &order);
+    assert!(choices.iter().all(|action| matches!(action, Action::ChooseNextTrigger { .. } | Action::Concede)));
+    let order = choices.into_iter().find(|action| matches!(action, Action::ChooseNextTrigger { .. })).unwrap();
+    finish_controller(&mut state, &order);
     assert!(state.pending_triggers.is_empty());
     assert_eq!(state.priority_player, 0);
     assert_eq!(state.stack.len(), 2);
@@ -392,8 +396,8 @@ fn nonactive_caster_retains_priority_after_ordering_cast_triggers_and_restore() 
     for mut candidate in restored {
         if candidate.card_db.is_none() { candidate.card_db = game().card_db; }
         let order = legal_actions(&candidate).into_iter()
-            .find(|action| matches!(action, Action::OrderTriggers { .. })).unwrap();
-        rules::apply_action(&mut candidate, &order);
+            .find(|action| matches!(action, Action::ChooseNextTrigger { .. })).unwrap();
+        finish_controller(&mut candidate, &order);
         assert!(candidate.pending_triggers.is_empty());
         assert_eq!(candidate.priority_player, 1);
     }
@@ -417,8 +421,8 @@ fn attacker_trigger_order_still_advances_to_blockers() {
     assert_eq!(state.phase, Phase::DeclareAttackers);
     assert_eq!(state.pending_triggers.len(), 2);
     let order = legal_actions(&state).into_iter()
-        .find(|action| matches!(action, Action::OrderTriggers { .. })).unwrap();
-    rules::apply_action(&mut state, &order);
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. })).unwrap();
+    finish_controller(&mut state, &order);
     assert_eq!(state.phase, Phase::DeclareBlockers);
     assert_eq!(state.priority_player, 1);
     assert!(state.pending_triggers.is_empty());
@@ -434,8 +438,8 @@ fn copy_commit_keeps_nonactive_trigger_order_and_restores_priority_after_choice(
     rules::apply_action(&mut state, &Action::ChooseNextCopy { item_index: 0 });
     assert_eq!(state.priority_player, 1);
     assert_eq!(state.pending_triggers.len(), 2);
-    let order = legal_actions(&state).into_iter().find(|action| matches!(action, Action::OrderTriggers { .. })).unwrap();
-    rules::apply_action(&mut state, &order);
+    let order = legal_actions(&state).into_iter().find(|action| matches!(action, Action::ChooseNextTrigger { .. })).unwrap();
+    finish_controller(&mut state, &order);
     assert!(state.pending_triggers.is_empty());
     assert_eq!(state.priority_player, 0);
     assert_eq!(state.stack.len(), 5);
@@ -464,8 +468,8 @@ fn copy_commit_sba_death_orders_nonactive_triggers_before_priority() {
     let contexts: Vec<_> = state.pending_triggers.iter().map(|trigger| trigger.context.zone_transition.as_ref().unwrap()).collect();
     assert!(contexts.iter().all(|context| context.subject.before.object.id == doomed));
     assert_eq!(contexts[0].group_id, contexts[1].group_id);
-    let order = legal_actions(&state).into_iter().find(|action| matches!(action, Action::OrderTriggerOccurrences { .. })).unwrap();
-    rules::apply_action(&mut state, &order);
+    let order = legal_actions(&state).into_iter().find(|action| matches!(action, Action::ChooseNextTrigger { .. })).unwrap();
+    finish_controller(&mut state, &order);
     assert_eq!(state.priority_player, 0);
 }
 

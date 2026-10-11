@@ -41,20 +41,21 @@ fn cleanup_discard_required(state: &GameState) -> bool {
 /// machinery established the resume context; keep its APNAP chooser intact
 /// even when an external caller supplies an action directly.
 fn mandatory_trigger_order_chooser(state: &GameState) -> Option<PlayerIndex> {
-    if state.trigger_order_resume.is_none()
-        || state.trigger_placement_deferred
-        || state.cleanup_discard_in_progress
-    { return None; }
-    (0..state.players.len()).map(|offset|
-        (state.active_player + offset) % state.players.len())
-        .find(|&player| state.pending_triggers.iter().any(|t| t.controller == player))
-        .filter(|&player| state.pending_triggers.iter()
-            .filter(|t| t.controller == player).count() > 1)
+    state.trigger_placement.as_ref().map(|op|op.controller)
 }
 
 /// Apply an action to the game state, advancing it.
 pub fn apply_action(state: &mut GameState, action: &Action) {
     if state.gameplay_stopped() { return; }
+    if state.validate_trigger_placement().is_err() {
+        state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding); return;
+    }
+    if state.trigger_placement.is_some()
+        && !matches!(action, Action::ChooseNextTrigger { .. } | Action::Concede) { return; }
+    if let Action::ChooseNextTrigger { handle } = action {
+        if state.trigger_placement.as_ref().is_none_or(|op| op.window != handle.window)
+            || !state.pending_triggers.iter().any(|t| t.placement == Some(*handle) && t.controller == state.priority_player) { return; }
+    }
     if let Err(reason) = aura::preflight_action(state, action) {
         state.sba_failure = Some(reason); return;
     }
@@ -354,12 +355,13 @@ mod settlement_2b3a_boundary_tests {
                         5 => initial.game_over = true,
                         6 => {
                             initial.trigger_order_resume = Some(TriggerOrderResume::AfterResolution);
-                            initial.pending_triggers = (0..2).map(|index| crate::game::PendingTrigger {
+                            initial.pending_triggers = (0..2).map(|index| crate::game::PendingTrigger { placement: None,
                                 source_id: mana_source, ability_index: index, controller: 0, targets: vec![],
                                 context: crate::game::TriggerContext { source_card_id: 995113,
                                     source_generation: 0, effect: Effect::GainLife { amount: 1 },
                                     cast_spell: None, zone_transition: None },
                             }).collect();
+                            let _ = triggers::flush_triggers(&mut initial);
                         }
                         7 => { initial.phase = Phase::Cleanup; initial.cleanup_discard_in_progress = true; }
                         8 => { for id in [mana_source, departing, ability] {
@@ -484,14 +486,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         }
     }
     if let Some(chooser) = mandatory_trigger_order_chooser(state) {
-        let needs_occurrence_order = state.pending_triggers.iter().any(|trigger|
-            trigger.controller == chooser && trigger.context.zone_transition.is_some());
-        let valid_kind = match action {
-            Action::OrderTriggerOccurrences { .. } => needs_occurrence_order,
-            Action::OrderTriggers { .. } => !needs_occurrence_order,
-            Action::Concede => true,
-            _ => false,
-        };
+        let valid_kind = matches!(action, Action::ChooseNextTrigger { .. } | Action::Concede);
         if state.priority_player != chooser || !valid_kind { return false; }
     }
     // Validate supplied targets before costs, zone changes, or cast events.
@@ -918,63 +913,10 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
             state.consecutive_passes = 0;
         }
 
-        Action::OrderTriggers { ordering } => {
-            if state.cleanup_discard_in_progress || state.trigger_placement_deferred {
-                return false;
-            }
-            if state.pending_triggers.iter().any(|t|
-                t.controller == state.priority_player && t.context.zone_transition.is_some()) {
-                return false;
-            }
-            let player = state.priority_player;
-
-            let mut expected: Vec<_> = state.pending_triggers.iter()
-                .filter(|t| t.controller == player)
-                .map(|t| (t.source_id, t.ability_index)).collect();
-            let mut supplied = ordering.clone();
-            expected.sort_unstable();
-            supplied.sort_unstable();
-            if expected.len() <= 1 || supplied != expected { return false; }
-
-            // Place this player's triggers on the stack in the chosen order.
-            for &(source_id, ability_index) in ordering {
-                if let Some(pos) = state.pending_triggers.iter().position(|t| {
-                    t.controller == player
-                        && t.source_id == source_id
-                        && t.ability_index == ability_index
-                }) {
-                    let trigger = state.pending_triggers.remove(pos);
-                    triggers::push_trigger_to_stack(state, &trigger);
-                }
-            }
-
-            // Continue flushing remaining triggers (the other player's).
-            if triggers::flush_triggers(state) {
-                resume_after_trigger_placement(state);
-            }
-        }
-
-        Action::OrderTriggerOccurrences { ordering } => {
-            if state.cleanup_discard_in_progress || state.trigger_placement_deferred { return false; }
-            let player = state.priority_player;
-            let expected: Vec<usize> = state.pending_triggers.iter().enumerate()
-                .filter(|(_, t)| t.controller == player)
-                .map(|(index, _)| index).collect();
-            if expected.len() <= 1 || !expected.iter().any(|&index|
-                state.pending_triggers[index].context.zone_transition.is_some()) {
-                return false;
-            }
-            let mut supplied = ordering.clone();
-            supplied.sort_unstable();
-            if supplied != expected { return false; }
-            let chosen: Vec<_> = ordering.iter().map(|&index|
-                state.pending_triggers[index].clone()).collect();
-            for trigger in &chosen { triggers::push_trigger_to_stack(state, trigger); }
-            state.pending_triggers.retain(|t| t.controller != player);
-            if triggers::flush_triggers(state) {
-                resume_after_trigger_placement(state);
-            }
-        }
+        Action::ChooseNextTrigger { handle } => triggers::choose_next_trigger(state, *handle),
+        // Legacy whole-order actions are no longer accepted. Never silently replay
+        // an old policy against the incremental action semantics.
+        Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. } => return false,
 
         Action::CastCommander { object_id, targets } => {
             let obj_id = *object_id;
@@ -1459,7 +1401,7 @@ fn auto_place_pending_triggers(state: &mut GameState) -> bool {
     let order = crate::action::legal_actions(state)
         .into_iter()
         .find(|action| matches!(action,
-            Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }));
+            Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }));
     if let Some(order) = order {
         apply_action(state, &order);
         true
@@ -1580,6 +1522,9 @@ pub fn fast_forward_goldfish_turn_until_copy_choice(state: &mut GameState, human
 
 fn fast_forward_goldfish_turn_counted(state: &mut GameState, pause_for: Option<PlayerIndex>) -> u32 {
     if state.gameplay_stopped() { return 0; }
+    if state.validate_trigger_placement().is_err() {
+        state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding); return 0;
+    }
     if state.loss_action_in_progress { return fast_forward_goldfish_turn_inner(state, pause_for); }
     let active_before = state.active_player;
     let had_terminal = state.loss_boundary.terminal.is_some();

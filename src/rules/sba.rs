@@ -563,7 +563,10 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
     if state.unsupported_continuing_elimination() {
         return super::loss::adjudicate(state, None);
     }
-    if state.pending_copy_order.is_some() {
+    if state.validate_trigger_placement().is_err() {
+        state.sba_failure = Some(PreparedPassFailure::StateEncoding); return false;
+    }
+    if state.pending_copy_order.is_some() || state.trigger_placement.is_some() {
         return false;
     }
     let caller_deferred = std::mem::replace(&mut state.trigger_placement_deferred, true);

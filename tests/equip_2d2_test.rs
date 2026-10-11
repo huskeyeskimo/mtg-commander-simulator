@@ -1,3 +1,7 @@
+#[path = "support/trigger_ordering.rs"]
+mod trigger_ordering_support;
+use trigger_ordering_support::finish_controller;
+
 use mtg_gto::{
     action::{legal_actions, Action},
     card::{CardDef, CardType, KeywordAbility, Subtype, ZoneType},
@@ -743,20 +747,20 @@ fn resolution_apnap_mandatory_order_roundtrips_then_restores_priority() {
     assert!(s.stack.is_empty());
     let chooser = legal_actions(&s)
         .into_iter()
-        .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+        .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .unwrap();
     let before = bincode::serialize(&s).unwrap();
     equip(&mut s, e, a);
     assert_eq!(before, bincode::serialize(&s).unwrap());
     for mut restored in variants(&s) {
-        rules::apply_action(&mut restored, &chooser);
+        finish_controller(&mut restored, &chooser);
         assert_eq!(restored.stack.len(), 2);
         assert_eq!(restored.priority_player, 1);
         let next = legal_actions(&restored)
             .into_iter()
-            .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+            .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
             .unwrap();
-        rules::apply_action(&mut restored, &next);
+        finish_controller(&mut restored, &next);
         assert_eq!(restored.stack.len(), 4);
         assert_eq!(restored.priority_player, 0);
         assert!(restored.pending_triggers.is_empty());
@@ -807,12 +811,12 @@ fn pending_equip_survives_unrelated_mandatory_continuation_across_all_restores()
     for mut candidate in variants(&s) {
         let choice = legal_actions(&candidate)
             .into_iter()
-            .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+            .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
             .unwrap();
         let before = bincode::serialize(&candidate).unwrap();
         equip(&mut candidate, e, a);
         assert_eq!(before, bincode::serialize(&candidate).unwrap());
-        rules::apply_action(&mut candidate, &choice);
+        finish_controller(&mut candidate, &choice);
         assert_eq!(candidate.stack.len(), 3);
         assert_eq!(candidate.stack[0].id, pending_id);
         resolve(&mut candidate);

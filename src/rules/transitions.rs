@@ -1514,7 +1514,7 @@ fn collect_occurrences(
                     _ => false,
                 };
                 if matches {
-                    found.push(PendingTrigger {
+                    found.push(PendingTrigger { placement: None,
                         source_id: observer.source.id,
                         ability_index: *ability_index,
                         controller: observer.controller,
@@ -1557,7 +1557,7 @@ fn collect_death_keywords(batch: &CommittedTransitionBatch) -> Vec<PendingTrigge
         if subject.before.location.zone != ZoneType::Battlefield
             || subject.destination.zone != ZoneType::Graveyard { continue; }
         for keyword in eligible_death_keywords(&subject.before) {
-            found.push(PendingTrigger {
+            found.push(PendingTrigger { placement: None,
                 source_id: subject.before.object.id,
                 // Synthetic keyword instructions have their own namespace,
                 // independent of printed triggered-ability vector positions.

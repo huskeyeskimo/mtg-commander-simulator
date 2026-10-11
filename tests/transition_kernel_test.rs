@@ -1,4 +1,8 @@
 //! Milestone 2B.1: exact, owned transition evidence and occurrence selection.
+#[path = "support/trigger_ordering.rs"]
+mod trigger_ordering_support;
+use trigger_ordering_support::finish_controller;
+
 use std::sync::Arc;
 
 use mtg_gto::action::{
@@ -476,16 +480,17 @@ fn subject_occurrences_order_and_round_trip_without_raw_id_keys() {
         );
         assert_eq!(restored.pending_triggers.len(), 3); // own leave + two observer occurrences
         restored.priority_player = 0;
+        rules::check_state_based_actions(restored);
         let choices: Vec<_> = legal_actions(restored)
             .into_iter()
-            .filter(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+            .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
             .collect();
         assert!(!choices.is_empty());
         let choice = choices
             .iter()
             .find(|choice| {
                 matches!(choice,
-            Action::OrderTriggerOccurrences { ordering } if ordering[0] != 0)
+            Action::ChooseNextTrigger { handle } if handle.occurrence != 0)
             })
             .unwrap();
         let canonical = canonicalize(choice, restored).unwrap();
@@ -502,7 +507,7 @@ fn subject_occurrences_order_and_round_trip_without_raw_id_keys() {
             canonical
         );
         assert_eq!(resolve(&canonical, restored, 0).unwrap(), Some(choice.clone()));
-        rules::apply_action(restored, choice);
+        finish_controller(restored, choice);
         assert!(restored.pending_triggers.is_empty());
         assert_eq!(restored.stack.len(), 3);
     }
@@ -674,12 +679,12 @@ fn equivalent_runtime_id_allocations_have_same_canonical_choices_and_information
     );
     let choices_a: Vec<_> = legal_actions(&a)
         .into_iter()
-        .filter(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+        .filter(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         .map(|action| canonicalize(&action, &a).unwrap())
         .collect();
     let choices_b: Vec<_> = legal_actions(&b)
         .into_iter()
-        .filter(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+        .filter(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         .map(|action| canonicalize(&action, &b).unwrap())
         .collect();
     assert_eq!(choices_a, choices_b);
@@ -717,7 +722,7 @@ fn invalid_direct_occurrence_order_cannot_drop_or_duplicate_triggers() {
 }
 
 #[test]
-fn seven_subject_occurrences_keep_existing_fifo_limit() {
+fn seven_subject_occurrences_expose_all_incremental_choices() {
     let mut state = game();
     state.create_card_in_zone(WATCHER, 0, ZoneType::Battlefield).unwrap();
     let ids: Vec<_> = (0..7)
@@ -729,12 +734,13 @@ fn seven_subject_occurrences_keep_existing_fifo_limit() {
         .collect();
     transition_batch(&mut state, &requests).unwrap();
     assert_eq!(state.pending_triggers.len(), 7);
+    rules::check_state_based_actions(&mut state);
     assert_eq!(
         legal_actions(&state)
             .into_iter()
-            .filter(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+            .filter(|action| matches!(action, Action::ChooseNextTrigger { .. }))
             .count(),
-        1
+        7
     );
 }
 
@@ -788,9 +794,9 @@ fn two_controllers_order_one_window_in_outgoing_apnap_groups() {
     assert_eq!(state.priority_player, 0);
     let first = legal_actions(&state)
         .into_iter()
-        .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         .unwrap();
-    rules::apply_action(&mut state, &first);
+    finish_controller(&mut state, &first);
     assert_eq!(
         state
             .stack
@@ -802,9 +808,9 @@ fn two_controllers_order_one_window_in_outgoing_apnap_groups() {
     assert_eq!(state.priority_player, 1);
     let second = legal_actions(&state)
         .into_iter()
-        .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         .unwrap();
-    rules::apply_action(&mut state, &second);
+    finish_controller(&mut state, &second);
     assert_eq!(
         state
             .stack
@@ -941,9 +947,9 @@ fn successive_exiles_share_placement_window_without_becoming_one_event() {
     rules::check_state_based_actions(&mut state);
     let choice = legal_actions(&state)
         .into_iter()
-        .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         .unwrap();
-    rules::apply_action(&mut state, &choice);
+    finish_controller(&mut state, &choice);
     assert_eq!(state.stack.len(), 3); // two watcher occurrences and self leave
 }
 
@@ -984,7 +990,7 @@ fn linked_exile_followup_waits_until_primary_batch_is_complete() {
 
 #[test]
 fn pending_information_distinguishes_live_source_from_older_incarnation() {
-    let state = subject_occurrence_game(false);
+    let mut state = subject_occurrence_game(false);
     let mut old = state.clone();
     let watcher = old
         .pending_triggers
@@ -1009,13 +1015,15 @@ fn pending_information_distinguishes_live_source_from_older_incarnation() {
         card_aware.abstract_info_set(&current),
         card_aware.abstract_info_set(&older)
     );
+    rules::check_state_based_actions(&mut state);
+    rules::check_state_based_actions(&mut old);
     let current_choice = legal_actions(&state)
         .into_iter()
-        .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         .unwrap();
     let older_choice = legal_actions(&old)
         .into_iter()
-        .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         .unwrap();
     assert_ne!(
         canonicalize(&current_choice, &state).unwrap(),
@@ -1121,13 +1129,13 @@ fn canonical_occurrence_order_survives_pending_reordering() {
         &state,
     ).unwrap();
     let resolved = resolve(&canonical, &reversed, 0).unwrap().unwrap();
-    rules::apply_action(
+    finish_controller(
         &mut state,
         &Action::OrderTriggerOccurrences {
             ordering: vec![0, 1],
         },
     );
-    rules::apply_action(&mut reversed, &resolved);
+    finish_controller(&mut reversed, &resolved);
     let source = |state: &GameState| match &state.stack.last().unwrap().source {
         mtg_gto::game::StackSource::TriggeredAbility { source_id, .. } => *source_id,
         _ => panic!("expected trigger"),
@@ -1160,7 +1168,7 @@ fn direct_pass_cannot_bypass_mandatory_occurrence_order() {
     rules::check_state_based_actions(&mut state);
     assert!(legal_actions(&state)
         .iter()
-        .any(|action| matches!(action, Action::OrderTriggerOccurrences { .. })));
+        .any(|action| matches!(action, Action::ChooseNextTrigger { .. })));
     let before = serde_json::to_vec(&state).unwrap();
     rules::apply_action(&mut state, &Action::PassPriority);
     assert_eq!(serde_json::to_vec(&state).unwrap(), before);
@@ -1261,9 +1269,9 @@ fn mandatory_trigger_order_rejects_unrelated_direct_actions_atomically() {
     }
     let valid = legal_actions(&state)
         .into_iter()
-        .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         .unwrap();
-    rules::apply_action(&mut state, &valid);
+    finish_controller(&mut state, &valid);
     assert!(state.pending_triggers.is_empty());
 }
 
@@ -1347,13 +1355,13 @@ fn source_keys_survive_raw_id_shift_and_pending_storage_permutation() {
     ).unwrap();
     let resolved = resolve(&canonical, &b, 0).unwrap().unwrap();
     let mut a = a;
-    rules::apply_action(
+    finish_controller(
         &mut a,
         &Action::OrderTriggerOccurrences {
             ordering: vec![0, 1],
         },
     );
-    rules::apply_action(&mut b, &resolved);
+    finish_controller(&mut b, &resolved);
     let order = |game: &GameState| {
         game.stack
             .iter()
@@ -1486,9 +1494,9 @@ fn event_group_partition_is_owned_normalized_and_persistent() {
         rules::check_state_based_actions(game);
         let order = legal_actions(game)
             .into_iter()
-            .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+            .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
             .unwrap();
-        rules::apply_action(game, &order);
+        finish_controller(game, &order);
         let stack_groups: Vec<_> = game
             .stack
             .iter()
@@ -1510,9 +1518,9 @@ fn event_group_context_expires_with_last_occurrence() {
     rules::check_state_based_actions(&mut state);
     let order = legal_actions(&state)
         .into_iter()
-        .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         .unwrap();
-    rules::apply_action(&mut state, &order);
+    finish_controller(&mut state, &order);
     assert_eq!(
         mtg_gto::rules::transitions::live_group_ranks(&state.pending_triggers, &state.stack)
             .get(&0),
@@ -1542,7 +1550,7 @@ fn finish_occurrence_resolution(
     canonical: &mtg_gto::action::canonical::CanonicalAction,
 ) {
     let action = resolve(canonical, game, game.priority_player).unwrap().unwrap();
-    rules::apply_action(game, &action);
+    finish_controller(game, &action);
     assert!(game.pending_triggers.is_empty());
     for _ in 0..20 {
         if game.stack.is_empty() {
@@ -1563,7 +1571,7 @@ fn assert_final_continuation_matches(mut state: GameState, expected_life_gain: i
     let initial_life = state.players[0].life;
     let action = legal_actions(&state)
         .into_iter()
-        .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
         .unwrap();
     let canonical = canonicalize(&action, &state).unwrap();
     let snapshot = state.snapshot();
@@ -1673,9 +1681,9 @@ fn rereview_shared_source_partition_changes_result() {
         rules::check_state_based_actions(game);
         let choice = legal_actions(game)
             .into_iter()
-            .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. }))
+            .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
             .unwrap();
-        rules::apply_action(game, &choice);
+        finish_controller(game, &choice);
         for _ in 0..2 {
             rules::apply_action(game, &Action::PassPriority);
             rules::apply_action(game, &Action::PassPriority);
@@ -1705,7 +1713,7 @@ fn rereview_later_live_source_change_survives_queue_reversal() {
         &state,
     ).unwrap();
     let action = resolve(&canonical, &reversed, 0).unwrap().unwrap();
-    rules::apply_action(&mut reversed, &action);
+    finish_controller(&mut reversed, &action);
     let source = match reversed.stack.last().unwrap().source {
         mtg_gto::game::StackSource::TriggeredAbility { source_id, .. } => source_id,
         _ => panic!("expected trigger"),
@@ -1955,7 +1963,7 @@ fn finalreview_raw_tie_is_not_symmetric_for_existing_linked_exile_relationship()
         assert_eq!(view_coordinates(&original, 0), view_coordinates(&renamed, 0));
         if original.pending_triggers.is_empty() && original.stack.is_empty() { break; }
         let action = legal_actions(&original).into_iter()
-            .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. } | Action::OrderTriggers { .. }))
+            .find(|action| matches!(action, Action::ChooseNextTrigger { .. }))
             .unwrap_or(Action::PassPriority);
         let key = canonicalize(&action, &original).unwrap();
         let counterpart = resolve(&key, &renamed, renamed.priority_player).unwrap().expect("every continuation key reconstructs");
@@ -2123,7 +2131,7 @@ fn linked_source_profiles_are_canonical_across_source_and_target_allocation() {
                 );
                 let action = resolve(&key, &variant, 0).unwrap().unwrap();
                 assert_eq!(key, canonicalize(&action, &variant).unwrap());
-                rules::apply_action(&mut variant, &action);
+                finish_controller(&mut variant, &action);
                 let stack_sources: Vec<_> = variant
                     .stack
                     .iter()
@@ -2473,7 +2481,7 @@ fn incoming_stacked_subject_game(
                 .unwrap()
         })
         .collect();
-    rules::apply_action(&mut s, &Action::OrderTriggerOccurrences { ordering: order });
+    finish_controller(&mut s, &Action::OrderTriggerOccurrences { ordering: order });
     assert_eq!(s.priority_player, 1);
     assert_eq!(s.pending_triggers.len(), 2);
     assert_eq!(s.stack.len(), 2);
@@ -2518,6 +2526,8 @@ fn closure_incoming_stacked_subject_edges_break_raw_id_symmetry() {
     reordered.pending_triggers.reverse();
     reordered.stack[0].id += 1000;
     reordered.stack[1].id += 1000;
+    reordered.next_stack_id += 1000;
+    reordered.trigger_placement.as_mut().unwrap().initial_stack_id += 1000;
     assert_eq!(hash(&base), hash(&reordered));
     let reordered_action = resolve(&key, &reordered, 1).unwrap().unwrap();
     assert_eq!(key, canonicalize(&reordered_action, &reordered).unwrap());
@@ -2539,7 +2549,7 @@ fn closure_incoming_stacked_subject_edges_break_raw_id_symmetry() {
             .map(|&slot| state.pending_triggers[slot].source_id)
             .collect();
         assert_eq!(sources, expected);
-        rules::apply_action(&mut state, &action);
+        finish_controller(&mut state, &action);
         assert!(state.pending_triggers.is_empty());
         assert_eq!(state.stack.len(), 4);
         for _ in 0..4 {
@@ -2568,6 +2578,8 @@ fn incoming_stack_order_and_raw_stack_ids_are_independent() {
         for (index, entry) in shifted.stack.iter_mut().enumerate() {
             entry.id = 1000 + index as u64;
         }
+        shifted.trigger_placement.as_mut().unwrap().initial_stack_id = 1000;
+        shifted.next_stack_id = 1000 + shifted.stack.len() as u64;
         assert_eq!(hash(&base), hash(&shifted));
         let order: Vec<_> = [a, b]
             .iter()
@@ -2739,7 +2751,7 @@ fn incoming_successive_subject_game(reverse: bool) -> (GameState, u64, u64) {
                 .unwrap()
         })
         .collect();
-    rules::apply_action(&mut state, &Action::OrderTriggerOccurrences { ordering });
+    finish_controller(&mut state, &Action::OrderTriggerOccurrences { ordering });
     assert_eq!(state.stack.len(), 2);
     assert_eq!(state.pending_triggers.len(), 2);
     (state, a, b)
@@ -3047,7 +3059,7 @@ fn production_destroy_member_order_and_raw_ids_keep_retained_encoding() {
         &state.visible_state(0), state.card_db()).unwrap().hash_value();
     assert_eq!(information(&a), information(&b));
     let choice = legal_actions(&a).into_iter()
-        .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. })).unwrap();
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. })).unwrap();
     let key = canonicalize(&choice, &a).unwrap();
     let reconstructed = resolve(&key, &b, 0).unwrap().unwrap();
     assert_eq!(canonicalize(&reconstructed, &b).unwrap(), key);
@@ -3158,9 +3170,9 @@ fn exact_paired_components_all_id_swaps_and_pending_permutations_preserve_action
     let baseline = exact_normalization(&base, false);
     let actions: Vec<_> = legal_actions(&base)
         .into_iter()
-        .filter(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+        .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .collect();
-    assert_eq!(actions.len(), 24);
+    assert_eq!(actions.len(), 4);
     let keyset: HashSet<_> =
         mtg_gto::action::canonical::canonicalize_actions(&actions, &base, &mtg_gto::action::canonical::normalize_player_retained(&base, 0).unwrap()).unwrap()
             .into_iter()
@@ -3205,7 +3217,7 @@ fn exact_paired_components_all_id_swaps_and_pending_permutations_preserve_action
                 mtg_gto::action::canonical::canonicalize_actions(
                     &legal_actions(&renamed)
                         .into_iter()
-                        .filter(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+                        .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
                         .collect::<Vec<_>>(),
                     &renamed,
                     &mtg_gto::action::canonical::normalize_player_retained(&renamed, 0).unwrap()
@@ -3357,7 +3369,7 @@ fn exact_symmetry_witness_survives_all_restores_and_actual_final_resolution() {
     let encoding = exact_normalization(&base, false).encoding;
     let action = legal_actions(&base)
         .into_iter()
-        .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+        .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .unwrap();
     let key = canonicalize(&action, &base).unwrap();
     let snapshot = renamed.snapshot();
@@ -3445,9 +3457,9 @@ fn exact_pending_to_stack_and_restored_resolution_recompute_without_persisted_la
     let pending_encoding = exact_normalization(&state, false).encoding;
     let action = legal_actions(&state)
         .into_iter()
-        .find(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+        .find(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .unwrap();
-    rules::apply_action(&mut state, &action);
+    finish_controller(&mut state, &action);
     assert_eq!(state.stack.len(), 3);
     let encoding = exact_normalization(&state, false).encoding;
     assert_ne!(encoding, pending_encoding); // Complete fixed stack positions.
@@ -3493,9 +3505,9 @@ fn exact_duplicate_occurrences_keep_multiplicity_without_action_orbit_merging() 
     );
     let actions: Vec<_> = legal_actions(&state)
         .into_iter()
-        .filter(|a| matches!(a, Action::OrderTriggerOccurrences { .. }))
+        .filter(|a| matches!(a, Action::ChooseNextTrigger { .. }))
         .collect();
-    assert_eq!(actions.len(), 6);
+    assert_eq!(actions.len(), 3);
     let keys = mtg_gto::action::canonical::canonicalize_actions(&actions, &state, &mtg_gto::action::canonical::normalize_player_retained(&state, 0).unwrap()).unwrap();
     assert_eq!(keys.len(), actions.len());
     for key in &keys {
@@ -3518,7 +3530,7 @@ fn hidden_hand_view_keys_reconstruct_from_same_player_projection() {
     transition_batch(&mut state, &requests).unwrap();
     rules::check_state_based_actions(&mut state);
     let actions: Vec<_> = legal_actions_abstracted(&state).into_iter().filter(|action|
-        matches!(action, Action::OrderTriggerOccurrences { .. })).collect();
+        matches!(action, Action::ChooseNextTrigger { .. })).collect();
     assert_eq!(actions.len(), 2);
     let view = state.visible_state(0);
     let normalized = InformationSet::normalize_retained_view(&view).unwrap();
@@ -3726,7 +3738,7 @@ fn later_opponent_public_exile_uses_same_current_subject_fact_as_direct_action_k
     assert!(normalized.pending_occurrences.iter().flatten().all(|occurrence|
         occurrence.subject.as_ref().unwrap().same_incarnation_now));
     let actions: Vec<_> = legal_actions_abstracted(&state).into_iter().filter(|action|
-        matches!(action, Action::OrderTriggerOccurrences { .. })).collect();
+        matches!(action, Action::ChooseNextTrigger { .. })).collect();
     let keys = mtg_gto::action::canonical::canonicalize_actions(&actions, &state, &mtg_gto::action::canonical::normalize_player_retained(&state, 0).unwrap()).unwrap();
     for (action, key) in actions.iter().zip(&keys) {
         assert_eq!(canonicalize(action, &state).unwrap(), *key);
@@ -3838,7 +3850,7 @@ fn later_opponent_public_occurrences_continue_identically_after_all_restores() {
     let mut state = multiplayer_layout_game(ZoneType::Exile, 1_000_003_000, false);
     let initial_life = state.players[0].life;
     let action = legal_actions_abstracted(&state).into_iter()
-        .find(|action| matches!(action, Action::OrderTriggerOccurrences { .. })).unwrap();
+        .find(|action| matches!(action, Action::ChooseNextTrigger { .. })).unwrap();
     let key = canonicalize(&action, &state).unwrap();
     let snapshot = state.snapshot();
     let json = serde_json::to_vec(&state).unwrap();
@@ -3854,7 +3866,7 @@ fn later_opponent_public_occurrences_continue_identically_after_all_restores() {
         assert_eq!(multiplayer_subject_statuses(game, 0), vec![true; 2]);
         let choice = resolve(&key, game, 0).unwrap().unwrap();
         assert_eq!(canonicalize(&choice, game).unwrap(), key);
-        rules::apply_action(game, &choice);
+        finish_controller(game, &choice);
         for _ in 0..30 {
             if game.stack.is_empty() { break; }
             rules::apply_action(game, &Action::PassPriority);
