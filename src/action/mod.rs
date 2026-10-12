@@ -153,11 +153,15 @@ pub enum Action {
     OrderTriggerOccurrences { ordering: Vec<usize> },
     /// Place one occurrence next (bottom to top). Appended for binary tag stability.
     ChooseNextTrigger { handle: crate::game::TriggerOccurrenceHandle },
+    /// Owner's CR 903.9a decision for a frozen graveyard/exile arrival.
+    ChooseCommanderSba { designation: crate::game::CommanderDesignation, to_command: bool },
 }
 
 impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Action::ChooseCommanderSba { designation, to_command } => write!(f,
+                "{} for Commander {}", if *to_command { "Move to command zone" } else { "Decline command-zone move" }, designation.role),
             Action::ChooseNextTrigger { handle } => write!(f, "Place trigger {} next", handle.occurrence),            Action::ChooseNextCopy { item_index } => write!(f, "Place copy {} next (bottom to top)", item_index),
             Action::PassPriority => write!(f, "Pass"),
             Action::Discard { object_id } => write!(f, "Discard (obj {})", object_id),
@@ -234,11 +238,23 @@ pub const MAX_MULLIGANS: u32 = 4;
 
 /// Core action enumeration with configurable combat abstraction level.
 fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<Action> {
-    if state.gameplay_stopped() || state.validate_commanders().is_err() || state.validate_trigger_placement().is_err() { return Vec::new(); }
+    if state.gameplay_stopped() || state.validate_commanders().is_err()
+        || state.validate_commander_choices().is_err() || state.validate_trigger_placement().is_err() { return Vec::new(); }
     use crate::game::Phase;
 
     let player = state.priority_player;
     let mut actions = Vec::new();
+    if let Some(operation) = &state.pending_commander_sba {
+        for (offer, answer) in operation.offers.iter().zip(&operation.answers) {
+            if offer.designation.owner == player && answer.is_none() {
+                for to_command in [true, false] {
+                    actions.push(Action::ChooseCommanderSba { designation: offer.designation, to_command });
+                }
+            }
+        }
+        actions.push(Action::Concede);
+        return actions;
+    }
 
     if let Some(pending) = &state.pending_copy_order {
         if player != pending.controller() { return actions; }

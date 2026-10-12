@@ -318,9 +318,21 @@ mod ordinary_keyword_prerequisite {
             state.designate_commander(id, 0).unwrap();
             if legacy { lethal_sba(&mut state, id); }
             else { depart(&mut state, &[id], ZoneType::Graveyard); }
+            rules::check_state_based_actions(&mut state);
+            assert!(state.players[0].graveyard.contains(&id));
+            assert!(state.pending_commander_sba.is_some());
+            assert_eq!(state.pending_triggers.len(), 1, "actual death retains Undying");
+            assert!(state.stack.is_empty(), "Commander choice precedes trigger placement");
+            rules::apply_action(&mut state, &Action::ChooseCommanderSba {
+                designation: mtg_gto::game::CommanderDesignation { owner: 0, role: 0 },
+                to_command: true,
+            });
             assert!(state.players[0].command_zone.contains(&id));
             assert!(state.pending_triggers.is_empty());
-            assert!(state.stack.is_empty());
+            assert_eq!(state.stack.len(), 1);
+            resolve_one(&mut state);
+            assert!(state.players[0].command_zone.contains(&id));
+            assert!(!state.battlefield.contains(&id));
         }
     }
 
@@ -5018,6 +5030,7 @@ fn test_multi_phase_abstraction() {
         cleanup_needs_repeat: false,
         cleanup_discard_in_progress: false,
         pending_copy_order: None,
+        pending_commander_sba: None,
         my_graveyard: vec![],
         opp_graveyard: vec![],
         my_exile: vec![],
@@ -11183,12 +11196,12 @@ mod common_pass_2b3b {
         commander.objects.get_mut(&c).unwrap().temp_keywords =
             vec![KeywordAbility::Undying, KeywordAbility::Persist];
         rules::check_state_based_actions(&mut commander);
-        assert!(commander.players[0].command_zone.contains(&c));
-        assert!(commander.players[0].graveyard.is_empty());
+        assert!(commander.players[0].graveyard.contains(&c));
+        assert!(commander.pending_commander_sba.is_some());
         assert!(contexts(&commander)
             .iter()
-            .all(|ctx| !ctx.subject.creature_died()));
-        assert_eq!(contexts(&commander).len(), 1);
+            .any(|ctx| ctx.subject.creature_died()));
+        assert_eq!(contexts(&commander).len(), 3);
     }
     #[test]
     fn correction_subject_dual_zone_counter_alone() {
@@ -11734,8 +11747,17 @@ mod common_pass_2b3b {
         s.designate_commander(commander, 0).unwrap();
         rules::check_state_based_actions(&mut s);
         assert!(s.battlefield.contains(&ordinary));
+        assert!(s.players[0].graveyard.contains(&commander));
+        assert!(s.pending_commander_sba.is_some());
+        assert!(contexts(&s).iter().any(|ctx| ctx.subject.before.object.id == commander
+            && ctx.subject.creature_died()));
+        rules::apply_action(&mut s, &Action::ChooseCommanderSba {
+            designation: mtg_gto::game::CommanderDesignation { owner: 0, role: 0 },
+            to_command: true,
+        });
         assert!(s.players[0].command_zone.contains(&commander));
-        assert!(contexts(&s).iter().all(|ctx| !ctx.subject.creature_died()));
+        assert!(contexts(&s).iter().any(|ctx| ctx.subject.before.object.id == commander
+            && ctx.subject.creature_died()));
     }
     #[test]
     fn legend_anthem_removal_creates_later_common_pass() {

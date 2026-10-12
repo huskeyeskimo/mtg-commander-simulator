@@ -5,7 +5,7 @@ use crate::layers::StaticAbility;
 
 /// Handle when priority is passed (may resolve stack or advance phase).
 pub(super) fn handle_priority_pass(state: &mut GameState) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() || state.pending_commander_sba.is_some() { return; }
     let num_players = state.players.len() as u32;
 
     if state.consecutive_passes >= num_players {
@@ -33,7 +33,7 @@ pub(super) fn handle_priority_pass(state: &mut GameState) {
 /// Each Phase variant represents a step or phase boundary. Mana empties when
 /// crossing it (CR 106.4), never merely when passing priority or resolving.
 pub(super) fn transition_to_phase(state: &mut GameState, next: Phase) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() || state.pending_commander_sba.is_some() { return; }
     if state.phase != next {
         for player in &mut state.players {
             player.mana_pool.drain();
@@ -44,7 +44,7 @@ pub(super) fn transition_to_phase(state: &mut GameState, next: Phase) {
 
 /// Advance to the next phase.
 pub(super) fn advance_phase(state: &mut GameState) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() || state.pending_commander_sba.is_some() { return; }
     let current_idx = Phase::TURN_ORDER
         .iter()
         .position(|&p| p == state.phase)
@@ -80,7 +80,7 @@ pub(super) fn execute_phase_entry_public(state: &mut GameState) {
 
 /// Execute actions when entering a new phase.
 pub(super) fn execute_phase_entry(state: &mut GameState) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() || state.pending_commander_sba.is_some() { return; }
     let active = state.active_player;
 
     match state.phase {
@@ -122,11 +122,11 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
             if !caller_deferred {
                 state.invalidate_characteristics_cache();
                 super::sba::check_state_based_actions(state);
-                if state.gameplay_stopped() { return; }
+                if state.gameplay_stopped() || state.pending_commander_sba.is_some() { return; }
             }
             // A draw trigger may require another controller's mandatory order
             // choice. That choice restores active-player priority afterward.
-            if state.pending_triggers.is_empty() {
+            if state.pending_triggers.is_empty() && state.pending_commander_sba.is_none() {
                 state.priority_player = if state.players[active].has_lost {
                     state.next_player(active)
                 } else { active };
@@ -143,9 +143,9 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
             if !caller_deferred {
                 state.invalidate_characteristics_cache();
                 super::sba::check_state_based_actions(state);
-                if state.gameplay_stopped() { return; }
+                if state.gameplay_stopped() || state.pending_commander_sba.is_some() { return; }
             }
-            if state.pending_triggers.is_empty() {
+            if state.pending_triggers.is_empty() && state.pending_commander_sba.is_none() {
                 state.priority_player = if state.players[active].has_lost {
                     state.next_player(active)
                 } else { active };
@@ -183,8 +183,8 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
                 state.trigger_order_resume = Some(crate::game::TriggerOrderResume::AfterResolution);
                 state.invalidate_characteristics_cache();
                 super::sba::check_state_based_actions(state);
-                if state.gameplay_stopped() { return; }
-                if state.pending_triggers.is_empty() {
+                if state.gameplay_stopped() || state.pending_commander_sba.is_some() { return; }
+                if state.pending_triggers.is_empty() && state.pending_commander_sba.is_none() {
                     state.trigger_order_resume = None;
                     state.priority_player = active;
                 }
@@ -199,8 +199,8 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
             state.trigger_order_resume = Some(crate::game::TriggerOrderResume::AfterResolution);
             state.invalidate_characteristics_cache();
             super::sba::check_state_based_actions(state);
-            if state.gameplay_stopped() { return; }
-            if state.pending_triggers.is_empty() {
+            if state.gameplay_stopped() || state.pending_commander_sba.is_some() { return; }
+            if state.pending_triggers.is_empty() && state.pending_commander_sba.is_none() {
                 state.trigger_order_resume = None;
                 state.priority_player = active;
             }
@@ -235,7 +235,7 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
 }
 
 pub(super) fn finalize_cleanup(state: &mut GameState) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() {
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() || state.pending_commander_sba.is_some() {
         return;
     }
     // An already applicable loss ends/rejects this settlement before cleanup
@@ -254,6 +254,10 @@ pub(super) fn finalize_cleanup(state: &mut GameState) {
     }
     let had_sba = super::sba::check_state_based_actions(state);
     state.trigger_placement_deferred = caller_deferred;
+    if let Some(operation) = state.pending_commander_sba.as_mut() {
+        operation.cleanup_resume = Some(had_sba);
+        return;
+    }
     if state.gameplay_stopped() { return; }
     let had_triggers = !state.pending_triggers.is_empty();
     if !caller_deferred && had_triggers {
@@ -261,7 +265,7 @@ pub(super) fn finalize_cleanup(state: &mut GameState) {
     }
     if had_sba || had_triggers || !state.stack.is_empty() {
         state.cleanup_needs_repeat = true;
-        if state.pending_triggers.is_empty() {
+        if state.pending_triggers.is_empty() && state.pending_commander_sba.is_none() {
             state.priority_player = state.active_player;
         }
     } else {

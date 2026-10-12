@@ -644,7 +644,7 @@ pub fn run_goldfish_game_verbose(
 ///
 /// Player 0 uses the provided strategy; player 1 is a passive goldfish.
 /// Commander-specific rules apply: 40 starting life, command zone,
-/// commander tax, commander damage, and commander redirect.
+/// commander tax, commander damage, and graveyard/exile SBA choices.
 pub fn run_commander_goldfish_game(
     card_db: &CardDatabase,
     deck: &[CardId],

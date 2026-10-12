@@ -132,7 +132,7 @@ impl Strategy for GreedyStrategy {
     fn choose_action(&self, state: &GameState, _player: PlayerIndex) -> Result<Action, crate::simulation::TerminationReason> {
         Ok((|| -> Action {
         let actions = legal_actions(state);
-        if state.pending_copy_order.is_some() { return actions[0].clone(); }
+        if state.pending_copy_order.is_some() || state.pending_commander_sba.is_some() { return actions[0].clone(); }
         let db = state.card_db();
 
         // Mulligan heuristic: count "effective mana sources" — lands count
@@ -572,7 +572,7 @@ impl Strategy for GoldfishStrategy {
     fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Result<Action, crate::simulation::TerminationReason> {
         Ok((|| -> Action {
         let actions = legal_actions(state);
-        if state.pending_copy_order.is_some() { return actions[0].clone(); }
+        if state.pending_copy_order.is_some() || state.pending_commander_sba.is_some() { return actions[0].clone(); }
 
         // Mulligan: always keep; bottom first card if forced (shouldn't happen
         // since keeping at mulligan_count=0 means no bottoming, but handle it

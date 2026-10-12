@@ -2108,7 +2108,9 @@ fn commander_fizzle_reports_actual_destination() {
         s.players[0].graveyard.contains(&a),
         events
     );
-    assert!(events.iter().any(|e|matches!(e,mtg_gto::events::GameEvent::ZoneChange{object,to:mtg_gto::events::Zone::Command,..}if *object==a)),"event destination differs from storage");
+    assert!(events.iter().any(|e|matches!(e,mtg_gto::events::GameEvent::ZoneChange{object,to:mtg_gto::events::Zone::Graveyard,..}if *object==a)),"event destination differs from storage");
+    assert!(s.players[0].graveyard.contains(&a));
+    assert!(s.pending_commander_sba.is_some());
 }
 
 fn animated_refresh_fixture() -> (GameState, u64, u64) {

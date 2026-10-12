@@ -3,7 +3,8 @@ use crate::game::{GameState, PlayerIndex, StackSource, Target};
 
 /// Resolve the top entry on the stack.
 pub(super) fn resolve_top_of_stack(state: &mut GameState) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some()
+        || state.pending_commander_sba.is_some() { return; }
     if crate::targeting::validate_pending_equips(state).is_err() {
         state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding);
         return;
@@ -159,11 +160,7 @@ pub(super) fn finish_deferred_resolution(state: &mut GameState, entry: &crate::g
 }
 
 fn finish_physical_spell(state: &mut GameState, obj_id: ObjectId, def: &crate::card::CardDef) {
-        // Commander redirect: non-permanent commander spells go to command zone
-        if state.is_commander(obj_id) {
-            state.move_object(obj_id, ZoneType::Stack, ZoneType::Command);
-        } else if def.flashback_cost.is_some() || def.escape_exile_count.is_some() {
-            // Flashback/Escape: exile after resolution instead of graveyard
+        if def.flashback_cost.is_some() || def.escape_exile_count.is_some() {
             state.move_object(obj_id, ZoneType::Stack, ZoneType::Exile);
         } else {
             state.move_object(obj_id, ZoneType::Stack, ZoneType::Graveyard);

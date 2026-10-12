@@ -354,7 +354,7 @@ struct PreparedPass {
     final_refresh: Option<crate::game::PreparedContinuousRefresh>,
 }
 
-fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> {
+fn prepare_pass(state: &GameState, accepted: &[crate::game::CommanderArrival]) -> Result<PreparedPass, PreparedPassFailure> {
     crate::targeting::validate_pending_equips(state).map_err(|_| PreparedPassFailure::StateEncoding)?;
     crate::targeting::validate_pending_auras(state).map_err(|_| PreparedPassFailure::StateEncoding)?;
     let fail = PreparedPassFailure::Transition;
@@ -489,9 +489,10 @@ fn prepare_pass(state: &GameState) -> Result<PreparedPass, PreparedPassFailure> 
     }
     transitions::validate_sba_subjects(state, &subjects.into_values().collect::<Vec<_>>())
         .map_err(fail)?;
-    let movements =
+    let mut movements =
         transitions::prepare_sba_movements(state, &nominal.into_values().collect::<Vec<_>>())
             .map_err(fail)?;
+    movements.add_commander_moves(state, accepted).map_err(fail)?;
     // Counter cancellation preserves net P/T, and the existing orphan
     // correction refers only to absent targets. Neither can resolve a blocked
     // mandatory mover when no departure can change the next pass's view.
@@ -563,10 +564,12 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
     if state.unsupported_continuing_elimination() {
         return super::loss::adjudicate(state, None);
     }
-    if state.validate_commanders().is_err() || state.validate_trigger_placement().is_err() {
+    if state.validate_commanders().is_err() || state.validate_commander_choices().is_err()
+        || state.validate_trigger_placement().is_err() {
         state.sba_failure = Some(PreparedPassFailure::StateEncoding); return false;
     }
-    if state.pending_copy_order.is_some() || state.trigger_placement.is_some() {
+    if state.pending_copy_order.is_some() || state.trigger_placement.is_some()
+        || state.pending_commander_sba.is_some() {
         return false;
     }
     let caller_deferred = std::mem::replace(&mut state.trigger_placement_deferred, true);
@@ -579,13 +582,32 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
             performed = true;
             break;
         }
-        let pass = match prepare_pass(state) {
+        let pass = match prepare_pass(state, &[]) {
             Ok(pass) => pass,
             Err(error) => {
                 state.sba_failure = Some(error);
                 break;
             }
         };
+        // CR 704.6d is in this same frozen SBA pass, even when another
+        // creature would die. No movement or trigger placement precedes the
+        // owners' APNAP choices.
+        let mut eligible: Vec<_> = state.commander_arrivals.iter().copied()
+            .filter(|arrival| state.arrival_is_current(arrival)
+                && !state.players[arrival.designation.owner].has_lost).collect();
+        state.commander_arrivals.clear();
+        if !eligible.is_empty() {
+            eligible.sort_by_key(|arrival| ((arrival.designation.owner + state.players.len()
+                - state.active_player) % state.players.len(), arrival.designation.role));
+            let chooser = eligible[0].designation.owner;
+            state.pending_commander_sba = Some(crate::game::CommanderSbaChoice {
+                version: 1, active_player: state.active_player, resume_priority: state.priority_player,
+                cleanup_resume: None,
+                answers: vec![None; eligible.len()], offers: eligible,
+            });
+            state.priority_player = chooser;
+            break;
+        }
         let progress = pass.movements.has_movers()
             || !pass.cancellations.is_empty()
             || !pass.orphan_equipment.is_empty()
@@ -603,7 +625,7 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
         performed = true;
     }
     state.trigger_placement_deferred = caller_deferred;
-    if !state.gameplay_stopped()
+    if !state.gameplay_stopped() && state.pending_commander_sba.is_none()
         && !caller_deferred
         && !state.cleanup_discard_in_progress
         && !state.pending_triggers.is_empty()
@@ -611,6 +633,64 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
         let _ = super::triggers::flush_triggers(state);
     }
     performed
+}
+
+/// Answer one frozen offer. The final answer commits all accepted movements
+/// alongside the re-prepared ordinary SBA pass; no gameplay mutation is made
+/// during the preceding APNAP decisions.
+pub(super) fn choose_commander_sba(state: &mut GameState,
+    designation: crate::game::CommanderDesignation, to_command: bool) -> bool {
+    let Some(op) = &state.pending_commander_sba else { return false; };
+    if state.validate_commander_choices().is_err() || op.chooser() != Some(state.priority_player) {
+        return false;
+    }
+    let Some(index) = op.offers.iter().enumerate().find_map(|(i, offer)|
+        (offer.designation == designation && op.answers[i].is_none()
+            && offer.designation.owner == state.priority_player).then_some(i)) else { return false; };
+    let mut next = state.clone();
+    let operation = next.pending_commander_sba.as_mut().unwrap();
+    operation.answers[index] = Some(to_command);
+    if let Some(chooser) = operation.chooser() {
+        next.priority_player = chooser;
+    } else {
+        let operation = next.pending_commander_sba.take().unwrap();
+        next.priority_player = operation.resume_priority;
+        next.consumed_commander_arrivals.extend(operation.offers.iter().zip(&operation.answers)
+            .filter_map(|(offer, answer)| (*answer == Some(false)).then_some(*offer)));
+        let accepted: Vec<_> = operation.offers.iter().zip(&operation.answers)
+            .filter_map(|(offer, answer)| (*answer == Some(true)).then_some(*offer)).collect();
+        let pass = match prepare_pass(&next, &accepted) {
+            Ok(pass) => pass,
+            Err(error) => { state.sba_failure = Some(error); return false; }
+        };
+        let progress = pass.movements.has_movers() || !pass.cancellations.is_empty()
+            || !pass.orphan_equipment.is_empty() || !pass.token_cessations.is_empty();
+        if progress {
+            if let Err(error) = commit_pass(&mut next, pass) {
+                state.sba_failure = Some(PreparedPassFailure::Transition(error)); return false;
+            }
+        }
+        check_state_based_actions(&mut next);
+        if let Some(had_sba) = operation.cleanup_resume {
+            if let Some(new_operation) = next.pending_commander_sba.as_mut() {
+                new_operation.cleanup_resume = Some(had_sba || progress);
+            } else if !next.gameplay_stopped() {
+                let activity = had_sba || progress || !next.pending_triggers.is_empty()
+                    || !next.stack.is_empty() || next.trigger_placement.is_some();
+                next.cleanup_needs_repeat = activity;
+                if activity {
+                    if next.trigger_placement.is_none() { next.priority_player = next.active_player; }
+                } else {
+                    super::phases::advance_phase(&mut next);
+                }
+            }
+        }
+    }
+    if next.validate_commander_choices().is_err() {
+        state.sba_failure = Some(PreparedPassFailure::StateEncoding); return false;
+    }
+    *state = next;
+    true
 }
 
 #[cfg(test)]
@@ -685,7 +765,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
         let counter = s.create_card_in_zone(1, 0, ZoneType::Battlefield).unwrap();
         s.objects.get_mut(&counter).unwrap().plus_counters = 2;
         s.objects.get_mut(&counter).unwrap().minus_counters = 1;
-        let pass = prepare_pass(&s).unwrap();
+        let pass = prepare_pass(&s, &[]).unwrap();
         assert_eq!(pass.orphan_equipment.len(), 1);
         assert_eq!(pass.cancellations.len(), 1);
         commit_pass(&mut s, pass).unwrap();
@@ -695,7 +775,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
         assert_eq!(s.objects[&existing].attachment_link().map(|link| link.target.id), None);
         assert_eq!(s.objects[&equip].attachment_link(), None);
         assert_eq!(s.objects[&counter].plus_counters, 1);
-        let later = prepare_pass(&s).unwrap();
+        let later = prepare_pass(&s, &[]).unwrap();
         assert_eq!(later.orphan_equipment.len(), 0);
         commit_pass(&mut s, later).unwrap();
         assert!(s.players[0].graveyard.contains(&aura));
@@ -721,7 +801,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
         }
         state.invalidate_characteristics_cache();
         assert_eq!(state.effective_toughness(target), 1);
-        let first = prepare_pass(&state).unwrap();
+        let first = prepare_pass(&state, &[]).unwrap();
         assert_eq!(first.orphan_equipment.len(), 1);
         assert!(!first.movements.has_movers());
         commit_pass(&mut state, first).unwrap();
@@ -729,7 +809,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
         assert!(state.battlefield.contains(&target));
         assert_eq!(state.effective_toughness(target), 0);
         assert_eq!(state.next_zone_event_group_id, 0);
-        let next = prepare_pass(&state).unwrap();
+        let next = prepare_pass(&state, &[]).unwrap();
         assert!(next.movements.has_movers());
         commit_pass(&mut state, next).unwrap();
         assert!(state.players[0].graveyard.contains(&target));
@@ -750,7 +830,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
             duration: Duration::WhileSourceOnBattlefield, affected: AffectedObjects::Specific(child), modification: LayerModification::ModifyPT(0, 1) });
         state.invalidate_characteristics_cache();
         for (index, departed) in [target, aura, child].into_iter().enumerate() {
-            let pass = prepare_pass(&state).unwrap();
+            let pass = prepare_pass(&state, &[]).unwrap();
             commit_pass(&mut state, pass).unwrap();
             assert!(state.players[0].graveyard.contains(&departed));
             assert_eq!(state.next_zone_event_group_id, index as u64 + 1);
@@ -859,7 +939,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
         let mut s = fixture();
         let id = resident(&mut s, ZoneType::Battlefield);
         s.objects.get_mut(&id).unwrap().damage_marked = 2;
-        let first = prepare_pass(&s).unwrap();
+        let first = prepare_pass(&s, &[]).unwrap();
         assert!(first.token_cessations.is_empty());
         commit_pass(&mut s, first).unwrap();
         assert!(s.players[0].graveyard.contains(&id));
@@ -869,7 +949,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
         let events = format!("{:?}", s.pending_events);
         let groups = s.next_zone_event_group_id;
         let history = serde_json::to_value(&s.pending_triggers).unwrap();
-        let second = prepare_pass(&s).unwrap();
+        let second = prepare_pass(&s, &[]).unwrap();
         assert_eq!(second.token_cessations.len(), 1);
         assert!(!second.movements.has_movers());
         commit_pass(&mut s, second).unwrap();
@@ -878,7 +958,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
         assert_eq!(s.next_zone_event_group_id, groups);
         assert_eq!(serde_json::to_value(&s.pending_triggers).unwrap(), history);
         assert!(s.stack.is_empty());
-        assert!(prepare_pass(&s).unwrap().token_cessations.is_empty());
+        assert!(prepare_pass(&s, &[]).unwrap().token_cessations.is_empty());
     }
 
     #[test]
@@ -898,7 +978,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
         }
         s.next_zone_event_group_id = u64::MAX;
         let allocator = s.next_object_id;
-        let pass = prepare_pass(&s).unwrap();
+        let pass = prepare_pass(&s, &[]).unwrap();
         assert_eq!(pass.token_cessations.len(), 5);
         commit_pass(&mut s, pass).unwrap();
         assert!(ids.iter().all(|id| !s.objects.contains_key(id)));
@@ -976,7 +1056,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
         for field in 0..5 {
             let mut s = fixture();
             let id = resident(&mut s, ZoneType::Hand);
-            let mut pass = prepare_pass(&s).unwrap();
+            let mut pass = prepare_pass(&s, &[]).unwrap();
             match field {
                 0 => pass.token_cessations[0].object.id = 900,
                 1 => pass.token_cessations[0].object.generation += 1,
@@ -1002,7 +1082,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
             targets: vec![],
             target_generations: vec![],
         });
-        let pass = prepare_pass(&s).unwrap();
+        let pass = prepare_pass(&s, &[]).unwrap();
         assert_eq!(pass.token_cessations.len(), 1);
         commit_pass(&mut s, pass).unwrap();
         assert!(s.stack.is_empty());
@@ -1026,12 +1106,12 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
             description: "prevent".into(),
         });
         s.invalidate_characteristics_cache();
-        let pass = prepare_pass(&s).unwrap();
+        let pass = prepare_pass(&s, &[]).unwrap();
         assert!(pass.movements.prevented_mandatory);
         commit_pass(&mut s, pass).unwrap();
         assert!(!s.objects.contains_key(&id));
         assert!(matches!(
-            prepare_pass(&s),
+            prepare_pass(&s, &[]),
             Err(PreparedPassFailure::PreventedMandatoryMovement)
         ));
         assert!(s.battlefield.contains(&mover));
@@ -1054,11 +1134,11 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
             modification: LayerModification::ModifyPT(0, 1),
         });
         s.invalidate_characteristics_cache();
-        let first = prepare_pass(&s).unwrap();
+        let first = prepare_pass(&s, &[]).unwrap();
         commit_pass(&mut s, first).unwrap();
         assert!(s.objects.contains_key(&lord));
         assert!(s.battlefield.contains(&child));
-        let next = prepare_pass(&s).unwrap();
+        let next = prepare_pass(&s, &[]).unwrap();
         assert_eq!(next.token_cessations[0].object.id, lord);
         commit_pass(&mut s, next).unwrap();
         assert!(!s.objects.contains_key(&lord));
@@ -1069,7 +1149,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
             .map(|trigger| trigger.context.zone_transition.as_ref().unwrap().group_id)
             .collect();
         assert_eq!(groups, vec![0, 1]);
-        let third = prepare_pass(&s).unwrap();
+        let third = prepare_pass(&s, &[]).unwrap();
         assert_eq!(third.token_cessations[0].object.id, child);
         commit_pass(&mut s, third).unwrap();
         assert!(!s.objects.contains_key(&child));
@@ -1092,13 +1172,13 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
             modification: LayerModification::ModifyPT(0, 1),
         });
         s.invalidate_characteristics_cache();
-        let pass = prepare_pass(&s).unwrap();
+        let pass = prepare_pass(&s, &[]).unwrap();
         assert!(!pass.movements.has_movers());
         commit_pass(&mut s, pass).unwrap();
         assert!(!s.objects.contains_key(&source));
         assert!(s.continuous_effects.is_empty());
         assert_eq!(s.effective_toughness(child), 0);
-        let later = prepare_pass(&s).unwrap();
+        let later = prepare_pass(&s, &[]).unwrap();
         assert!(later.movements.has_movers());
         commit_pass(&mut s, later).unwrap();
         assert!(s.players[0].graveyard.contains(&child));
@@ -1154,7 +1234,7 @@ fn aura_fixture_storage(state: &mut GameState, card: u64, owner: usize) -> u64 {
                     check_state_based_actions(&mut settlement);
                     let settlement_ns = start.elapsed().as_nanos();
                     let start = Instant::now();
-                    let pass = prepare_pass(&s).unwrap();
+                    let pass = prepare_pass(&s, &[]).unwrap();
                     let prepare = start.elapsed().as_nanos();
                     assert_eq!(pass.token_cessations.len(), count);
                     let start = Instant::now();

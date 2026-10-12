@@ -496,18 +496,33 @@ fn each_replacements_prevention_tokens_and_commanders() {
         .collect();
     each(&mut state, 0, 1);
     assert_eq!(state.next_zone_event_group_id, 1);
-    assert!(state.pending_triggers.is_empty());
-    assert_eq!(state.stack.len(), 2);
+    assert_eq!(state.pending_triggers.len(), 4);
+    assert!(state.stack.is_empty(), "owner choices precede trigger placement");
+    for (p, id) in (1..3).zip(&ids) {
+        assert!(state.players[p].graveyard.contains(id));
+        assert!(!state.players[p].command_zone.contains(id));
+    }
+    for trigger in &state.pending_triggers {
+        let context = trigger.context.zone_transition.as_ref().unwrap();
+        assert_eq!(context.subject.destination.zone, ZoneType::Graveyard);
+        assert!(context.subject.creature_died());
+    }
+    for owner in 1..3 {
+        assert_eq!(state.priority_player, owner);
+        apply_action(&mut state, &Action::ChooseCommanderSba {
+            designation: mtg_gto::game::CommanderDesignation { owner, role: 0 },
+            to_command: true,
+        });
+    }
     for (p, id) in (1..3).zip(ids) {
         assert!(state.players[p].command_zone.contains(&id));
     }
-    for item in &state.stack {
-        let mtg_gto::game::StackSource::TriggeredAbility { context, .. } = &item.source else {
-            panic!("expected trigger")
-        };
-        let c = context.zone_transition.as_ref().unwrap();
-        assert_eq!(c.subject.destination.zone, ZoneType::Command);
-        assert!(!c.subject.creature_died());
+    let placement = state.trigger_placement.as_ref().expect("APNAP trigger placement follows choices");
+    assert_eq!(placement.occurrences.len(), 4);
+    for trigger in &placement.occurrences {
+        let context = trigger.context.zone_transition.as_ref().unwrap();
+        assert_eq!(context.subject.destination.zone, ZoneType::Graveyard);
+        assert!(context.subject.creature_died());
     }
 }
 

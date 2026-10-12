@@ -1032,20 +1032,21 @@ fn pending_information_distinguishes_live_source_from_older_incarnation() {
 }
 
 #[test]
-fn supported_commander_redirect_is_recorded_as_actual_command_destination() {
+fn commander_exile_transition_is_actual_destination_then_sba_choice() {
     let mut state = GameState::new_commander(2);
     state.card_db = Some(database());
     let id = state.create_card_in_zone(SUBJECT, 0, ZoneType::Battlefield).unwrap();
     state.designate_commander(id, 0).unwrap();
     let requested = request(&state, id, ZoneType::Exile);
     let batch = transition_batch(&mut state, &[requested]).unwrap();
-    assert_eq!(batch.transitions[0].destination.zone, ZoneType::Command);
-    assert!(state.players[0].command_zone.contains(&id));
-    assert!(!state.players[0].exile.contains(&id));
+    assert_eq!(batch.transitions[0].destination.zone, ZoneType::Exile);
+    assert!(!state.players[0].command_zone.contains(&id));
+    assert!(state.players[0].exile.contains(&id));
     assert!(state.pending_events.iter().any(|event| matches!(event,
-        GameEvent::ZoneChange { object, to: Zone::Command, .. } if *object == id)));
+        GameEvent::ZoneChange { object, to: Zone::Exile, .. } if *object == id)));
     assert!(!batch.transitions[0].creature_died());
-    // The current direct redirect remains legacy; graveyard-then-SBA choice is 2F.
+    mtg_gto::rules::check_state_based_actions(&mut state);
+    assert!(state.pending_commander_sba.is_some());
 }
 
 #[test]

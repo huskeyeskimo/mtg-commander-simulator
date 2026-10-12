@@ -161,7 +161,13 @@ mod historical_designation_tests {
                 0 => {},
                 1 => { valid.pending_triggers.clear(); valid.stack.push(entry); valid.next_stack_id += 1; },
                 2 => { valid.pending_triggers.push(trigger); rules::check_state_based_actions(&mut valid);
-                    assert!(valid.trigger_placement.is_some()); },
+                    assert!(valid.pending_commander_sba.is_some());
+                    rules::apply_action(&mut valid, &Action::ChooseCommanderSba {
+                        designation: CommanderDesignation { owner: 0, role: 1 }, to_command: false,
+                    });
+                    assert!(valid.trigger_placement.is_some(), "pending choice {:?}, triggers {}, stack {}, failure {:?}, actions {:?}",
+                        valid.pending_commander_sba, valid.pending_triggers.len(), valid.stack.len(),
+                        valid.sba_failure, legal_actions(&valid)); },
                 _ => { valid.pending_triggers.clear(); valid.pending_copy_order = Some(PendingCopyOrder {
                     controller: 0, items: vec![], selected_order: vec![], expected_stack_len: 0,
                     expected_next_stack_id: valid.next_stack_id, resolving_entry: Some(Box::new(entry)),

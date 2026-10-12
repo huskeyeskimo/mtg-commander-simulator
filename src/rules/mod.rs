@@ -49,7 +49,7 @@ fn mandatory_trigger_order_chooser(state: &GameState) -> Option<PlayerIndex> {
 /// Apply an action to the game state, advancing it.
 pub fn apply_action(state: &mut GameState, action: &Action) {
     if state.gameplay_stopped() { return; }
-    if state.validate_commanders().is_err() {
+    if state.validate_commanders().is_err() || state.validate_commander_choices().is_err() {
         state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding); return;
     }
     if let Action::CastCommander { object_id, .. } = action {
@@ -58,6 +58,8 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
     if state.validate_trigger_placement().is_err() {
         state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding); return;
     }
+    if state.pending_commander_sba.is_some()
+        && !matches!(action, Action::ChooseCommanderSba { .. } | Action::Concede) { return; }
     if state.trigger_placement.is_some()
         && !matches!(action, Action::ChooseNextTrigger { .. } | Action::Concede) { return; }
     if let Action::ChooseNextTrigger { handle } = action {
@@ -175,7 +177,7 @@ fn finish_complete_action(state: &mut GameState, caller_deferred: bool, complete
         // tapped state directly. Evaluate SBAs from the completed action.
         state.invalidate_characteristics_cache();
         sba::check_state_based_actions(state);
-        if state.gameplay_stopped() { return; }
+        if state.gameplay_stopped() || state.pending_commander_sba.is_some() { return; }
         clear_lost_tutor_choice(state);
         // Loss processing can remove the actor during this settlement. Keep
         // both immediate priority and a later ordering resume on a live player.
@@ -475,6 +477,22 @@ mod settlement_2b3a_boundary_tests {
 }
 
 fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
+    if state.pending_commander_sba.is_some() {
+        return match action {
+            Action::ChooseCommanderSba { designation, to_command } => {
+                if !sba::choose_commander_sba(state, *designation, *to_command) { return false; }
+                if state.pending_commander_sba.is_none() && !state.gameplay_stopped()
+                    && state.trigger_order_resume.is_some() {
+                    if !state.pending_triggers.is_empty() && !triggers::flush_triggers(state) { return true; }
+                    resume_after_trigger_placement(state);
+                }
+                true
+            }
+            Action::Concede => { loss::adjudicate(state, Some(state.priority_player)); true }
+            _ => false,
+        };
+    }
+    if matches!(action, Action::ChooseCommanderSba { .. }) { return false; }
     if state.pending_copy_order.is_some() {
         if let Action::ChooseNextCopy { item_index } = action {
             let _ = spell_copy::choose_next_copy(state, *item_index);
@@ -522,7 +540,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         if !crate::targeting::valid_spell_targets(state, player, def, targets) { return false; }
     }
     match action {
-        Action::ChooseNextCopy { .. } => unreachable!(),
+        Action::ChooseNextCopy { .. } | Action::ChooseCommanderSba { .. } => unreachable!(),
         Action::PassPriority => {
             // If there's a pending tutor, passing means "fail to find" —
             // clear it and return without advancing priority normally.
@@ -788,6 +806,16 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                 if ability.requires_tap && !state.can_pay_tap_cost(obj_id) {
                     return false;
                 }
+                let self_sacrifice = if state.is_commander(obj_id)
+                    && matches!(ability.sacrifice_cost, Some(SacrificeCost::SelfSacrifice)) {
+                    let Some(object) = state.exact_object(obj_id) else { return false; };
+                    let selected = transitions::ResolvedSacrificeSubject { player, object };
+                    if let Err(error) = transitions::preflight_permanent_sacrifice(state, &[selected]) {
+                        state.sba_failure = Some(sba::PreparedPassFailure::Transition(error));
+                        return false;
+                    }
+                    Some(selected)
+                } else { None };
                 // Pay mana cost
                 if !mana::pay_cost(state, player, &ability.cost,
                     ability.requires_tap.then_some(obj_id)) {
@@ -809,8 +837,13 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                 // Pay sacrifice cost
                 match &ability.sacrifice_cost {
                     Some(SacrificeCost::SelfSacrifice) => {
-                        // Sacrifice the source permanent itself (e.g., fetch lands)
-                        state.move_object(obj_id, ZoneType::Battlefield, ZoneType::Graveyard);
+                        if let Some(selected) = self_sacrifice {
+                            if let Err(error) = transitions::sacrifice_permanents_batch(state, &[selected]) {
+                                state.sba_failure = Some(sba::PreparedPassFailure::Transition(error));
+                            }
+                        } else {
+                            state.move_object(obj_id, ZoneType::Battlefield, ZoneType::Graveyard);
+                        }
                         if state.gameplay_stopped() { return false; }
                     }
                     Some(SacrificeCost::AnyCreature) | Some(SacrificeCost::CreatureWithSubtype(_)) => {
@@ -1221,7 +1254,7 @@ fn has_static_ability_on_battlefield(
 /// 3. Phial of Galadriel: draw 2 instead of 1 when hand is empty
 /// If none apply, normal draw.
 pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.pending_commander_sba.is_some() { return; }
     // Check for draw replacement effects on the battlefield
     let has_renfield = has_static_ability_on_battlefield(
         state, player, &crate::layers::StaticAbility::RenfieldDrawReplacement,
@@ -1338,7 +1371,7 @@ pub(super) fn complete_stack_resolution(state: &mut GameState) {
     state.invalidate_characteristics_cache();
     sba::check_state_based_actions(state);
     state.trigger_placement_deferred = false;
-    if state.gameplay_stopped() { return; }
+    if state.gameplay_stopped() || state.pending_commander_sba.is_some() { return; }
     if !state.pending_triggers.is_empty() && !triggers::flush_triggers(state) {
         return;
     }
@@ -1347,7 +1380,7 @@ pub(super) fn complete_stack_resolution(state: &mut GameState) {
 }
 
 fn restore_priority_after_resolution(state: &mut GameState) {
-    if state.gameplay_stopped() { return; }
+    if state.gameplay_stopped() || state.pending_commander_sba.is_some() { return; }
     clear_lost_tutor_choice(state);
     if let Some(tutor) = &state.pending_tutor {
         state.priority_player = tutor.controller;
@@ -1421,7 +1454,7 @@ fn fast_forward_end_of_turn(state: &mut GameState) {
 
         // EndTurn can be chosen by a human. A mandatory ordering choice ends
         // this shortcut so the normal action loop can present it.
-        if state.pending_copy_order.is_some() { break; }
+        if state.pending_copy_order.is_some() || state.pending_commander_sba.is_some() { break; }
 
         // Finish the current cleanup discard sequence before its queued
         // triggers can enter a placement window.
@@ -1548,6 +1581,16 @@ fn fast_forward_goldfish_turn_inner(state: &mut GameState, pause_for: Option<Pla
 
     while state.active_player == goldfish_player && !state.gameplay_stopped() && safety < MAX_SAFETY {
         safety += 1;
+
+        if let Some(operation) = &state.pending_commander_sba {
+            if pause_for == operation.chooser() { break; }
+            let Some(designation) = operation.offers.iter().zip(&operation.answers)
+                .find_map(|(offer, answer)| (offer.designation.owner == state.priority_player
+                    && answer.is_none()).then_some(offer.designation)) else { break; };
+            apply_action(state, &Action::ChooseCommanderSba { designation, to_command: true });
+            actions += 1;
+            continue;
+        }
 
         if let Some(pending) = &state.pending_copy_order {
             if pause_for == Some(pending.controller()) { break; }

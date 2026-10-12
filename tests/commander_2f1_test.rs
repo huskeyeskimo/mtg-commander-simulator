@@ -146,7 +146,15 @@ fn countering_and_other_zone_casts_do_not_rewrite_history() {
     let counter = s.create_card_in_zone(COUNTER, 0, ZoneType::Hand).unwrap();
     let action = Action::CastSpell { object_id: counter, targets: vec![Target::StackEntry(target)] };
     assert!(legal_actions(&s).contains(&action)); rules::apply_action(&mut s, &action); pass(&mut s);
-    assert!(s.players[0].command_zone.contains(&c)); // Phase 2 automatic-return limitation retained.
+    assert!(s.players[0].graveyard.contains(&c));
+    assert!(s.pending_commander_sba.is_some());
+    assert!(s.pending_triggers.is_empty());
+    assert!(s.stack.is_empty());
+    rules::apply_action(&mut s, &Action::ChooseCommanderSba {
+        designation: CommanderDesignation { owner: 0, role: 0 }, to_command: true });
+    assert!(s.players[0].command_zone.contains(&c));
+    assert!(s.pending_commander_sba.is_none());
+    assert_eq!(s.priority_player, s.active_player);
     assert_eq!(s.commander_casts(0, 0, 0), 1);
     rules::apply_action(&mut s, &cast(c));
     assert_eq!(s.players[0].mana_pool.total(), 4);

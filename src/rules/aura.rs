@@ -192,16 +192,8 @@ pub(super) fn prepare_resolution(
         && !chars.card_types.contains(&CardType::Creature)
         && chars.enchant == ComputedEnchant::Restriction(EnchantRestriction::Creature);
     if !legal {
-        let destination = if state.is_commander_format() && state.is_commander(source.id) {
-            ZoneType::Command
-        } else {
-            ZoneType::Graveyard
-        };
-        let zone = if destination == ZoneType::Command {
-            &state.players[inst.owner].command_zone
-        } else {
-            &state.players[inst.owner].graveyard
-        };
+        let destination = ZoneType::Graveyard;
+        let zone = &state.players[inst.owner].graveyard;
         zone.len().checked_add(1).ok_or_else(|| invalid.clone())?;
         return Ok(PreparedAuraResolution {
             source: source.id,

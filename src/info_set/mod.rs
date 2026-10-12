@@ -83,6 +83,7 @@ pub struct InformationSet {
     pub cleanup_needs_repeat: bool,
     pub cleanup_discard_in_progress: bool,
     pub pending_copy_order: Option<PendingCopyInfo>,
+    pub pending_commander_sba: Option<crate::game::PublicCommanderSbaChoice>,
     pub pending_failed_draws: Vec<usize>,
     pub sba_preparation_failed: bool,
 
@@ -297,6 +298,7 @@ impl InformationSet {
             cleanup_needs_repeat: view.cleanup_needs_repeat,
             cleanup_discard_in_progress: view.cleanup_discard_in_progress,
             pending_copy_order,
+            pending_commander_sba: view.pending_commander_sba.clone(),
             pending_failed_draws: view.pending_failed_draws.to_vec(),
             sba_preparation_failed: view.sba_preparation_failed,
             my_graveyard,
@@ -341,6 +343,7 @@ impl InformationSet {
         self.cleanup_needs_repeat.hash(&mut hasher);
         self.cleanup_discard_in_progress.hash(&mut hasher);
         self.pending_copy_order.hash(&mut hasher);
+        self.pending_commander_sba.hash(&mut hasher);
         if self.sba_preparation_failed { "prepared_sba_failure".hash(&mut hasher); }
         if !self.pending_failed_draws.is_empty() {
             "pending_failed_draws".hash(&mut hasher);
@@ -641,6 +644,7 @@ impl InfoSetAbstraction for BucketedAbstraction {
             }
         }
         info_set.pending_copy_order.hash(&mut hasher);
+        info_set.pending_commander_sba.hash(&mut hasher);
         if info_set.sba_preparation_failed { "prepared_sba_failure".hash(&mut hasher); }
         if !info_set.pending_failed_draws.is_empty() {
             "pending_failed_draws".hash(&mut hasher);
@@ -802,6 +806,7 @@ impl<'a> InfoSetAbstraction for CardAwareBucketedAbstraction<'a> {
             }
         }
         info_set.pending_copy_order.hash(&mut hasher);
+        info_set.pending_commander_sba.hash(&mut hasher);
         if info_set.sba_preparation_failed { "prepared_sba_failure".hash(&mut hasher); }
         if !info_set.pending_failed_draws.is_empty() {
             "pending_failed_draws".hash(&mut hasher);

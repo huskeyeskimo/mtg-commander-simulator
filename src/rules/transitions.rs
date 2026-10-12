@@ -1058,16 +1058,7 @@ struct LinkedExileFollowup {
     player: PlayerIndex,
 }
 
-fn actual_destination(state: &GameState, id: ObjectId, to: ZoneType) -> ZoneType {
-    if state.is_commander_format()
-        && state.is_commander(id)
-        && matches!(to, ZoneType::Graveyard | ZoneType::Exile)
-    {
-        ZoneType::Command
-    } else {
-        to
-    }
-}
+fn actual_destination(_state: &GameState, _id: ObjectId, to: ZoneType) -> ZoneType { to }
 
 fn validate_battlefield_subjects(
     state: &GameState,
@@ -1216,6 +1207,55 @@ pub fn resolved_sacrifice_batch(
     commit_batch(state, &requests, PreparedKind::ResolvedSacrifice).map(Some)
 }
 
+/// Bounded departure path for represented sacrifice costs and Annihilator.
+/// Unlike resolved creature-sacrifice effects, these may select any permanent.
+fn permanent_sacrifice_requests(state: &GameState,
+    selected: &[ResolvedSacrificeSubject]) -> Result<Vec<TransitionRequest>, TransitionError> {
+    validate_subjects(state, &selected.iter().map(|s| s.object).collect::<Vec<_>>())?;
+    for subject in selected {
+        let chars = state.get_characteristics(subject.object.id)
+            .ok_or(TransitionError::MissingObject(subject.object.id))?;
+        if subject.player >= state.players.len() || chars.controller != subject.player {
+            return Err(TransitionError::InvalidSacrificeSubject(subject.object.id));
+        }
+    }
+    let nominal: Vec<_> = selected.iter().map(|subject| TransitionRequest {
+        object: subject.object, from: ZoneType::Battlefield, to: ZoneType::Graveyard,
+        kind: MovementKind::Sacrifice { player: subject.player },
+    }).collect();
+    validate(state, &nominal, PreparedKind::ResolvedSacrifice)?;
+    let actual: Vec<_> = selected.iter().filter_map(|subject| {
+        let to = state.death_replacement_zone(subject.object.id);
+        (to != ZoneType::Battlefield).then_some(TransitionRequest {
+            object: subject.object, from: ZoneType::Battlefield, to,
+            kind: MovementKind::Sacrifice { player: subject.player },
+        })
+    }).collect();
+    if !actual.is_empty() { validate(state, &actual, PreparedKind::ResolvedSacrifice)?; }
+    Ok(actual)
+}
+
+pub fn preflight_permanent_sacrifice(state: &GameState,
+    selected: &[ResolvedSacrificeSubject]) -> Result<(), TransitionError> {
+    let requests = permanent_sacrifice_requests(state, selected)?;
+    if !requests.is_empty() {
+        let mut projection = crate::game::RefreshProjection::new(state);
+        for request in &requests {
+            projection.depart(state, request.object.id, request.to)
+                .map_err(|_| TransitionError::CapacityExhausted)?;
+        }
+        projection.refresh(state).map_err(|_| TransitionError::CapacityExhausted)?;
+    }
+    Ok(())
+}
+
+pub fn sacrifice_permanents_batch(state: &mut GameState,
+    selected: &[ResolvedSacrificeSubject]) -> Result<Option<CommittedTransitionBatch>, TransitionError> {
+    let requests = permanent_sacrifice_requests(state, selected)?;
+    if requests.is_empty() { return Ok(None); }
+    commit_batch(state, &requests, PreparedKind::ResolvedSacrifice).map(Some)
+}
+
 /// Private synchronous common-pass adapter. Validate the COMPLETE nominal
 /// mixed-cause set before indestructible or represented WouldDie filtering.
 /// It owns no GameState and cannot be persisted or suspended.
@@ -1228,6 +1268,16 @@ pub(super) struct PreparedSbaMovements {
 impl PreparedSbaMovements {
     pub fn has_movers(&self) -> bool {
         !self.requests.is_empty()
+    }
+    pub fn add_commander_moves(&mut self, state: &GameState,
+        accepted: &[crate::game::CommanderArrival]) -> Result<(), TransitionError> {
+        for arrival in accepted {
+            if !state.arrival_is_current(arrival) { return Err(TransitionError::StaleIncarnation(arrival.object.id)); }
+            self.requests.push(TransitionRequest { object: arrival.object, from: arrival.zone,
+                to: ZoneType::Command, kind: MovementKind::Put });
+        }
+        if !self.requests.is_empty() { validate(state, &self.requests, PreparedKind::Sba)?; }
+        Ok(())
     }
     pub fn project(&self, state: &GameState, projection: &mut crate::game::RefreshProjection)
         -> Result<Option<crate::game::PreparedContinuousRefresh>, super::sba::PreparedPassFailure> {
@@ -1308,33 +1358,39 @@ fn validate(
     requests: &[TransitionRequest],
     prepared: PreparedKind,
 ) -> Result<Vec<LinkedExileFollowup>, TransitionError> {
-    let subjects: Vec<_> = requests.iter().map(|r| r.object).collect();
-    validate_subjects(state, &subjects)?;
-    if matches!(prepared, PreparedKind::Sba) {
-        validate_sba_subjects(state, &subjects)?;
-    }
+    let battlefield: Vec<_> = requests.iter().filter(|r| r.from == ZoneType::Battlefield).map(|r| r.object).collect();
+    validate_subjects(state, &battlefield)?;
+    if matches!(prepared, PreparedKind::Sba) { validate_sba_subjects(state, &battlefield)?; }
+    let mut all = HashSet::new();
     for request in requests {
-        // This first adapter supports battlefield departures only. Other
-        // locations enter the same data model in later complete families.
-        if request.from != ZoneType::Battlefield
-            || matches!(request.to, ZoneType::Battlefield | ZoneType::Stack)
-        {
-            return Err(TransitionError::UnsupportedPath);
-        }
-        if request.kind != MovementKind::Put
-            && !matches!((prepared, request.kind),
-                (PreparedKind::Destroy, MovementKind::Destroy)
-                | (PreparedKind::Sba, MovementKind::Destroy)
-                | (PreparedKind::ResolvedSacrifice, MovementKind::Sacrifice { .. }))
-        {
-            return Err(TransitionError::UnsupportedPath);
-        }
+        let id = request.object.id;
+        if !all.insert(id) { return Err(TransitionError::DuplicateSubject(id)); }
+        if request.from != ZoneType::Battlefield {
+            let valid = matches!(prepared, PreparedKind::Sba)
+                && matches!(request.from, ZoneType::Graveyard | ZoneType::Exile)
+                && request.to == ZoneType::Command && request.kind == MovementKind::Put
+                && state.is_commander(id)
+                && state.arrival_is_current(&crate::game::CommanderArrival {
+                    designation: state.commander_for_object(id).unwrap().designation,
+                    object: request.object, zone: request.from,
+                });
+            if !valid { return Err(TransitionError::UnsupportedPath); }
+            if request.object.generation == u32::MAX { return Err(TransitionError::GenerationExhausted(id)); }
+        } else if matches!(request.to, ZoneType::Battlefield | ZoneType::Stack)
+            || (request.kind != MovementKind::Put
+                && !matches!((prepared, request.kind),
+                    (PreparedKind::Destroy, MovementKind::Destroy)
+                    | (PreparedKind::Sba, MovementKind::Destroy)
+                    | (PreparedKind::ResolvedSacrifice, MovementKind::Sacrifice { .. })))
+        { return Err(TransitionError::UnsupportedPath); }
     }
     // Linked exiles are still a legacy secondary movement (2B.5). Capture
     // exactly those already in exile before the primary event; a batch member
     // newly entering exile must never join this follow-up plan.
     let subjects: std::collections::HashMap<_, _> =
-        requests.iter().map(|r| (r.object.id, r.object)).collect();
+        requests.iter().filter(|r| r.from == ZoneType::Battlefield)
+            .map(|r| (r.object.id, r.object)).collect();
+    let requested_ids: HashSet<_> = requests.iter().map(|r| r.object.id).collect();
     let mut linked_seen = HashSet::new();
     let mut followups = Vec::new();
     for (player_index, player) in state.players.iter().enumerate() {
@@ -1351,8 +1407,8 @@ fn validate(
             else {
                 continue;
             };
+            if requested_ids.contains(&id) { continue; }
             if !linked_seen.insert(id)
-                || subjects.contains_key(&id)
                 || inst.owner != player_index
                 || inst.owner >= state.players.len()
                 || inst.zone_change_count == u32::MAX
@@ -1412,7 +1468,7 @@ fn validate(
     Ok(followups)
 }
 
-fn capture_subject(state: &GameState, id: ObjectId, attachments: &crate::card::AttachmentInventory) -> LastKnownObject {
+fn capture_subject(state: &GameState, id: ObjectId, from: ZoneType, attachments: &crate::card::AttachmentInventory) -> LastKnownObject {
     let inst = &state.objects[&id];
     let chars = state
         .get_characteristics(id)
@@ -1427,8 +1483,8 @@ fn capture_subject(state: &GameState, id: ObjectId, attachments: &crate::card::A
         owner: inst.owner,
         controller: chars.controller,
         location: ZoneLocation {
-            zone: ZoneType::Battlefield,
-            player: chars.controller,
+            zone: from,
+            player: if from == ZoneType::Battlefield { chars.controller } else { inst.owner },
         },
         is_token: inst.is_token,
         card_types: chars.card_types,
@@ -1484,7 +1540,7 @@ fn capture_observers(state: &GameState, attachments: &crate::card::AttachmentInv
                     id,
                     generation: inst.zone_change_count,
                 },
-                before: capture_subject(state, id, attachments),
+                before: capture_subject(state, id, ZoneType::Battlefield, attachments),
                 controller: chars.controller,
                 abilities,
             })
@@ -1701,7 +1757,7 @@ fn commit_batch_with_causes(
     let attachments = state.capture_attachment_inventory();
     let subjects: Vec<_> = requests
         .iter()
-        .map(|r| capture_subject(state, r.object.id, &attachments))
+        .map(|r| capture_subject(state, r.object.id, r.from, &attachments))
         .collect();
     let observers = capture_observers(state, &attachments);
     let destinations: Vec<_> = requests

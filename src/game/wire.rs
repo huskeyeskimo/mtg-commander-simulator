@@ -22,6 +22,9 @@ struct GameStateWire {
 
     pub players: Vec<PlayerState>,
     pub commanders: Vec<CommanderRecord>,
+    pub commander_arrivals: Vec<CommanderArrival>,
+    pub consumed_commander_arrivals: Vec<CommanderArrival>,
+    pub pending_commander_sba: Option<CommanderSbaChoice>,
 
     pub active_player: PlayerIndex,
 
@@ -101,6 +104,7 @@ impl<'de> Deserialize<'de> for GameState {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let state = GameStateWire::deserialize(deserializer)?;
         state.validate_commanders().map_err(serde::de::Error::custom)?;
+        state.validate_commander_choices().map_err(serde::de::Error::custom)?;
         Ok(state)
     }
 }

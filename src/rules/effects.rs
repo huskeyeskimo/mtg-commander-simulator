@@ -246,7 +246,7 @@ mod destruction_migration_tests {
     }
 
     #[test]
-    fn token_death_survives_purge_and_commander_redirect_is_not_death() {
+    fn token_death_survives_purge_and_commander_actual_death() {
         let mut state = fixture();
         let watcher = state.create_card_in_zone(995_002, 0, ZoneType::Battlefield).unwrap();
         let token = state.create_card_in_zone(995_001, 0, ZoneType::Battlefield).unwrap();
@@ -272,9 +272,12 @@ mod destruction_migration_tests {
         commander.designate_commander(id, 0).unwrap();
         let id_ref = exact(&commander, id);
         let batch = destroy_batch(&mut commander, &[id_ref]).unwrap().unwrap();
-        assert_eq!(batch.transitions[0].destination.zone, ZoneType::Command);
-        assert!(!batch.transitions[0].creature_died());
-        assert!(commander.pending_triggers.is_empty());
+        assert_eq!(batch.transitions[0].destination.zone, ZoneType::Graveyard);
+        assert!(batch.transitions[0].creature_died());
+        assert!(commander.pending_triggers.iter().any(|trigger| trigger.context.zone_transition.as_ref()
+            .is_some_and(|context| context.subject.creature_died())));
+        super::super::sba::check_state_based_actions(&mut commander);
+        assert!(commander.pending_commander_sba.is_some());
     }
 
     #[test]
@@ -1471,8 +1474,8 @@ fn resolve_effect_inner(
             // Full surveil would let you choose which go to GY vs stay on top.
             for _ in 0..*count {
                 if let Some(index) = state.first_library_card(controller) {
-                    let card_id = state.players[controller].library.remove(index);
-                    state.players[controller].graveyard.push(card_id);
+                    let card_id = state.players[controller].library[index];
+                    state.move_object(card_id, ZoneType::Library, ZoneType::Graveyard);
                 } else { break; }
             }
         }

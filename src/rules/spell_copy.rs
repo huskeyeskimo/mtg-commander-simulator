@@ -366,7 +366,6 @@ pub(crate) fn choose_next_copy(state: &mut GameState, item_index: usize) -> Resu
         let items = pending.items.clone();
         let resolving_entry = pending.resolving_entry.clone();
         let _ = materialize_batch(state, &items, &order)?;
-        state.pending_copy_order = None;
         // A restored copy-order state has no active Rust resolution frame.
         // Re-enter its settlement window before deferred cleanup and SBA work;
         // complete_stack_resolution releases this gate after stabilization.
@@ -374,6 +373,10 @@ pub(crate) fn choose_next_copy(state: &mut GameState, item_index: usize) -> Resu
         if let Some(entry) = resolving_entry {
             super::resolution::finish_deferred_resolution(state, &entry);
         }
+        // Keep the deferred physical spell's stack identity until its actual
+        // destination arrival has been recorded. It is no longer on the live
+        // stack after copy insertion, so the pending order is its only anchor.
+        state.pending_copy_order = None;
         state.consecutive_passes = 0;
         super::complete_stack_resolution(state);
     } else {
@@ -458,8 +461,17 @@ mod terminal_position_tests {
             }
             assert!(state.pending_copy_order.as_ref().unwrap().resolving_entry().is_some());
             super::super::apply_action(&mut state, &Action::ChooseNextCopy { item_index: 0 });
-            let zone = if commander { &state.players[0].command_zone } else { &state.players[0].graveyard };
-            assert_eq!(zone.iter().filter(|&&id| id == object).count(), 1);
+            assert_eq!(state.players[0].graveyard.iter().filter(|&&id| id == object).count(), 1);
+            if commander {
+                assert!(state.pending_commander_sba.is_some(), "arrivals {:?}, consumed {:?}, stopped {}, failure {:?}, priority {}, stack {}",
+                    state.commander_arrivals, state.consumed_commander_arrivals, state.gameplay_stopped(),
+                    state.sba_failure, state.priority_player, state.stack.len());
+                super::super::apply_action(&mut state, &Action::ChooseCommanderSba {
+                    designation: crate::game::CommanderDesignation { owner: 0, role: 0 },
+                    to_command: true,
+                });
+                assert_eq!(state.players[0].command_zone.iter().filter(|&&id| id == object).count(), 1);
+            }
             assert_eq!(state.is_commander(object), commander);
             assert_eq!(state.stack.iter().map(|entry| entry.id).collect::<Vec<_>>(), vec![next, next + 1]);
         }

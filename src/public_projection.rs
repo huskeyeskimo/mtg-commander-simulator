@@ -12,7 +12,7 @@ use crate::card::{ExactObjectRef, ObjectId, ZoneType};
 use crate::game::{GameState, PlayerView, StackSource, Target, TriggerContext};
 use crate::simulation::TerminationReason;
 
-pub const PROJECTION_SCHEMA: u16 = 3;
+pub const PROJECTION_SCHEMA: u16 = 4;
 type EncodingResult<T> = Result<T, TerminationReason>;
 
 pub fn encode<T: Serialize>(value: &T) -> EncodingResult<Vec<u8>> {
@@ -1812,6 +1812,9 @@ impl<'v, 'a> Inventory<'v, 'a> {
         }
         if let Some(summary) = self.view.trigger_placement {
             self.graph.vertex(VertexKind::StackOrOperation, &(4u8, summary))?;
+        }
+        if let Some(summary) = &self.view.pending_commander_sba {
+            self.graph.vertex(VertexKind::StackOrOperation, &(5u8, summary))?;
         }
         let mut records = HashMap::new();
         for (position, entry) in self.view.stack.iter().enumerate() {

@@ -1,6 +1,8 @@
 mod wire;
 mod commander;
 pub use commander::{CommanderDesignation, CommanderRecord, PublicCommander};
+mod commander_choice;
+pub use commander_choice::{CommanderArrival, CommanderSbaChoice, PublicCommanderSbaChoice};
 mod refresh;
 pub(crate) use refresh::{PreparedContinuousRefresh, RefreshProjection};
 use serde::{Deserialize, Serialize};
@@ -365,6 +367,9 @@ pub struct GameState {
     pub players: Vec<PlayerState>,
     /// Authoritative designation bindings and public histories.
     pub commanders: Vec<CommanderRecord>,
+    pub commander_arrivals: Vec<CommanderArrival>,
+    pub consumed_commander_arrivals: Vec<CommanderArrival>,
+    pub pending_commander_sba: Option<CommanderSbaChoice>,
 
     /// Whose turn is it?
     pub active_player: PlayerIndex,
@@ -773,6 +778,9 @@ pub struct GameStateSnapshot {
     stack: Vec<StackEntry>,
     players: Vec<PlayerState>,
     commanders: Vec<CommanderRecord>,
+    commander_arrivals: Vec<CommanderArrival>,
+    consumed_commander_arrivals: Vec<CommanderArrival>,
+    pending_commander_sba: Option<CommanderSbaChoice>,
     active_player: PlayerIndex,
     phase: Phase,
     priority_player: PlayerIndex,
@@ -880,6 +888,7 @@ pub struct PlayerView<'a> {
     /// How many times the viewing player has cast their commander.
     pub my_commander_tax: u32,
     pub commanders: Vec<PublicCommander>,
+    pub pending_commander_sba: Option<PublicCommanderSbaChoice>,
     /// The game format (Standard or Commander).
     pub format: GameFormat,
 
@@ -1116,6 +1125,7 @@ impl GameState {
             opp_command_zone: &self.players[opp].command_zone,
             my_commander_tax: self.commander_casts(player, 0, player),
             commanders: self.public_commanders(),
+            pending_commander_sba: self.pending_commander_sba.as_ref().map(PublicCommanderSbaChoice::from),
             format: self.format,
 
             my_mulligan_count: self.players[player].mulligan_count,
@@ -1123,7 +1133,7 @@ impl GameState {
             pending_tutor: self.pending_tutor.clone(),
 
             objects: visible,
-            state_encoding_failed: self.validate_commanders().is_err() || self.validate_trigger_placement().is_err() || matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)),
+            state_encoding_failed: self.validate_commanders().is_err() || self.validate_commander_choices().is_err() || self.validate_trigger_placement().is_err() || matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)),
             visible_locations,
             represented_characteristics,
             commander_objects,
@@ -1155,6 +1165,9 @@ impl GameState {
             stack: Vec::new(),
             players: (0..num_players).map(|_| PlayerState::new()).collect(),
             commanders: Vec::new(),
+            commander_arrivals: Vec::new(),
+            consumed_commander_arrivals: Vec::new(),
+            pending_commander_sba: None,
             active_player: 0,
             phase: Phase::Untap,
             priority_player: 0,
@@ -1204,6 +1217,9 @@ impl GameState {
                 .map(|_| PlayerState::new_commander(40))
                 .collect(),
             commanders: Vec::new(),
+            commander_arrivals: Vec::new(),
+            consumed_commander_arrivals: Vec::new(),
+            pending_commander_sba: None,
             active_player: 0,
             phase: Phase::Untap,
             priority_player: 0,
@@ -1295,6 +1311,9 @@ impl GameState {
             stack: self.stack.clone(),
             players: self.players.clone(),
             commanders: self.commanders.clone(),
+            commander_arrivals: self.commander_arrivals.clone(),
+            consumed_commander_arrivals: self.consumed_commander_arrivals.clone(),
+            pending_commander_sba: self.pending_commander_sba.clone(),
             active_player: self.active_player,
             phase: self.phase,
             priority_player: self.priority_player,
@@ -1334,6 +1353,9 @@ impl GameState {
         self.stack = snap.stack;
         self.players = snap.players;
         self.commanders = snap.commanders;
+        self.commander_arrivals = snap.commander_arrivals;
+        self.consumed_commander_arrivals = snap.consumed_commander_arrivals;
+        self.pending_commander_sba = snap.pending_commander_sba;
         self.active_player = snap.active_player;
         self.phase = snap.phase;
         self.priority_player = snap.priority_player;
@@ -1367,7 +1389,7 @@ impl GameState {
         self.pending_events.clear();
         self.invalidate_characteristics_cache();
 
-        if self.validate_commanders().is_err() || self.validate_trigger_placement().is_err() {
+        if self.validate_commanders().is_err() || self.validate_commander_choices().is_err() || self.validate_trigger_placement().is_err() {
             self.sba_failure = Some(crate::rules::sba::PreparedPassFailure::StateEncoding);
             return Err(crate::card::AttachmentError::Source);
         }
@@ -1422,23 +1444,8 @@ impl GameState {
         Ok(obj_id)
     }
 
-    /// Move a card instance from one zone to another.
-    ///
-    /// # Commander redirect (GTO simplification)
-    ///
-    /// In Commander format, when a commander would move to graveyard or exile
-    /// from anywhere, it is redirected to the command zone instead.
-    ///
-    /// **Note:** As of the 2024 rules update, CR 903.9a makes this a player
-    /// choice — the commander's owner may choose to let it go to graveyard/exile
-    /// instead. We always redirect to the command zone because in a GTO
-    /// (Game Theory Optimal) context, returning the commander to the command
-    /// zone is nearly always the dominant strategy: the commander remains
-    /// accessible for re-casting, and the marginal value of a commander in
-    /// graveyard/exile (e.g., for delve, escape, or reanimate) is rarely worth
-    /// giving up command zone access. If future strategies require modeling
-    /// this choice, surface it as an `Action::ChooseCommanderZone` decision
-    /// point for the solver.
+    /// Move a card instance to its actual destination. Commander
+    /// graveyard/exile choices occur at the next SBA check.
     pub fn move_object(
         &mut self,
         obj_id: ObjectId,
@@ -1493,8 +1500,6 @@ impl GameState {
         let refresh = if from == ZoneType::Battlefield && to != ZoneType::Battlefield
             && self.battlefield.contains(&id) {
             let mut projection = RefreshProjection::new(self);
-            let actual = if self.is_commander_format() && self.is_commander(id)
-                && matches!(to, ZoneType::Graveyard | ZoneType::Exile) { ZoneType::Command } else { to };
             for player in &self.players {
                 for &linked in &player.exile {
                     if self.is_card(linked) && self.objects.get(&linked).is_some_and(|inst| inst.exiled_by == Some(id)) {
@@ -1502,7 +1507,7 @@ impl GameState {
                     }
                 }
             }
-            projection.depart(self, id, actual).map_err(|_| crate::rules::transitions::TransitionError::CapacityExhausted)?;
+            projection.depart(self, id, to).map_err(|_| crate::rules::transitions::TransitionError::CapacityExhausted)?;
             Some(projection.refresh(self).map_err(|_| crate::rules::transitions::TransitionError::CapacityExhausted)?)
         } else { None };
         self.move_object_with_policy(id, from, to, true, true, None, refresh);
@@ -1625,14 +1630,25 @@ impl GameState {
         refresh: Option<PreparedContinuousRefresh>,
     ) {
         if self.token_movement_prohibited(obj_id, from) { return; }
-        // Commander redirect: graveyard/exile -> command zone (see doc above)
-        let actual_to = if self.format == GameFormat::Commander
-            && (to == ZoneType::Graveyard || to == ZoneType::Exile)
-            && self.is_commander(obj_id)
-        {
-            ZoneType::Command
-        } else {
-            to
+        let actual_to = to;
+        let was_resident = match from {
+            ZoneType::Battlefield => self.battlefield.contains(&obj_id),
+            ZoneType::Stack => self.stack.iter().any(|entry| entry.source.physical_object() == Some(obj_id))
+                || self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry)
+                    .is_some_and(|entry| entry.source.physical_object() == Some(obj_id))
+                || (self.trigger_placement_deferred
+                    && self.trigger_order_resume == Some(TriggerOrderResume::AfterResolution)
+                    && self.objects.contains_key(&obj_id) && !self.battlefield.contains(&obj_id)
+                    && self.players.iter().all(|p| [&p.library, &p.hand, &p.graveyard, &p.exile, &p.command_zone]
+                        .iter().all(|zone| !zone.contains(&obj_id)))),
+            zone => self.objects.get(&obj_id).is_some_and(|inst| self.players.get(inst.owner).is_some_and(|p| match zone {
+                ZoneType::Library => p.library.contains(&obj_id),
+                ZoneType::Hand => p.hand.contains(&obj_id),
+                ZoneType::Graveyard => p.graveyard.contains(&obj_id),
+                ZoneType::Exile => p.exile.contains(&obj_id),
+                ZoneType::Command => p.command_zone.contains(&obj_id),
+                _ => false,
+            })),
         };
 
         let departed = if from == ZoneType::Battlefield && actual_to != ZoneType::Battlefield
@@ -1713,6 +1729,7 @@ impl GameState {
             ZoneType::Stack => {} // handled by cast_spell
             ZoneType::Command => self.players[owner].command_zone.push(obj_id),
         }
+        self.note_commander_arrival(obj_id, from, actual_to, was_resident);
         if let (Some(departed), Some(attachments)) = (departed, attachments) {
             self.cleanup_attachment_departure(departed, attachments);
             if emit_primary_event { refresh.expect("prepared departure refresh").commit(self); }
@@ -1753,6 +1770,7 @@ impl GameState {
             self.players[player_idx].exile.retain(|&id| id != eid);
             let owner_idx = self.objects[&eid].owner;
             self.players[owner_idx].graveyard.push(eid);
+            self.note_commander_arrival(eid, ZoneType::Exile, ZoneType::Graveyard, true);
         }
     }
 
@@ -2298,7 +2316,7 @@ fn deserialize_trigger_placement<'de, D: serde::Deserializer<'de>>(d: D) -> Resu
 
 // The leading tag rejects historical positional bincode before interpreting any
 // changed layout. JSON must carry the same explicit version.
-const GAME_STATE_FORMAT: u32 = 0x3246_3154;
+const GAME_STATE_FORMAT: u32 = 0x3246_3254;
 fn deserialize_game_state_format<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let version = u32::deserialize(d)?;
     if version != GAME_STATE_FORMAT { return Err(serde::de::Error::custom("incompatible GameState Commander format")); }

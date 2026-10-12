@@ -335,15 +335,14 @@ fn token_and_commander_actual_evidence() {
     let id = commander.create_card_in_zone(CREATURE, 0, ZoneType::Battlefield).unwrap();
     commander.designate_commander(id, 0).unwrap();
     sacrifice(&mut commander, 0, 1);
-    assert!(commander.players[0].command_zone.contains(&id));
-    assert_eq!(commander.stack.len(), 1);
-    let mtg_gto::game::StackSource::TriggeredAbility { context, .. } = &commander.stack[0].source
-    else {
-        panic!("owned LTB trigger");
-    };
-    let context = context.zone_transition.as_ref().unwrap();
-    assert_eq!(context.subject.destination.zone, ZoneType::Command);
-    assert!(!context.subject.creature_died()); // Existing 2F compatibility debt.
+    assert!(commander.players[0].graveyard.contains(&id));
+    assert!(commander.stack.is_empty());
+    let context = commander.pending_triggers.iter().find_map(|trigger|
+        trigger.context.zone_transition.as_ref()).expect("owned LTB trigger");
+    assert_eq!(context.subject.destination.zone, ZoneType::Graveyard);
+    assert!(context.subject.creature_died());
+    mtg_gto::rules::check_state_based_actions(&mut commander);
+    assert!(commander.pending_commander_sba.is_some());
 }
 #[test]
 fn all_malformed_selected_sets_reject_atomically_including_prevented_members() {

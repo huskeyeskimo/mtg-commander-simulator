@@ -233,7 +233,7 @@ impl App {
             return true;
         }
         legal_actions(&self.state).iter().any(|action| matches!(action,
-            Action::ChooseNextCopy { .. }
+            Action::ChooseCommanderSba { .. } | Action::ChooseNextCopy { .. }
                 | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
                 | Action::OrderTriggerOccurrences { .. }
                 | Action::ChooseTutorTarget { .. }
@@ -995,6 +995,9 @@ pub fn format_mana_pool(pool: &crate::mana::ManaPool) -> String {
 
 pub fn format_action_short(state: &GameState, action: &Action, db: &CardDatabase) -> String {
     match action {
+        Action::ChooseCommanderSba { designation, to_command } => format!(
+            "{} for Commander {}",
+            if *to_command { "Move to command zone" } else { "Decline command-zone move" }, designation.role),
         Action::ChooseNextCopy { item_index } => {
             let item = &state.pending_copy_order.as_ref().unwrap().items()[*item_index];
             let target = format_copy_targets(state, item.targets(), db);

@@ -178,6 +178,7 @@ pub enum CanonicalAction {
     OrderTriggerOccurrences {
         occurrences: Vec<crate::rules::transitions::ZoneOccurrenceInfo>,
     },
+    ChooseCommanderSba { designation: crate::game::CommanderDesignation, to_command: bool },
 }
 
 /// Convert a concrete `Action` (with ObjectIds) into a `CanonicalAction`
@@ -209,6 +210,16 @@ fn canonicalize_with_normalization(
 ) -> Result<CanonicalAction, crate::simulation::TerminationReason> {
     validate_action_references(action, state, normalized)?;
     Ok(match action {
+        Action::ChooseCommanderSba { designation, to_command } => {
+            if !state.pending_commander_sba.as_ref().is_some_and(|operation|
+                operation.chooser() == Some(state.priority_player)
+                    && operation.offers.iter().zip(&operation.answers).any(|(offer, answer)|
+                        offer.designation == *designation && offer.designation.owner == state.priority_player
+                            && answer.is_none())) {
+                return Err(crate::simulation::TerminationReason::StateEncoding);
+            }
+            CanonicalAction::ChooseCommanderSba { designation: *designation, to_command: *to_command }
+        }
         Action::ChooseNextTrigger { handle } => {
             state.validate_trigger_placement()?;
             let slot = state.pending_triggers.iter().position(|t| t.placement == Some(*handle)
@@ -479,6 +490,13 @@ pub fn resolve_with_normalization(
 ) -> Result<Option<Action>, crate::simulation::TerminationReason> {
     Ok((|| -> Option<Action> {
     match canonical {
+        CanonicalAction::ChooseCommanderSba { designation, to_command } =>
+            state.pending_commander_sba.as_ref().and_then(|operation|
+                (operation.chooser() == Some(player)
+                    && operation.offers.iter().zip(&operation.answers).any(|(offer, answer)|
+                        offer.designation == *designation && offer.designation.owner == player
+                            && answer.is_none()))
+                    .then_some(Action::ChooseCommanderSba { designation: *designation, to_command: *to_command })),
         CanonicalAction::ChooseNextTrigger { occurrence } => {
             let op = state.trigger_placement.as_ref()?;
             if player != op.controller { return None; }

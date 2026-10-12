@@ -507,6 +507,9 @@ fn display_game_state(state: &GameState, db: &CardDatabase) {
 /// Rich description of an action for the menu display.
 fn format_action_rich(state: &GameState, action: &Action, db: &CardDatabase) -> String {
     match action {
+        Action::ChooseCommanderSba { designation, to_command } => format!(
+            "{} for Commander {}",
+            if *to_command { "Move to command zone" } else { "Decline command-zone move" }, designation.role),
         Action::ChooseNextCopy { item_index } => {
             let item = &state.pending_copy_order.as_ref().unwrap().items()[*item_index];
             let target = format_copy_targets(state, item.targets(), db);

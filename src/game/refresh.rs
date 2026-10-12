@@ -474,7 +474,8 @@ mod tests {
                 assert_eq!(checked.players[1].graveyard, vec![linked, primary]);
             }
             if commander {
-                assert_eq!(checked.players[1].command_zone, vec![primary]);
+                assert!(checked.players[1].graveyard.contains(&primary));
+                assert!(checked.players[1].command_zone.is_empty());
             }
             let mut frozen = checked.clone();
             frozen.continuous_effects = before_effects;

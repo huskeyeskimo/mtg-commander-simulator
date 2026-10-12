@@ -1,7 +1,7 @@
 //! Tests for 1v1 Commander format support.
 //!
 //! Covers: command zone, commander tax, commander damage (21), commander
-//! redirect (graveyard/exile -> command zone), 100-card singleton deck
+//! graveyard/exile SBA choices, 100-card singleton deck
 //! validation, and full commander game simulation.
 
 use std::sync::Arc;
@@ -244,11 +244,11 @@ fn test_commander_tax_increments() {
 }
 
 // ---------------------------------------------------------------------------
-// Commander redirect (death -> command zone)
+// Commander graveyard/exile arrivals and SBA choices
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_commander_redirects_to_command_zone_on_death() {
+fn test_commander_graveyard_arrival_then_command_choice() {
     let mut state = setup_commander_state(ids::BRIMAZ_KING, ids::THRUN_LAST_TROLL);
 
     // Move the actual commander object from command zone to battlefield
@@ -260,10 +260,16 @@ fn test_commander_redirects_to_command_zone_on_death() {
     // Move Brimaz to graveyard (simulating destruction)
     state.move_object(brimaz_obj, ZoneType::Battlefield, ZoneType::Graveyard);
 
-    // Commander should be in command zone, NOT graveyard
+    assert!(state.players[0].graveyard.contains(&brimaz_obj));
+    assert!(!state.players[0].command_zone.contains(&brimaz_obj));
+    rules::check_state_based_actions(&mut state);
+    assert!(legal_actions(&state).contains(&Action::ChooseCommanderSba {
+        designation: state.commander(0, 0).unwrap().designation, to_command: true }));
+    let designation = state.commander(0, 0).unwrap().designation;
+    rules::apply_action(&mut state, &Action::ChooseCommanderSba { designation, to_command: true });
     assert!(
         state.players[0].command_zone.contains(&brimaz_obj),
-        "Commander should be redirected to command zone on death"
+        "Commander should move to command zone after the choice"
     );
     assert!(
         !state.players[0].graveyard.contains(&brimaz_obj),
@@ -272,7 +278,7 @@ fn test_commander_redirects_to_command_zone_on_death() {
 }
 
 #[test]
-fn test_commander_redirects_to_command_zone_on_exile() {
+fn test_commander_exile_arrival_then_command_choice() {
     let mut state = setup_commander_state(ids::BRIMAZ_KING, ids::THRUN_LAST_TROLL);
 
     // Move the actual commander object to battlefield first
@@ -282,9 +288,13 @@ fn test_commander_redirects_to_command_zone_on_exile() {
     // Move Brimaz to exile (simulating Path to Exile)
     state.move_object(brimaz_obj, ZoneType::Battlefield, ZoneType::Exile);
 
+    assert!(state.players[0].exile.contains(&brimaz_obj));
+    rules::check_state_based_actions(&mut state);
+    let designation = state.commander(0, 0).unwrap().designation;
+    rules::apply_action(&mut state, &Action::ChooseCommanderSba { designation, to_command: true });
     assert!(
         state.players[0].command_zone.contains(&brimaz_obj),
-        "Commander should be redirected to command zone on exile"
+        "Commander should move to command zone after the choice"
     );
     assert!(
         !state.players[0].exile.contains(&brimaz_obj),

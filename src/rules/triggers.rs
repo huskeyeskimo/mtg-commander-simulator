@@ -94,7 +94,7 @@ fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint:
 /// `false` if paused waiting for a player's ordering decision.
 #[must_use]
 pub(super) fn flush_triggers(state: &mut GameState) -> bool {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some()
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.pending_commander_sba.is_some()
         || state.trigger_placement_deferred || state.cleanup_discard_in_progress { return false; }
     if state.validate_trigger_placement().is_err() {
         state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return false;
@@ -436,7 +436,6 @@ pub(super) fn apply_exalted(state: &mut GameState, attacker_id: ObjectId) {
 /// player sacrifices N permanents (simplified: random permanents).
 pub(super) fn apply_annihilator(state: &mut GameState, attackers: &[ObjectId]) {
     if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
-    use crate::card::ZoneType;
 
     let defending_player = state.next_player(state.active_player);
 
@@ -460,7 +459,6 @@ pub(super) fn apply_annihilator(state: &mut GameState, attackers: &[ObjectId]) {
     }
 
     // Defending player sacrifices N permanents (simplified: sacrifice the cheapest permanents)
-    let mut sacrificed = 0u32;
     let their_perms: Vec<ObjectId> = state
         .battlefield
         .iter()
@@ -473,15 +471,25 @@ pub(super) fn apply_annihilator(state: &mut GameState, attackers: &[ObjectId]) {
         })
         .collect();
 
-    for &perm_id in &their_perms {
-        if sacrificed >= total_annihilator {
-            break;
+    let chosen: Vec<_> = their_perms.iter().take(total_annihilator as usize).copied().collect();
+    if chosen.iter().any(|id| state.is_commander(*id)) {
+        let selected: Option<Vec<_>> = chosen.iter().map(|&id| state.exact_object(id).map(|object|
+            super::transitions::ResolvedSacrificeSubject { player: defending_player, object })).collect();
+        let Some(selected) = selected else {
+            state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding);
+            return;
+        };
+        if let Err(error) = super::transitions::sacrifice_permanents_batch(state, &selected) {
+            state.sba_failure = Some(super::sba::PreparedPassFailure::Transition(error));
         }
-        state.move_object(perm_id, ZoneType::Battlefield, ZoneType::Graveyard);
+        return;
+    }
+    let mut sacrificed = 0u32;
+    for &id in &chosen {
+        state.move_object(id, crate::card::ZoneType::Battlefield, crate::card::ZoneType::Graveyard);
         if state.gameplay_stopped() { return; }
         sacrificed += 1;
     }
-
     if sacrificed > 0 {
         state.refresh_continuous_effects();
         if state.gameplay_stopped() { return; }
