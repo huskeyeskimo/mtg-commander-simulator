@@ -370,9 +370,11 @@ pub mod ids {
     pub const GOBLIN_CHIEFTAIN: u64 = 1155;
     pub const ZADA_HEDRON_GRINDER: u64 = 1156;
     pub const EXPEDITE: u64 = 1157;
+    pub const GOBLIN_MATRON: u64 = 1158;
 }
 
 pub const ALL_CARDS: &[CardCatalogEntry] = &[
+    CardCatalogEntry { id: ids::GOBLIN_MATRON, key: "GOBLIN_MATRON", name: "Goblin Matron" },
     CardCatalogEntry { id: ids::EXPEDITE, key: "EXPEDITE", name: "Expedite" },
     CardCatalogEntry {
         id: ids::ZADA_HEDRON_GRINDER,

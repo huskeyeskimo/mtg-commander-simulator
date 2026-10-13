@@ -24,6 +24,7 @@ pub enum BoundedMovementInstruction {
     ChitteringHandTop,
     Draw { count: u32 },
     ExpediteHaste,
+    GoblinMatronSearch,
 }
 impl BoundedMovementInstruction {
     pub(crate) fn from_effect(effect: &Effect) -> Option<Self> {
@@ -45,6 +46,7 @@ impl BoundedMovementInstruction {
             Effect::AddMana { color, amount } => Self::AddMana { color: *color, amount: *amount },
             Effect::UntapTarget { target } => Self::Untap { target: target.clone() },
             Effect::DrawCards { count } => Self::Draw { count: *count },
+            Effect::GoblinMatronSearch => Self::GoblinMatronSearch,
             Effect::GainKeywordUntilEOT { keyword: crate::card::KeywordAbility::Haste,
                 target: crate::card::TargetSpec::AnyCreature } => Self::ExpediteHaste,
             _ => return None,
@@ -69,6 +71,7 @@ impl BoundedMovementInstruction {
             Self::AddMana { color, amount } => Effect::AddMana { color: *color, amount: *amount },
             Self::Untap { target } => Effect::UntapTarget { target: target.clone() },
             Self::Draw { count } => Effect::DrawCards { count: *count },
+            Self::GoblinMatronSearch => Effect::GoblinMatronSearch,
             Self::ExpediteHaste => Effect::GainKeywordUntilEOT {
                 keyword: crate::card::KeywordAbility::Haste, target: crate::card::TargetSpec::AnyCreature },
         }

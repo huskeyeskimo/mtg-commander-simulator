@@ -1312,6 +1312,13 @@ pub fn format_action_name(state: &GameState, action: &crate::action::Action) -> 
                     .unwrap_or("?")
             )
         }
+        crate::action::Action::ChooseGoblinMatronCard { object, .. } => format!(
+            "Goblin Matron finds {}",
+            state.objects.get(&object.id).and_then(|instance| db.get(instance.card_def_id))
+                .map(|definition| definition.name.as_str()).unwrap_or("?")
+        ),
+        crate::action::Action::DeclineGoblinMatronSearch { .. } => "Decline Goblin Matron search".into(),
+        crate::action::Action::FailToFindGoblinMatronCard { .. } => "Goblin Matron finds no card".into(),
         crate::action::Action::PassPriority => "Pass".to_string(),
         other => format!("{}", other),
     }

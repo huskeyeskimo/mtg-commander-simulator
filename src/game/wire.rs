@@ -76,6 +76,8 @@ struct GameStateWire {
     pub replacement_effects: Vec<ReplacementEffect>,
 
     pub pending_tutor: Option<PendingTutor>,
+    pub pending_matron_search: Option<PendingMatronSearch>,
+    pub revealed_hand_cards: Vec<ExactObjectRef>,
 
     pub extra_turns: VecDeque<PlayerIndex>,
 
@@ -107,6 +109,7 @@ impl<'de> Deserialize<'de> for GameState {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut state = GameStateWire::deserialize(deserializer)?;
         if crate::rules::chittering::resolving_entry(&state).is_some()
+            || crate::rules::matron::resolving_entry(&state).is_some()
             || state.pending_movement.as_ref().is_some_and(|op| op.resolution_owned
                 || crate::rules::movement_choice::private_draw_operation(op)) {
             state.trigger_placement_deferred = true;
@@ -114,7 +117,9 @@ impl<'de> Deserialize<'de> for GameState {
         state.validate_commanders().map_err(serde::de::Error::custom)?;
         state.validate_commander_choices().map_err(serde::de::Error::custom)?;
         state.validate_movement_choices().map_err(serde::de::Error::custom)?;
+        state.validate_revealed_hand_cards().map_err(serde::de::Error::custom)?;
         crate::rules::chittering::validate_structure(&state).map_err(serde::de::Error::custom)?;
+        crate::rules::matron::validate_structure(&state).map_err(serde::de::Error::custom)?;
         crate::rules::reclamation::validate_structure(&state).map_err(serde::de::Error::custom)?;
         Ok(state)
     }

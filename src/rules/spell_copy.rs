@@ -593,7 +593,7 @@ fn copy_safe(effect: &Effect) -> bool {
     match effect {
         #[cfg(test)]
         TestCopyBatch { copies: _ } => false,
-        ChitteringRats | ExileFromHandLinked | ReturnLinkedExileToHand | CreateTokenCopyOfSource
+        ChitteringRats | GoblinMatronSearch | ExileFromHandLinked | ReturnLinkedExileToHand | CreateTokenCopyOfSource
         | CopyCastSpellForOtherCreatures | ReturnWithDeathKeyword { keyword: _ } => false,
         DoublePowerUntilEOT { target: _ }
         | BuffOtherSubtype {

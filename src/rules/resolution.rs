@@ -9,7 +9,9 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
         state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding);
         return;
     }
-    if super::reclamation::validate_play(state).is_err() || super::chittering::validate_play(state).is_err() { state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return; }
+    if super::reclamation::validate_play(state).is_err() || super::chittering::validate_play(state).is_err()
+        || super::matron::validate_play(state).is_err()
+    { state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return; }
     let aura_prepared = if let Some(entry) = state.stack.last().filter(|e| matches!(e.source, StackSource::AuraSpell { .. })) {
         match super::aura::prepare_resolution(state, entry) {
             Ok(plan) => Some(plan), Err(reason) => { state.sba_failure = Some(reason); return; }
@@ -34,6 +36,7 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
         super::chittering::begin(state, entry); return;
     }
     let mut bounded_movement_resolution = false;
+    let mut matron_resolution = false;
     if let Some(entry) = state.stack.last() {
         let effect = match &entry.source {
             StackSource::Spell(id) => state.objects.get(id).and_then(|i| state.card_db().get(i.card_def_id)).and_then(|d| d.spell_effect.as_ref()),
@@ -43,6 +46,13 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
             StackSource::TriggeredAbility { context, .. } => Some(&context.effect), _ => None,
         };
         if let Some(effect) = effect {
+            if *effect == crate::card::Effect::GoblinMatronSearch {
+                if let Err(error) = super::matron::preflight_resolution(state, entry) {
+                    super::aura::record_entry_failure(state, error);
+                    return;
+                }
+                matron_resolution = true;
+            }
             let synchronous_destroy_draw = super::movement_choice::synchronous_destroy_draw(state, effect);
             if synchronous_destroy_draw {
                 if let Err(error) = super::movement_choice::preflight_synchronous_destroy_draw(state, effect,
@@ -57,7 +67,7 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
                             super::aura::record_entry_failure(state, error); return;
                         }
                     }
-                    bounded_movement_resolution = admitted || synchronous_destroy_draw;
+                    bounded_movement_resolution = admitted || synchronous_destroy_draw || matron_resolution;
                 },
                 Err(error) => { super::aura::record_entry_failure(state, error); return; }
             }
@@ -143,12 +153,23 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
         pending.resolving_source = resolving_source;
         pending.resolution_owned = true;
         pending.resolving_entry = Some(Box::new(entry));
+    } else if state.pending_matron_search.is_some() {
+        if !super::matron::attach_entry(state, entry) {
+            state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding);
+        }
     } else {
         super::complete_stack_resolution(state);
     }
 }
 
 pub(super) fn retain_failed_movement_entry(state: &mut GameState, entry: crate::game::StackEntry) {
+    if matches!(&entry.source, StackSource::TriggeredAbility { ability_index: 0, context, .. }
+        if context.source_card_id == crate::card::sample::ids::GOBLIN_MATRON
+            && context.effect == crate::card::Effect::GoblinMatronSearch)
+    {
+        state.stack.push(entry);
+        return;
+    }
     let has_resident_physical_source = entry.source.physical_object().is_some_and(|id|
         state.battlefield.contains(&id) || state.players.iter().any(|player|
             [&player.hand, &player.library, &player.graveyard, &player.exile, &player.command_zone].iter().any(|zone| zone.contains(&id))));

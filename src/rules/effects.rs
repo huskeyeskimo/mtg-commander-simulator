@@ -1030,6 +1030,8 @@ fn resolve_effect_inner(
             }
         }
 
+        Effect::GoblinMatronSearch => super::matron::begin(state, controller),
+
         Effect::BounceAllNonlandOpponents => {
             // Select from one pre-event view; the whole instruction is one event.
             let requests: Vec<_> = state

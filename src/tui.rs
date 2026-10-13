@@ -237,6 +237,7 @@ impl App {
                 | Action::PlaceChitteringTrigger { .. } | Action::ChooseChitteringCard { .. } | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
                 | Action::OrderTriggerOccurrences { .. }
                 | Action::ChooseTutorTarget { .. }
+                | Action::ChooseGoblinMatronCard { .. } | Action::DeclineGoblinMatronSearch { .. } | Action::FailToFindGoblinMatronCard { .. }
                 | Action::ChooseReplacementOrder { .. }
                 | Action::OrderDamageAssignment { .. }
                 | Action::DeclareBlockers { .. }))
@@ -1086,6 +1087,11 @@ pub fn format_action_short(state: &GameState, action: &Action, db: &CardDatabase
                 .unwrap_or("?");
             format!("Tutor: {}", name)
         }
+        Action::ChooseGoblinMatronCard { object, .. } => {
+            format!("Goblin Matron: {}", card_name(state, object.id, db))
+        }
+        Action::DeclineGoblinMatronSearch { .. } => "Goblin Matron: decline search".into(),
+        Action::FailToFindGoblinMatronCard { .. } => "Goblin Matron: find no card".into(),
         Action::ActivateLoyalty { object_id, ability_index } => {
             let name = card_name(state, *object_id, db);
             format!("Loyalty: {} #{}", name, ability_index)

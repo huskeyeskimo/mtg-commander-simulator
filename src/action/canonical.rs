@@ -137,6 +137,9 @@ pub enum CanonicalAction {
     /// Already keyed by CardId — no disambiguation needed.
     ChooseTutorTarget { card_id: CardId },
 
+    ChooseGoblinMatronCard { card_id: CardId, occurrence: usize },
+    DeclineGoblinMatronSearch,
+
     Concede,
 
     /// Activate a loyalty ability on a planeswalker.
@@ -185,6 +188,7 @@ pub enum CanonicalAction {
     ActivateReclamation { source: crate::public_projection::SemanticCoordinate, target: crate::public_projection::SemanticCoordinate },
     PlaceChitteringTrigger { occurrence: crate::public_projection::SemanticCoordinate, opponent: PlayerIndex },
     ChooseChitteringCard { card: crate::public_projection::SemanticCoordinate },
+    FailToFindGoblinMatronCard,
 }
 
 /// Convert a concrete `Action` (with ObjectIds) into a `CanonicalAction`
@@ -430,6 +434,17 @@ fn canonicalize_with_normalization(
         Action::ChooseTutorTarget { card_id } => {
             CanonicalAction::ChooseTutorTarget { card_id: *card_id }
         }
+        Action::ChooseGoblinMatronCard { object, .. } => {
+            let instance = state.objects.get(&object.id)
+                .filter(|instance| instance.zone_change_count == object.generation)
+                .ok_or(crate::simulation::TerminationReason::StateEncoding)?;
+            let library = &state.players[state.priority_player].library;
+            let occurrence = library.iter().take_while(|&&id| id != object.id).filter(|&&id|
+                state.objects.get(&id).is_some_and(|other| other.card_def_id == instance.card_def_id)).count();
+            CanonicalAction::ChooseGoblinMatronCard { card_id: instance.card_def_id, occurrence }
+        }
+        Action::DeclineGoblinMatronSearch { .. } => CanonicalAction::DeclineGoblinMatronSearch,
+        Action::FailToFindGoblinMatronCard { .. } => CanonicalAction::FailToFindGoblinMatronCard,
 
         Action::MulliganKeep => CanonicalAction::MulliganKeep,
         Action::MulliganMulligan => CanonicalAction::MulliganMulligan,
@@ -746,6 +761,25 @@ pub fn resolve_with_normalization(
 
         CanonicalAction::ChooseTutorTarget { card_id } => {
             Some(Action::ChooseTutorTarget { card_id: *card_id })
+        }
+        CanonicalAction::ChooseGoblinMatronCard { card_id, occurrence } => {
+            let op = state.pending_matron_search.as_ref()?;
+            if op.controller != player || state.priority_player != player { return None; }
+            let id = state.players[player].library.iter().copied()
+                .filter(|id| state.objects.get(id).is_some_and(|instance| instance.card_def_id == *card_id))
+                .nth(*occurrence)?;
+            let action = Action::ChooseGoblinMatronCard { window: op.window, object: state.exact_object(id)? };
+            crate::action::legal_actions(state).contains(&action).then_some(action)
+        }
+        CanonicalAction::DeclineGoblinMatronSearch => {
+            let op = state.pending_matron_search.as_ref()?;
+            (op.controller == player && state.priority_player == player)
+                .then_some(Action::DeclineGoblinMatronSearch { window: op.window })
+        }
+        CanonicalAction::FailToFindGoblinMatronCard => {
+            let op = state.pending_matron_search.as_ref()?;
+            (op.controller == player && state.priority_player == player)
+                .then_some(Action::FailToFindGoblinMatronCard { window: op.window })
         }
 
         CanonicalAction::MulliganKeep => Some(Action::MulliganKeep),

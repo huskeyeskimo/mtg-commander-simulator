@@ -7,6 +7,7 @@ mod effects;
 mod mana;
 pub(crate) mod reclamation;
 pub(crate) mod chittering;
+pub(crate) mod matron;
 mod phases;
 mod resolution;
 pub(crate) mod movement_choice;
@@ -59,10 +60,13 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
                 .is_some_and(|a| reclamation::uses_selector(&a.effect))) { return; }
     }
     if state.movement_or_hand_pending() && state.card_db.is_none() { return; }
-    if reclamation::validate_play(state).is_err() || chittering::validate_play(state).is_err() { return; }
+    if reclamation::validate_play(state).is_err() || chittering::validate_play(state).is_err()
+        || matron::validate_play(state).is_err() { return; }
     if matches!(action, Action::ChooseChitteringCard { .. }) && !chittering::selection_actions(state).contains(action) { return; }
     if matches!(action, Action::PlaceChitteringTrigger { .. }) && !chittering::placement_actions(state).contains(action) { return; }
     if state.pending_chittering.is_some() && !matches!(action, Action::ChooseChitteringCard { .. } | Action::Concede) { return; }
+    if state.pending_matron_search.is_some() && !matches!(action,
+        Action::ChooseGoblinMatronCard { .. } | Action::DeclineGoblinMatronSearch { .. } | Action::FailToFindGoblinMatronCard { .. } | Action::Concede) { return; }
     if state.validate_commanders().is_err() || state.validate_commander_choices().is_err() || state.validate_movement_choices().is_err() {
         state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding); return;
     }
@@ -509,6 +513,10 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         if matches!(action, Action::Concede) { loss::adjudicate(state, Some(state.priority_player)); return true; }
         return movement_choice::choose(state, action);
     }
+    if state.pending_matron_search.is_some() {
+        if matches!(action, Action::Concede) { loss::adjudicate(state, Some(state.priority_player)); return true; }
+        return matron::choose(state, action);
+    }
     if matches!(action, Action::ChooseMovementReplacement { .. } | Action::ChooseCommanderMovement { .. } | Action::ChooseLibraryPlacement { .. }) { return false; }
     if state.pending_commander_sba.is_some() {
         return match action {
@@ -532,7 +540,8 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         }
         return false;
     }
-    if matches!(action, Action::ChooseNextCopy { .. } | Action::ChooseChitteringCard { .. }) { return false; }
+    if matches!(action, Action::ChooseNextCopy { .. } | Action::ChooseChitteringCard { .. }
+        | Action::ChooseGoblinMatronCard { .. } | Action::DeclineGoblinMatronSearch { .. } | Action::FailToFindGoblinMatronCard { .. }) { return false; }
     if cleanup_discard_required(state) {
         let Action::Discard { object_id } = action else { return false; };
         if state.phase != Phase::Cleanup
@@ -573,7 +582,8 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         if !crate::targeting::valid_spell_targets(state, player, def, targets) { return false; }
     }
     match action {
-        Action::ChooseNextCopy { .. } | Action::ChooseCommanderSba { .. } | Action::ChooseMovementReplacement { .. } | Action::ChooseCommanderMovement { .. } | Action::ChooseLibraryPlacement { .. } => unreachable!(),
+        Action::ChooseNextCopy { .. } | Action::ChooseCommanderSba { .. } | Action::ChooseMovementReplacement { .. } | Action::ChooseCommanderMovement { .. } | Action::ChooseLibraryPlacement { .. }
+        | Action::ChooseGoblinMatronCard { .. } | Action::DeclineGoblinMatronSearch { .. } | Action::FailToFindGoblinMatronCard { .. } => unreachable!(),
         Action::ActivateReclamation { .. } => reclamation::activate(state, action),
         Action::PassPriority => {
             // If there's a pending tutor, passing means "fail to find" —

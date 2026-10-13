@@ -2716,6 +2716,23 @@ pub fn build_sample_db() -> CardDatabase {
     });
 
     db.insert(CardDef {
+        id: ids::GOBLIN_MATRON,
+        name: "Goblin Matron".into(),
+        mana_cost: Some(ManaCost::new(2, 0, 0, 0, 1, 0)),
+        card_types: vec![CardType::Creature],
+        subtypes: vec![Subtype("Goblin".into())],
+        power: Some(1),
+        toughness: Some(1),
+        triggered_abilities: vec![TriggeredAbility {
+            trigger: TriggerCondition::EntersBattlefield,
+            effect: Effect::GoblinMatronSearch,
+            description: "When this creature enters, you may search your library for a Goblin card, reveal that card, put it into your hand, then shuffle.".into(),
+        }],
+        oracle_text: "When this creature enters, you may search your library for a Goblin card, reveal that card, put it into your hand, then shuffle.".into(),
+        ..Default::default()
+    });
+
+    db.insert(CardDef {
         id: ids::KRENKO_MOB_BOSS,
         name: "Krenko, Mob Boss".into(),
         mana_cost: Some(ManaCost::new(2, 0, 0, 0, 2, 0)),

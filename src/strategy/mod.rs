@@ -243,6 +243,11 @@ impl Strategy for GreedyStrategy {
                 return action.clone();
             }
         }
+        for action in &actions {
+            if let Action::ChooseGoblinMatronCard { .. } = action {
+                return action.clone();
+            }
+        }
 
         // Priority 1: Play a land if we can (from hand or graveyard)
         for action in &actions {

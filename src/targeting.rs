@@ -87,6 +87,7 @@ pub(crate) fn effect_recipients(effect: &Effect) -> EffectRecipients<'_> {
     use EffectRecipients::*;
     match effect {
         ChitteringRats => SelectedObjects,
+        GoblinMatronSearch => Independent,
         #[cfg(test)]
         TestCopyBatch { copies: _ } => Independent,
         DealDamage { amount: _, target }

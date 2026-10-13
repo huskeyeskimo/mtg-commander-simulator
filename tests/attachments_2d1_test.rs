@@ -936,7 +936,7 @@ fn solver_checkpoint_rejects_old_and_unversioned_semantic_keys_explicitly() {
     let tables = [RegretTable::new(), RegretTable::new()];
     save_checkpoint(&tables, path, 7).unwrap();
     let current = std::fs::read(folder.join("player_0_iter_7.bin")).unwrap();
-    assert_eq!(mtg_gto::solver::SEMANTIC_FORMAT, "mtg-joint-public-2f3b1-v1");
+    assert_eq!(mtg_gto::solver::SEMANTIC_FORMAT, "mtg-joint-public-2f3b2-v1");
     assert!(load_checkpoint(path, 7).is_ok());
     for legacy in [
         {

@@ -1371,14 +1371,14 @@ pub(super) fn prepare_sba_movements(
 }
 
 #[derive(Clone, Copy)]
-enum PreparedKind { Put, Destroy, ResolvedSacrifice, Sba, Movement, ChitteringHand, Draw }
+enum PreparedKind { Put, Destroy, ResolvedSacrifice, Sba, Movement, ChitteringHand, Draw, MatronSearch }
 
 fn validate(
     state: &GameState,
     requests: &[TransitionRequest],
     prepared: PreparedKind,
 ) -> Result<Vec<LinkedExileFollowup>, TransitionError> {
-    if !matches!(prepared, PreparedKind::Movement | PreparedKind::ChitteringHand | PreparedKind::Draw) && requests.iter().any(|request| super::movement_choice::requires_choice(state, request)) {
+    if !matches!(prepared, PreparedKind::Movement | PreparedKind::ChitteringHand | PreparedKind::Draw | PreparedKind::MatronSearch) && requests.iter().any(|request| super::movement_choice::requires_choice(state, request)) {
         return Err(TransitionError::UnsupportedPath);
     }
     let battlefield: Vec<_> = requests.iter().filter(|r| r.from == ZoneType::Battlefield).map(|r| r.object).collect();
@@ -1406,7 +1406,14 @@ fn validate(
                     .and_then(|player| state.first_library_card(inst.owner)
                         .map(|index| player.library[index] == id)).unwrap_or(false))
                 && (request.to != ZoneType::Command || state.is_commander(id));
-            let valid = movement_valid || draw_valid || matches!(prepared, PreparedKind::Sba)
+            let matron_valid = matches!(prepared, PreparedKind::MatronSearch) && requests.len() == 1
+                && request.from == ZoneType::Library
+                && matches!(request.to, ZoneType::Hand | ZoneType::Command)
+                && request.kind == MovementKind::Put
+                && super::movement_choice::resident(state, request.object, ZoneType::Library)
+                && !state.objects.get(&id).is_some_and(|inst| inst.is_token)
+                && (request.to != ZoneType::Command || state.is_commander(id));
+            let valid = movement_valid || draw_valid || matron_valid || matches!(prepared, PreparedKind::Sba)
                 && matches!(request.from, ZoneType::Graveyard | ZoneType::Exile)
                 && request.to == ZoneType::Command && request.kind == MovementKind::Put
                 && state.is_commander(id)
@@ -1792,6 +1799,16 @@ pub(crate) fn preflight_draw_batch(state: &GameState, requests: &[TransitionRequ
 pub(crate) fn draw_batch(state: &mut GameState, requests: &[TransitionRequest]) -> Result<CommittedTransitionBatch, TransitionError> {
     commit_batch(state, requests, PreparedKind::Draw)
 }
+pub(crate) fn preflight_matron_search_batch(state: &GameState, requests: &[TransitionRequest]) -> Result<(), TransitionError> {
+    validate(state, requests, PreparedKind::MatronSearch).map(|_| ())
+}
+pub(crate) fn matron_search_batch(state: &mut GameState, requests: &[TransitionRequest],
+    op: &crate::game::PendingMovement) -> Result<CommittedTransitionBatch, TransitionError> {
+    if requests.len() != 1 || super::matron::validate_child(state, op).is_err() {
+        return Err(TransitionError::UnsupportedPath);
+    }
+    commit_batch(state, requests, PreparedKind::MatronSearch)
+}
 
 /// capture finish before any mutation. Occurrences enter 2A's pending queue;
 /// this function never places triggers, grants priority, or advances time.
@@ -1824,7 +1841,7 @@ fn commit_batch_with_causes(
         }
         match projection.refresh(state) {
             Ok(refresh) => refresh,
-            Err(error) => { if !matches!(prepared, PreparedKind::Movement | PreparedKind::Draw) { state.sba_failure = Some(error); } return Err(TransitionError::CapacityExhausted); }
+            Err(error) => { if !matches!(prepared, PreparedKind::Movement | PreparedKind::Draw | PreparedKind::MatronSearch) { state.sba_failure = Some(error); } return Err(TransitionError::CapacityExhausted); }
         }
     };
     let group_id = state.next_zone_event_group_id;

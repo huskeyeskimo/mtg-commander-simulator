@@ -41,6 +41,7 @@ fn human_mandatory_choice_pending(state: &GameState) -> bool {
             | Action::PlaceChitteringTrigger { .. } | Action::ChooseChitteringCard { .. } | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
             | Action::OrderTriggerOccurrences { .. }
             | Action::ChooseTutorTarget { .. }
+            | Action::ChooseGoblinMatronCard { .. } | Action::DeclineGoblinMatronSearch { .. } | Action::FailToFindGoblinMatronCard { .. }
             | Action::ChooseReplacementOrder { .. }
             | Action::OrderDamageAssignment { .. }
             | Action::DeclareBlockers { .. }))
@@ -648,6 +649,11 @@ fn format_action_rich(state: &GameState, action: &Action, db: &CardDatabase) -> 
                 .unwrap_or("?");
             format!("Tutor for: {}", name)
         }
+        Action::ChooseGoblinMatronCard { object, .. } => {
+            format!("Goblin Matron: {}", card_name(state, object.id, db))
+        }
+        Action::DeclineGoblinMatronSearch { .. } => "Goblin Matron: decline search".into(),
+        Action::FailToFindGoblinMatronCard { .. } => "Goblin Matron: find no card".into(),
         Action::ActivateLoyalty { object_id, ability_index } => {
             let name = card_name(state, *object_id, db);
             let inst = &state.objects[object_id];

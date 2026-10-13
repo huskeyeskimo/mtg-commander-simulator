@@ -89,6 +89,21 @@ fn contains_movement(effect: &Effect) -> bool {
     }
 }
 pub(crate) fn admission(state: &GameState, effect: &Effect) -> Result<bool, TransitionError> {
+    fn contains_matron(effect: &Effect) -> bool {
+        match effect {
+            Effect::GoblinMatronSearch => true,
+            Effect::Multiple(children) => children.iter().any(contains_matron),
+            Effect::Modal { choices, .. } => choices.iter().any(contains_matron),
+            Effect::Conditional { if_true, if_false, .. } => contains_matron(if_true)
+                || if_false.as_ref().is_some_and(|effect| contains_matron(effect)),
+            Effect::ForEach { effect, .. } => contains_matron(effect),
+            _ => false,
+        }
+    }
+    if contains_matron(effect) {
+        return if *effect == Effect::GoblinMatronSearch { Ok(false) }
+            else { Err(TransitionError::UnsupportedPath) };
+    }
     if super::chittering::contains(effect) {
         if *effect != Effect::ChitteringRats || state.stack.last().is_none_or(|e| super::chittering::entry_opponent(e, state.players.len()).is_err()) {
             return Err(TransitionError::UnsupportedPath);
@@ -325,6 +340,91 @@ pub(crate) fn begin_direct_draw(state: &mut GameState, player: PlayerIndex, coun
             state.trigger_placement_deferred = prior_deferred;
         }
     }
+}
+
+/// Transfer Goblin Matron's selected exact library card into the existing
+/// replacement-choice state machine. The search remains closed: one selected
+/// card, hand as the proposed destination, and one required shuffle.
+pub(crate) fn begin_matron_movement(state: &mut GameState, object: ExactObjectRef) -> Result<(), TransitionError> {
+    let Some(search) = state.pending_matron_search.as_ref() else {
+        return Err(TransitionError::UnsupportedPath);
+    };
+    if super::matron::validate_structure(state).is_err()
+        || !super::matron::selected_exact(state, object)
+    { return Err(TransitionError::UnsupportedPath); }
+    let controller = search.controller;
+    let resume_priority = search.resume_priority;
+    let active_player = search.active_player;
+    let window = search.window;
+    let Some(entry) = search.resolving_entry.clone() else {
+        return Err(TransitionError::UnsupportedPath);
+    };
+    let resolving_source = super::matron::validate_resolving_entry(state, &entry, controller)
+        .map_err(|_| TransitionError::UnsupportedPath)?;
+    let Some(instance) = state.objects.get(&object.id) else {
+        return Err(TransitionError::MissingObject(object.id));
+    };
+    if instance.owner != controller || instance.is_token {
+        return Err(TransitionError::UnsupportedPath);
+    }
+    let request = TransitionRequest { object, from: ZoneType::Library, to: ZoneType::Hand,
+        kind: MovementKind::Put };
+    transitions::preflight_matron_search_batch(state, &[request])?;
+    let catalog = catalog(state, false)?;
+    let commander = state.commander_for_object(object.id).map(|record| record.designation);
+    if catalog.iter().any(|candidate| matches!(candidate,
+        Candidate::Ordinary {
+            predicate: ReplacementEventKind::WouldMoveTo { destination, .. }, ..
+        } if destination.zone() == ZoneType::Hand
+            || commander.is_some() && destination.zone() == ZoneType::Command))
+    {
+        return Err(TransitionError::UnsupportedPath);
+    }
+    let proposal = MovementProposal {
+        request,
+        owner: instance.owner,
+        affected_controller: instance.controller,
+        commander,
+        is_creature: state.is_creature(object.id),
+        is_token: false,
+        canceled: false,
+        placement: LibraryPlacement::Shuffle,
+        proposed: ZoneType::Hand,
+        consumed: Vec::new(),
+        declined_revision: None,
+        revision: 0,
+        commander_selected: false,
+    };
+    let instruction = BoundedMovementInstruction::GoblinMatronSearch;
+    let mut op = PendingMovement {
+        window, version: 1, active_player, instruction_controller: controller, resume_priority,
+        proposals: vec![proposal], catalog, history: Vec::new(), library_order: Vec::new(),
+        shuffle_owners: vec![controller], instruction: instruction.clone(), envelope: vec![instruction],
+        instruction_index: 0, targets: Vec::new(), target_generations: Vec::new(),
+        source: resolving_source.map(|source| source.id), resolving_entry: Some(entry), resolving_source,
+        resolution_owned: true, draws_remaining: 0, draw_start_library_count: 0,
+        turn_draw: false, draw_resume_deferred: false,
+    };
+    normalize(&mut op, state.players.len());
+    if let Some(chooser) = op.chooser(state.players.len()) {
+        state.emit_event(crate::events::GameEvent::CardRevealed { player: controller, object: object.id });
+        state.pending_matron_search = None;
+        state.priority_player = chooser;
+        state.pending_movement = Some(op);
+        return Ok(());
+    }
+    // Preserve the owned search until the whole no-choice movement commits.
+    // The clone also keeps reveal-before-movement event order without exposing
+    // a reveal if transition preparation unexpectedly rejects the commit.
+    let mut committed = state.clone();
+    committed.emit_event(crate::events::GameEvent::CardRevealed { player: controller, object: object.id });
+    commit(&mut committed, &op)?;
+    committed.pending_matron_search = None;
+    committed.priority_player = resume_priority;
+    super::resolution::finish_deferred_resolution(&mut committed, op.resolving_entry.as_deref().unwrap());
+    super::complete_stack_resolution(&mut committed);
+    *state = committed;
+    Ok(())
 }
 
 fn execute_draws(state: &mut GameState, count: u32, envelope: &[BoundedMovementInstruction], index: usize,
@@ -642,6 +742,8 @@ fn commit_with_rng<R: rand::Rng + ?Sized>(state: &mut GameState, op: &PendingMov
             transitions::chittering_batch(state, &requests, op)?;
         } else if matches!(op.instruction, BoundedMovementInstruction::Draw { .. }) {
             transitions::draw_batch(state, &requests)?;
+        } else if matches!(op.instruction, BoundedMovementInstruction::GoblinMatronSearch) {
+            transitions::matron_search_batch(state, &requests, op)?;
         } else { transitions::movement_batch(state, &requests)?; }
     }
     if matches!(op.instruction, BoundedMovementInstruction::LinkedHand) {
@@ -658,7 +760,23 @@ fn commit_with_rng<R: rand::Rng + ?Sized>(state: &mut GameState, op: &PendingMov
         }).collect();
         if placement == LibraryPlacement::Top { library.splice(0..0, ids); } else { library.extend(ids); }
     }
-    for &owner in &op.shuffle_owners { state.players[owner].library.shuffle(rng); }
+    if matches!(op.instruction, BoundedMovementInstruction::GoblinMatronSearch) {
+        for proposal in &op.proposals {
+            if !proposal.canceled && proposal.proposed == ZoneType::Hand {
+                if let Some(exact) = state.exact_object(proposal.request.object.id) {
+                    if !state.revealed_hand_cards.contains(&exact) {
+                        state.revealed_hand_cards.push(exact);
+                    }
+                }
+            }
+        }
+    }
+    for &owner in &op.shuffle_owners {
+        state.players[owner].library.shuffle(rng);
+        if matches!(op.instruction, BoundedMovementInstruction::GoblinMatronSearch) {
+            state.emit_event(crate::events::GameEvent::LibraryShuffled { player: owner });
+        }
+    }
     Ok(())
 }
 
@@ -685,6 +803,10 @@ fn prepare_library_completion(op: &PendingMovement) -> Result<Vec<(usize, Librar
 
 pub(crate) fn validate_operation(state: &GameState, op: &PendingMovement) -> Result<(), &'static str> {
     if super::chittering::private_operation(op) { super::chittering::validate_child(state, op)?; }
+    if matches!(op.instruction, BoundedMovementInstruction::GoblinMatronSearch) {
+        if state.pending_matron_search.is_some() { return Err("overlapping Goblin Matron continuations"); }
+        super::matron::validate_child(state, op)?;
+    }
     let drawing = matches!(op.instruction, BoundedMovementInstruction::Draw { .. });
     if drawing {
         let BoundedMovementInstruction::Draw { count } = &op.instruction else { unreachable!() };
@@ -714,7 +836,8 @@ pub(crate) fn validate_operation(state: &GameState, op: &PendingMovement) -> Res
     if op.window >= state.next_movement_window || op.version != 1 || op.active_player != state.active_player || op.active_player >= state.players.len()
         || op.shuffle_owners.iter().any(|owner| *owner >= state.players.len())
         || op.shuffle_owners.windows(2).any(|pair| pair[0] >= pair[1])
-        || !matches!(op.instruction, BoundedMovementInstruction::Shuffle { .. }) && !op.shuffle_owners.is_empty()
+        || !matches!(op.instruction, BoundedMovementInstruction::Shuffle { .. }
+            | BoundedMovementInstruction::GoblinMatronSearch) && !op.shuffle_owners.is_empty()
         || op.instruction_controller >= state.players.len() || op.resume_priority >= state.players.len()
         || state.pending_copy_order.is_some() || state.pending_commander_sba.is_some() || state.trigger_placement.is_some()
         || op.chooser(state.players.len()) != Some(state.priority_player)
@@ -724,11 +847,14 @@ pub(crate) fn validate_operation(state: &GameState, op: &PendingMovement) -> Res
         || op.resolving_entry.as_ref().is_some_and(|entry| entry.id >= state.next_stack_id || state.stack.iter().any(|other| other.id == entry.id)
             || entry.controller != op.instruction_controller
             || (!super::chittering::private_operation(op) && (entry.targets != op.targets || entry.target_generations != op.target_generations))
-            || entry.source.physical_object() != op.resolving_source.map(|s| s.id))
+            || (!matches!(op.instruction, BoundedMovementInstruction::GoblinMatronSearch)
+                && entry.source.physical_object() != op.resolving_source.map(|s| s.id)))
         || op.resolving_source.is_some_and(|source| state.exact_object(source.id) != Some(source))
         || op.envelope.get(op.instruction_index) != Some(&op.instruction)
         || op.envelope.iter().any(|e| !movement_leaf(&e.effect()) && !synchronous(&e.effect())
-            && !matches!(e, BoundedMovementInstruction::Draw { .. } | BoundedMovementInstruction::ExpediteHaste))
+            && !matches!(e, BoundedMovementInstruction::Draw { .. }
+                | BoundedMovementInstruction::ExpediteHaste
+                | BoundedMovementInstruction::GoblinMatronSearch))
         || {
             let envelope_effect = if op.envelope.len() == 1 { op.envelope[0].effect() }
                 else { Effect::Multiple(op.envelope.iter().map(|e| e.effect()).collect()) };
@@ -760,6 +886,7 @@ pub(crate) fn validate_operation(state: &GameState, op: &PendingMovement) -> Res
         BoundedMovementInstruction::Destroy { .. } | BoundedMovementInstruction::DestroyAll => (ZoneType::Battlefield, ZoneType::Graveyard, 1),
         BoundedMovementInstruction::Sacrifice { .. } | BoundedMovementInstruction::OpponentSacrifice { .. } => (ZoneType::Battlefield, ZoneType::Graveyard, 2),
         BoundedMovementInstruction::Draw { .. } => (ZoneType::Library, ZoneType::Hand, 3),
+        BoundedMovementInstruction::GoblinMatronSearch => (ZoneType::Library, ZoneType::Hand, 0),
         _ => return Err("invalid reached movement instruction"),
     };
     let mut seen = std::collections::HashSet::new();
@@ -780,10 +907,11 @@ pub(crate) fn validate_operation(state: &GameState, op: &PendingMovement) -> Res
     if current_catalog.len() != op.catalog.len() || current_catalog.iter().any(|c| !op.catalog.contains(c)) {
         return Err("changed movement catalog");
     }
-    let expected_placement = match op.instruction { BoundedMovementInstruction::Shuffle { .. } => LibraryPlacement::Shuffle,
+    let expected_placement = match op.instruction { BoundedMovementInstruction::Shuffle { .. }
+        | BoundedMovementInstruction::GoblinMatronSearch => LibraryPlacement::Shuffle,
         BoundedMovementInstruction::GraveTop { .. } | BoundedMovementInstruction::ChitteringHandTop => LibraryPlacement::Top, _ => LibraryPlacement::Bottom };
     if op.proposals.iter().any(|p| p.placement != expected_placement) { return Err("invalid instruction placement"); }
-    if state.card_db.is_some() {
+    if state.card_db.is_some() && !matches!(op.instruction, BoundedMovementInstruction::GoblinMatronSearch) {
         let initial = prepare_operation(state, &op.instruction.effect(), op.instruction_controller,
             &op.targets, &op.target_generations, op.source, false, true).map_err(|_| "invalid reached movement subjects")?;
         let initial_facts = |p: &MovementProposal| (p.request, p.owner, p.affected_controller, p.commander, p.is_creature, p.is_token, p.placement);
@@ -791,6 +919,23 @@ pub(crate) fn validate_operation(state: &GameState, op: &PendingMovement) -> Res
         let mut actual: Vec<_> = op.proposals.iter().map(initial_facts).collect();
         expected.sort_by_key(|p| p.0.object.id); actual.sort_by_key(|p| p.0.object.id);
         if expected != actual || initial.shuffle_owners != op.shuffle_owners { return Err("inconsistent complete reached movement subjects"); }
+    }
+    if matches!(op.instruction, BoundedMovementInstruction::GoblinMatronSearch) {
+        if op.proposals.len() != 1 || op.shuffle_owners.as_slice() != [op.instruction_controller]
+            || op.envelope.as_slice() != [BoundedMovementInstruction::GoblinMatronSearch]
+            || op.instruction_index != 0 || !op.targets.is_empty() || !op.target_generations.is_empty()
+            || op.proposals[0].owner != op.instruction_controller
+            || op.catalog.iter().any(|candidate| matches!(candidate,
+                Candidate::Ordinary {
+                    predicate: ReplacementEventKind::WouldMoveTo { destination, .. }, ..
+                } if destination.zone() == ZoneType::Hand
+                    || op.proposals[0].commander.is_some()
+                        && destination.zone() == ZoneType::Command))
+            || state.card_db.as_ref().is_some_and(|db|
+                state.objects.get(&op.proposals[0].request.object.id)
+                    .and_then(|instance| db.get(instance.card_def_id))
+                    .is_none_or(|definition| !definition.subtypes.iter().any(|subtype| subtype.0 == "Goblin")))
+        { return Err("invalid Goblin Matron movement"); }
     }
     let mut replay = op.clone(); replay.history.clear(); replay.library_order.clear();
     for p in &mut replay.proposals { p.canceled = false; p.proposed = p.request.to; p.consumed.clear(); p.declined_revision = None;

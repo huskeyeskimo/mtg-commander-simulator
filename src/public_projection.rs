@@ -12,7 +12,7 @@ use crate::card::{ExactObjectRef, ObjectId, ZoneType};
 use crate::game::{GameState, PlayerView, StackSource, Target, TriggerContext};
 use crate::simulation::TerminationReason;
 
-pub const PROJECTION_SCHEMA: u16 = 8;
+pub const PROJECTION_SCHEMA: u16 = 9;
 type EncodingResult<T> = Result<T, TerminationReason>;
 
 pub fn encode<T: Serialize>(value: &T) -> EncodingResult<Vec<u8>> {
@@ -1910,6 +1910,23 @@ impl<'v, 'a> Inventory<'v, 'a> {
             if self.view.pending_chittering.is_some() {
                 self.graph.vertex(VertexKind::StackOrOperation, &(12u8, wait.2))?;
             }
+        }
+        if let Some(wait) = self.view.matron_search_wait {
+            let record = self.graph.vertex(VertexKind::StackOrOperation, &(13u8, wait))?;
+            let entry = self.view.matron_entry.ok_or(TerminationReason::StateEncoding)?;
+            let StackSource::TriggeredAbility { source_id, ability_index, context } = &entry.source else {
+                return Err(TerminationReason::StateEncoding);
+            };
+            if context.source_card_id != crate::card::sample::ids::GOBLIN_MATRON
+                || context.effect != crate::card::Effect::GoblinMatronSearch || entry.controller != wait.1 {
+                return Err(TerminationReason::StateEncoding);
+            }
+            let member = self.graph.vertex(VertexKind::StackOrOperation, &(14u8, entry.controller))?;
+            self.resolving_entry_vertex = Some(member);
+            self.graph.edge(record, member, EdgeKind::ContinuationMember, &())?;
+            let occurrence = self.occurrence(*source_id, *ability_index, entry.controller, context, None)?;
+            self.resolving_occurrence_vertex = Some(occurrence);
+            self.graph.edge(member, occurrence, EdgeKind::StackSource, &())?;
         }
         let mut records = HashMap::new();
         for (position, entry) in self.view.stack.iter().enumerate() {

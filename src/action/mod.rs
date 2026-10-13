@@ -111,6 +111,12 @@ pub enum Action {
     /// offered as choices. MCCFR learns the optimal target per game state.
     ChooseTutorTarget { card_id: CardId },
 
+    /// Choose an exact eligible card during Goblin Matron's private search.
+    ChooseGoblinMatronCard { window: u64, object: crate::card::ExactObjectRef },
+
+    /// Decline Goblin Matron's optional search without shuffling.
+    DeclineGoblinMatronSearch { window: u64 },
+
     /// Concede the game.
     Concede,
 
@@ -162,6 +168,9 @@ pub enum Action {
     ActivateReclamation { source: crate::card::ExactObjectRef, target: crate::card::ExactObjectRef },
     PlaceChitteringTrigger { handle: crate::game::TriggerOccurrenceHandle, opponent: PlayerIndex },
     ChooseChitteringCard { window: crate::game::StackId, card: crate::card::ExactObjectRef },
+    /// Search the library but choose no Goblin card, then shuffle.
+    /// Appended to preserve serialized action discriminants.
+    FailToFindGoblinMatronCard { window: u64 },
 }
 
 impl fmt::Display for Action {
@@ -213,6 +222,11 @@ impl fmt::Display for Action {
             Action::ChooseTutorTarget { card_id } => {
                 write!(f, "Tutor for card {}", card_id)
             }
+            Action::ChooseGoblinMatronCard { object, .. } => {
+                write!(f, "Goblin Matron finds object {}", object.id)
+            }
+            Action::DeclineGoblinMatronSearch { .. } => write!(f, "Decline Goblin Matron search"),
+            Action::FailToFindGoblinMatronCard { .. } => write!(f, "Goblin Matron finds no card"),
             Action::Equip { equipment_id, target_id } => {
                 write!(f, "Equip (obj {} -> obj {})", equipment_id, target_id)
             }
@@ -335,6 +349,10 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
         actions.extend(crate::rules::chittering::placement_actions(state));
         actions.push(Action::Concede);
         return actions;
+    }
+
+    if state.pending_matron_search.is_some() {
+        return crate::rules::matron::actions(state);
     }
 
     // ---- Pending tutor: controller must choose a card from their library ----

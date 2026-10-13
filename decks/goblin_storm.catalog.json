@@ -2209,14 +2209,14 @@
       "oracle_text": "When this creature enters, you may search your library for a Goblin card, reveal that card, put it into your hand, then shuffle.",
       "identity_source": "legacy Scryfall audit snapshot; corrected reviewed fields where noted",
       "support": {
-        "origin": "identity_only",
-        "status": "unsupported",
-        "blocking_capabilities": [
-          "library_permissions"
+        "origin": "authored",
+        "status": "supported",
+        "blocking_capabilities": [],
+        "reviewed_at": "2026-10-13",
+        "evidence": [
+          "tests/goblin_matron_2f3b2_test.rs"
         ],
-        "reviewed_at": null,
-        "evidence": [],
-        "behavior_fingerprint": null
+        "behavior_fingerprint": "fnv1a64:f9c41aa36587406e"
       }
     },
     {

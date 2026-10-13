@@ -132,6 +132,15 @@ pub enum GameEvent {
         object: ObjectId,
     },
 
+    /// A card was revealed to every player by an effect.
+    CardRevealed {
+        player: PlayerIndex,
+        object: ObjectId,
+    },
+
+    /// A player's library was shuffled by an effect.
+    LibraryShuffled { player: PlayerIndex },
+
     /// A turn started.
     TurnStarted {
         active_player: PlayerIndex,

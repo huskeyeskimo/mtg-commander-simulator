@@ -303,6 +303,10 @@ pub enum Effect {
         destination: ZoneType,
         subtype_filter: Vec<Subtype>,
     },
+    /// Goblin Matron's bounded optional Goblin search. This remains distinct
+    /// from the generic tutor effect because it owns a private selection,
+    /// reveal, shuffle, and possible Commander movement continuation.
+    GoblinMatronSearch,
     /// Bounce all nonland permanents opponents control (e.g., Cyclonic Rift overload).
     BounceAllNonlandOpponents,
     /// Put a card from a graveyard on top of its owner's library.

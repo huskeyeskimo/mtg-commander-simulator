@@ -227,7 +227,7 @@ fn cold_offline_exact_100_and_command_zone() {
             .iter()
             .filter(|card| { card.support.origin == deck_loader::DefinitionOrigin::IdentityOnly })
             .count(),
-        64
+        63
     );
     assert_eq!(result.mainboard.len(), 99);
     assert_eq!(result.setup_cards.len(), 100);

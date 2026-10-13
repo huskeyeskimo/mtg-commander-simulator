@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use crate::card::{CardDef, CardId, CardInstance, ObjectId, ZoneType};
+use crate::card::{CardDef, CardId, CardInstance, ExactObjectRef, ObjectId, ZoneType};
 
 // Re-export CardDatabase from its new home in card::database for backward compatibility.
 pub use crate::card::CardDatabase;
@@ -464,6 +464,13 @@ pub struct GameState {
     /// `ChooseTutorTarget` actions until this is resolved.
     pub pending_tutor: Option<PendingTutor>,
 
+    /// Bounded private search owned by Goblin Matron's resolving trigger.
+    pub pending_matron_search: Option<PendingMatronSearch>,
+
+    /// Exact hand incarnations that effects revealed to every player.
+    /// A stale incarnation grants no visibility after the card changes zones.
+    pub revealed_hand_cards: Vec<ExactObjectRef>,
+
     /// Extra turns queue (Phase 3A). When a player takes an extra turn,
     /// they're added to this queue. After the current turn's Cleanup,
     /// if this queue is non-empty, the next turn's active player is
@@ -762,6 +769,19 @@ pub struct PendingTutor {
     pub subtype_filter: Vec<crate::card::Subtype>,
 }
 
+/// Persistent bounded continuation for Goblin Matron's optional search.
+/// Eligible library contents are derived from authoritative state and are
+/// never persisted in this public operation record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingMatronSearch {
+    pub version: u32,
+    pub window: u64,
+    pub active_player: PlayerIndex,
+    pub controller: PlayerIndex,
+    pub resume_priority: PlayerIndex,
+    pub resolving_entry: Option<Box<StackEntry>>,
+}
+
 // CardDatabase has been moved to crate::card::database and is re-exported above.
 
 // ---------------------------------------------------------------------------
@@ -811,6 +831,8 @@ pub struct GameStateSnapshot {
     next_timestamp: u32,
     replacement_effects: Vec<ReplacementEffect>,
     pending_tutor: Option<PendingTutor>,
+    pending_matron_search: Option<PendingMatronSearch>,
+    revealed_hand_cards: Vec<ExactObjectRef>,
     extra_turns: VecDeque<PlayerIndex>,
     spells_cast_this_turn: u32,
     skip_phases: HashSet<Phase>,
@@ -917,6 +939,9 @@ pub struct PlayerView<'a> {
     // --- Tutor fields ---
     /// Whether there is a pending tutor choice for the viewing player.
     pub pending_tutor: Option<PendingTutor>,
+    /// Public fact that a Matron search decision is waiting: (version, chooser).
+    pub matron_search_wait: Option<(u32, PlayerIndex)>,
+    pub(crate) matron_entry: Option<&'a StackEntry>,
 
     // --- Object lookup (filtered, read-only) ---
     /// Card instances visible to the viewing player, keyed by ObjectId.
@@ -1027,6 +1052,15 @@ impl GameState {
                 visible.insert(id, inst);
             }
         }
+        for &exact in &self.revealed_hand_cards {
+            if self.exact_object(exact.id) == Some(exact)
+                && self.players.iter().any(|seat| seat.hand.contains(&exact.id))
+            {
+                if let Some(instance) = self.objects.get(&exact.id) {
+                    visible.insert(exact.id, instance);
+                }
+            }
+        }
         // Pending sources likewise grant no current-instance access. Their
         // owned contexts remain available through PlayerView.pending_triggers;
         // public-zone and own-hand membership provide all legitimate access.
@@ -1091,6 +1125,19 @@ impl GameState {
             }
         }
         visible_locations.extend(self.players[player].hand.iter().map(|&id| (id, ZoneType::Hand, player)));
+        for &exact in &self.revealed_hand_cards {
+            if self.exact_object(exact.id) == Some(exact) {
+                if let Some((seat, _)) = self.players.iter().enumerate()
+                    .find(|(_, player)| player.hand.contains(&exact.id))
+                {
+                    if !visible_locations.iter().any(|&(id, zone, owner)|
+                        id == exact.id && zone == ZoneType::Hand && owner == seat)
+                    {
+                        visible_locations.push((exact.id, ZoneType::Hand, seat));
+                    }
+                }
+            }
+        }
         for entry in &self.stack {
             if let Some(id) = entry.source.physical_object() { visible_locations.push((id, ZoneType::Stack, entry.controller)); }
         }
@@ -1167,9 +1214,11 @@ impl GameState {
             my_mulligan_count: self.players[player].mulligan_count,
 
             pending_tutor: self.pending_tutor.clone(),
+            matron_search_wait: crate::rules::matron::public_wait(self),
+            matron_entry: crate::rules::matron::resolving_entry(self),
 
             objects: visible,
-            state_encoding_failed: self.validate_commanders().is_err() || self.validate_commander_choices().is_err() || self.validate_movement_choices().is_err() || crate::rules::chittering::validate_structure(self).is_err() || crate::rules::reclamation::validate_structure(self).is_err() || self.validate_trigger_placement().is_err() || matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)),
+            state_encoding_failed: self.validate_commanders().is_err() || self.validate_commander_choices().is_err() || self.validate_movement_choices().is_err() || self.validate_revealed_hand_cards().is_err() || crate::rules::chittering::validate_structure(self).is_err() || crate::rules::matron::validate_structure(self).is_err() || crate::rules::reclamation::validate_structure(self).is_err() || self.validate_trigger_placement().is_err() || matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)),
             visible_locations,
             represented_characteristics,
             commander_objects,
@@ -1229,6 +1278,8 @@ impl GameState {
             next_timestamp: 1,
             replacement_effects: Vec::new(),
             pending_tutor: None,
+            pending_matron_search: None,
+            revealed_hand_cards: Vec::new(),
             extra_turns: VecDeque::new(),
             spells_cast_this_turn: 0,
             skip_phases: HashSet::new(),
@@ -1284,6 +1335,8 @@ impl GameState {
             next_timestamp: 1,
             replacement_effects: Vec::new(),
             pending_tutor: None,
+            pending_matron_search: None,
+            revealed_hand_cards: Vec::new(),
             extra_turns: VecDeque::new(),
             spells_cast_this_turn: 0,
             skip_phases: HashSet::new(),
@@ -1379,6 +1432,8 @@ impl GameState {
             next_timestamp: self.next_timestamp,
             replacement_effects: self.replacement_effects.clone(),
             pending_tutor: self.pending_tutor.clone(),
+            pending_matron_search: self.pending_matron_search.clone(),
+            revealed_hand_cards: self.revealed_hand_cards.clone(),
             extra_turns: self.extra_turns.clone(),
             spells_cast_this_turn: self.spells_cast_this_turn,
             skip_phases: self.skip_phases.clone(),
@@ -1420,7 +1475,10 @@ impl GameState {
         self.cleanup_needs_repeat = snap.cleanup_needs_repeat;
         self.cleanup_discard_in_progress = snap.cleanup_discard_in_progress;
         self.pending_copy_order = snap.pending_copy_order;
+        self.pending_matron_search = snap.pending_matron_search;
+        self.revealed_hand_cards = snap.revealed_hand_cards;
         self.trigger_placement_deferred = crate::rules::chittering::resolving_entry(self).is_some()
+            || crate::rules::matron::resolving_entry(self).is_some()
             || self.pending_movement.as_ref().is_some_and(|op| op.resolution_owned
                 || crate::rules::movement_choice::private_draw_operation(op));
         self.effect_terminal_position = None;
@@ -1439,7 +1497,12 @@ impl GameState {
         self.pending_events.clear();
         self.invalidate_characteristics_cache();
 
-        if self.validate_commanders().is_err() || self.validate_commander_choices().is_err() || self.validate_movement_choices().is_err() || crate::rules::chittering::validate_structure(self).is_err() || crate::rules::reclamation::validate_structure(self).is_err() || self.validate_trigger_placement().is_err() {
+        if self.validate_commanders().is_err() || self.validate_commander_choices().is_err()
+            || self.validate_movement_choices().is_err() || self.validate_revealed_hand_cards().is_err()
+            || crate::rules::chittering::validate_structure(self).is_err()
+            || crate::rules::matron::validate_structure(self).is_err()
+            || crate::rules::reclamation::validate_structure(self).is_err()
+            || self.validate_trigger_placement().is_err() {
             self.sba_failure = Some(crate::rules::sba::PreparedPassFailure::StateEncoding);
             return Err(crate::card::AttachmentError::Source);
         }
@@ -2238,7 +2301,9 @@ impl GameState {
         crate::rules::chittering::public_wait(self).is_some_and(|(_, _, owner)| owner != viewer)
     }
 
-    pub fn movement_or_hand_pending(&self) -> bool { self.pending_movement.is_some() || self.pending_chittering.is_some() }
+    pub fn movement_or_hand_pending(&self) -> bool {
+        self.pending_movement.is_some() || self.pending_chittering.is_some() || self.pending_matron_search.is_some()
+    }
 
     pub(crate) fn resolving_entry(&self) -> Option<&StackEntry> {
         self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry)
@@ -2317,6 +2382,24 @@ mod player_view_zone_visibility_tests {
 }
 
 impl GameState {
+    pub fn validate_revealed_hand_cards(&self) -> Result<(), &'static str> {
+        let mut seen = std::collections::HashSet::new();
+        for &exact in &self.revealed_hand_cards {
+            if !seen.insert(exact) { return Err("duplicate revealed hand incarnation"); }
+            let instance = self.objects.get(&exact.id).ok_or("missing revealed hand object")?;
+            if exact.generation > instance.zone_change_count {
+                return Err("future revealed hand incarnation");
+            }
+            if exact.generation == instance.zone_change_count
+                && (!self.players.iter().any(|player| player.hand.contains(&exact.id))
+                    || instance.is_token)
+            {
+                return Err("current revealed incarnation is not a hand card");
+            }
+        }
+        Ok(())
+    }
+
     /// Validate authoritative placement ownership before actions or observations.
     pub fn validate_trigger_placement(&self) -> Result<(), crate::simulation::TerminationReason> {
         use crate::simulation::TerminationReason::StateEncoding;
@@ -2381,11 +2464,11 @@ fn deserialize_trigger_placement<'de, D: serde::Deserializer<'de>>(d: D) -> Resu
 
 // The leading tag rejects historical positional bincode before interpreting any
 // changed layout. JSON must carry the same explicit version.
-const GAME_STATE_FORMAT: u32 = 0x3246_3344;
+const GAME_STATE_FORMAT: u32 = 0x3246_3345;
 fn deserialize_game_state_format<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let version = u32::deserialize(d)?;
     if version != GAME_STATE_FORMAT { return Err(serde::de::Error::custom("incompatible GameState Commander format")); }
     Ok(version)
 }
 
-impl PlayerView<'_> { pub(crate) fn resolving_entry(&self) -> Option<&StackEntry> { self.pending_copy_order.and_then(|op| op.resolving_entry()).or_else(|| self.pending_movement.and_then(|op| op.resolving_entry.as_deref())).or(self.chittering_entry).or(self.draw_wait_entry) } }
+impl PlayerView<'_> { pub(crate) fn resolving_entry(&self) -> Option<&StackEntry> { self.pending_copy_order.and_then(|op| op.resolving_entry()).or_else(|| self.pending_movement.and_then(|op| op.resolving_entry.as_deref())).or(self.matron_entry).or(self.chittering_entry).or(self.draw_wait_entry) } }
