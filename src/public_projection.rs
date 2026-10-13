@@ -12,7 +12,7 @@ use crate::card::{ExactObjectRef, ObjectId, ZoneType};
 use crate::game::{GameState, PlayerView, StackSource, Target, TriggerContext};
 use crate::simulation::TerminationReason;
 
-pub const PROJECTION_SCHEMA: u16 = 7;
+pub const PROJECTION_SCHEMA: u16 = 8;
 type EncodingResult<T> = Result<T, TerminationReason>;
 
 pub fn encode<T: Serialize>(value: &T) -> EncodingResult<Vec<u8>> {
@@ -1848,7 +1848,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
         }
         if let Some(op) = self.view.pending_movement {
             let operation = self.graph.vertex(VertexKind::StackOrOperation,
-                &(6u8, op.active_player, op.instruction_controller, op.resume_priority, &op.instruction, &op.envelope, op.instruction_index, &op.shuffle_owners))?;
+                &(6u8, op.active_player, op.instruction_controller, op.resume_priority, &op.instruction, &op.envelope, op.instruction_index, &op.shuffle_owners, op.draws_remaining, op.draw_start_library_count, op.turn_draw, op.draw_resume_deferred))?;
             for candidate in &op.catalog {
                 let vertex = self.movement_candidate(candidate)?;
                 self.movement_candidate_vertices.insert(candidate.clone(), vertex);
@@ -2095,9 +2095,11 @@ impl<'v, 'a> Inventory<'v, 'a> {
                 }
             }
         }
-        if let Some(operation) = self.view.pending_movement.filter(|op| !crate::rules::chittering::private_operation(op)) {
-            let record = self.graph.vertex(VertexKind::StackOrOperation, &(9u8, operation.instruction_controller))?;
-            if let Some(entry) = operation.resolving_entry.as_deref() {
+        if let Some(controller) = self.view.pending_movement.filter(|op| !crate::rules::chittering::private_operation(op))
+            .map(|op| op.instruction_controller).or(self.view.draw_wait_controller) {
+            let record = self.graph.vertex(VertexKind::StackOrOperation, &(9u8, controller))?;
+            if let Some(entry) = self.view.pending_movement.and_then(|op| op.resolving_entry.as_deref())
+                .or(self.view.draw_wait_entry) {
                 let source_facts = match &entry.source {
                     StackSource::Spell(_) => encode(&(0u8,))?,
                     StackSource::ActivatedAbility { ability_index, .. } => {

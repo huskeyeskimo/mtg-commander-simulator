@@ -901,6 +901,8 @@ pub struct PlayerView<'a> {
     pub commanders: Vec<PublicCommander>,
     pub pending_commander_sba: Option<PublicCommanderSbaChoice>,
     pub(crate) pending_movement: Option<&'a PendingMovement>,
+    pub(crate) draw_wait_entry: Option<&'a StackEntry>,
+    pub(crate) draw_wait_controller: Option<PlayerIndex>,
     pub(crate) pending_chittering: Option<&'a PendingChittering>,
     /// Identical public waiting facts across every private resolution prefix.
     pub chittering_wait: Option<(u32, PlayerIndex, PlayerIndex)>,
@@ -1146,7 +1148,17 @@ impl GameState {
             commanders: self.public_commanders(),
             pending_commander_sba: self.pending_commander_sba.as_ref().map(PublicCommanderSbaChoice::from),
             pending_movement: self.pending_movement.as_ref().filter(|op|
-                !crate::rules::chittering::private_operation(op) || op.chooser(self.players.len()) == Some(player)),
+                (!crate::rules::chittering::private_operation(op)
+                    && !crate::rules::movement_choice::private_draw_operation(op))
+                    || op.chooser(self.players.len()) == Some(player)),
+            draw_wait_entry: self.pending_movement.as_ref().filter(|op|
+                crate::rules::movement_choice::private_draw_operation(op)
+                    && op.chooser(self.players.len()) != Some(player))
+                .and_then(|op| op.resolving_entry.as_deref()),
+            draw_wait_controller: self.pending_movement.as_ref().filter(|op|
+                crate::rules::movement_choice::private_draw_operation(op)
+                    && op.chooser(self.players.len()) != Some(player))
+                .map(|op| op.instruction_controller),
             pending_chittering: self.pending_chittering.as_ref().filter(|op| op.opponent == player),
             chittering_wait: crate::rules::chittering::public_wait(self),
             chittering_entry: crate::rules::chittering::resolving_entry(self),
@@ -1408,7 +1420,9 @@ impl GameState {
         self.cleanup_needs_repeat = snap.cleanup_needs_repeat;
         self.cleanup_discard_in_progress = snap.cleanup_discard_in_progress;
         self.pending_copy_order = snap.pending_copy_order;
-        self.trigger_placement_deferred = crate::rules::chittering::resolving_entry(self).is_some();
+        self.trigger_placement_deferred = crate::rules::chittering::resolving_entry(self).is_some()
+            || self.pending_movement.as_ref().is_some_and(|op| op.resolution_owned
+                || crate::rules::movement_choice::private_draw_operation(op));
         self.effect_terminal_position = None;
         self.continuous_effects = snap.continuous_effects;
         self.next_timestamp = snap.next_timestamp;
@@ -2367,11 +2381,11 @@ fn deserialize_trigger_placement<'de, D: serde::Deserializer<'de>>(d: D) -> Resu
 
 // The leading tag rejects historical positional bincode before interpreting any
 // changed layout. JSON must carry the same explicit version.
-const GAME_STATE_FORMAT: u32 = 0x3246_3343;
+const GAME_STATE_FORMAT: u32 = 0x3246_3344;
 fn deserialize_game_state_format<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let version = u32::deserialize(d)?;
     if version != GAME_STATE_FORMAT { return Err(serde::de::Error::custom("incompatible GameState Commander format")); }
     Ok(version)
 }
 
-impl PlayerView<'_> { pub(crate) fn resolving_entry(&self) -> Option<&StackEntry> { self.pending_copy_order.and_then(|op| op.resolving_entry()).or_else(|| self.pending_movement.and_then(|op| op.resolving_entry.as_deref())).or(self.chittering_entry) } }
+impl PlayerView<'_> { pub(crate) fn resolving_entry(&self) -> Option<&StackEntry> { self.pending_copy_order.and_then(|op| op.resolving_entry()).or_else(|| self.pending_movement.and_then(|op| op.resolving_entry.as_deref())).or(self.chittering_entry).or(self.draw_wait_entry) } }

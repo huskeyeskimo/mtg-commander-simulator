@@ -12,6 +12,69 @@ pub(crate) fn movement_leaf(effect: &Effect) -> bool {
         | Effect::ReturnLinkedExileToHand | Effect::DestroyTarget { .. } | Effect::DestroyAll
         | Effect::SacrificeCreatures { .. } | Effect::EachOpponentSacrifices { .. })
 }
+fn draw_leaf(effect: &Effect) -> bool { matches!(effect, Effect::DrawCards { .. }) }
+pub(crate) fn private_draw_operation(op: &PendingMovement) -> bool {
+    matches!(op.instruction, BoundedMovementInstruction::Draw { .. })
+}
+fn draw_envelope(effect: &Effect) -> bool {
+    match effect {
+        Effect::DrawCards { .. } => true,
+        Effect::Multiple(children) => !children.is_empty() &&
+            (children.iter().all(draw_leaf) || matches!(children.as_slice(),
+                [Effect::GainKeywordUntilEOT { keyword: KeywordAbility::Haste,
+                    target: crate::card::TargetSpec::AnyCreature }, Effect::DrawCards { .. }])),
+        _ => false,
+    }
+}
+pub(crate) fn preflight_draw_envelope(state: &GameState, effect: &Effect, controller: PlayerIndex)
+    -> Result<(), TransitionError> {
+    if !draw_envelope(effect) { return Ok(()); }
+    let total = match effect {
+        Effect::DrawCards { count } => *count as usize,
+        Effect::Multiple(children) => children.iter().filter_map(|e| match e {
+            Effect::DrawCards { count } => Some(*count as usize), _ => None,
+        }).try_fold(0usize, |sum, count| sum.checked_add(count).ok_or(TransitionError::CapacityExhausted))?,
+        _ => 0,
+    };
+    preflight_draw_sequence(state, controller, total)
+}
+pub(crate) fn preflight_draw_sequence(state: &GameState, player: PlayerIndex, count: usize)
+    -> Result<(), TransitionError> {
+    let library = state.players.get(player).ok_or(TransitionError::InvalidPlayer(0))?;
+    let commanders: Vec<_> = library.library.iter().filter(|id| state.is_card(**id)).take(count)
+        .filter(|id| state.is_commander(**id)).copied().collect();
+    if commanders.is_empty() { return Ok(()); }
+    state.card_db.as_ref().ok_or(TransitionError::MissingDatabase)?;
+    state.validate_commanders().map_err(|_| TransitionError::UnsupportedPath)?;
+    if state.replacement_effects.iter().any(|e| matches!(e.applies_to,
+        ReplacementEventKind::WouldMoveTo { .. } | ReplacementEventKind::CardDraw))
+        || [crate::layers::StaticAbility::RenfieldDrawReplacement,
+            crate::layers::StaticAbility::AbundanceReplacement,
+            crate::layers::StaticAbility::PhialDrawDoubler].iter()
+            .any(|ability| super::has_static_ability_on_battlefield(state, player, ability)) {
+        return Err(TransitionError::UnsupportedPath);
+    }
+    let candidates = u64::try_from(commanders.len()).map_err(|_| TransitionError::CapacityExhausted)?;
+    state.next_movement_window.checked_add(candidates).ok_or(TransitionError::CapacityExhausted)?;
+    state.next_zone_event_group_id.checked_add(candidates).ok_or(TransitionError::CapacityExhausted)?;
+    for id in commanders {
+        let instance = state.objects.get(&id).ok_or(TransitionError::MissingObject(id))?;
+        if instance.owner != player || instance.zone_change_count == u32::MAX
+            || state.card_db().get(instance.card_def_id).is_none() {
+            return Err(TransitionError::UnsupportedPath);
+        }
+    }
+    Ok(())
+}
+fn contains_draw(effect: &Effect) -> bool {
+    match effect {
+        Effect::DrawCards { .. } => true,
+        Effect::Multiple(children) | Effect::Modal { choices: children, .. } => children.iter().any(contains_draw),
+        Effect::Conditional { if_true, if_false, .. } => contains_draw(if_true) || if_false.as_ref().is_some_and(|e| contains_draw(e)),
+        Effect::ForEach { effect, .. } => contains_draw(effect),
+        _ => false,
+    }
+}
 fn synchronous(effect: &Effect) -> bool {
     matches!(effect, Effect::GainLife { .. } | Effect::LoseLife { .. }
         | Effect::AddMana { .. } | Effect::UntapTarget { .. })
@@ -40,6 +103,20 @@ pub(crate) fn admission(state: &GameState, effect: &Effect) -> Result<bool, Tran
     let relevant = !state.commanders.is_empty() || state.replacement_effects.iter()
         .any(|e| matches!(e.applies_to, ReplacementEventKind::WouldMoveTo { .. }));
     if !relevant && !super::reclamation::uses_selector(effect) { return Ok(false); }
+    if contains_draw(effect) && state.players.iter().any(|player|
+        player.library.iter().any(|id| state.is_commander(*id))) {
+        if !draw_envelope(effect) { return Err(TransitionError::UnsupportedPath); }
+        if state.card_db.is_none() || state.validate_commanders().is_err()
+            || state.replacement_effects.iter().any(|e| matches!(e.applies_to,
+                ReplacementEventKind::WouldMoveTo { .. } | ReplacementEventKind::CardDraw))
+            || state.players.iter().enumerate().any(|(player, p)| p.library.iter().any(|id| state.is_commander(*id))
+                && (super::has_static_ability_on_battlefield(state, player, &crate::layers::StaticAbility::RenfieldDrawReplacement)
+                    || super::has_static_ability_on_battlefield(state, player, &crate::layers::StaticAbility::AbundanceReplacement)
+                    || super::has_static_ability_on_battlefield(state, player, &crate::layers::StaticAbility::PhialDrawDoubler))) {
+            return Err(TransitionError::UnsupportedPath);
+        }
+        return Ok(true);
+    }
     if synchronous_destroy_draw(state, effect) {
         validate_synchronous_destroy_draw(state)?;
         return Ok(false);
@@ -195,7 +272,14 @@ pub(crate) fn execute(state: &mut GameState, effects: Vec<BoundedMovementInstruc
     for index in start_index..effects.len() {
         let instruction = &effects[index];
         let effect = instruction.effect();
-        if movement_leaf(&effect) {
+        if let Effect::DrawCards { count } = effect {
+            execute_draws(state, count, &effects, index, controller, targets, generations, source, false);
+            return;
+        } else if matches!(instruction, BoundedMovementInstruction::ExpediteHaste) {
+            super::effects::resolve_synchronous_movement_companion(state, &effect, controller, targets, generations, source);
+            if state.gameplay_stopped() { return; }
+            previous_completed = true;
+        } else if movement_leaf(&effect) {
             match prepare_operation(state, &effect, controller, targets, generations, source, true, previous_completed) {
                 Ok(mut op) => {
                     let Some(next_window) = state.next_movement_window.checked_add(1) else { super::aura::record_entry_failure(state, TransitionError::CapacityExhausted); return; };
@@ -221,6 +305,67 @@ pub(crate) fn execute(state: &mut GameState, effects: Vec<BoundedMovementInstruc
             if state.gameplay_stopped() { return; }
             previous_completed = true;
         }
+    }
+}
+
+pub(crate) fn begin_direct_draw(state: &mut GameState, player: PlayerIndex, count: u32, turn_draw: bool) {
+    if let Err(error) = preflight_draw_sequence(state, player, count as usize) {
+        super::aura::record_entry_failure(state, error); return;
+    }
+    let prior_deferred = state.trigger_placement_deferred;
+    let choice_expected = state.players[player].library.iter().filter(|id| state.is_card(**id))
+        .take(count as usize).any(|id| state.is_commander(*id));
+    if choice_expected && !turn_draw { state.trigger_placement_deferred = true; }
+    let envelope = vec![BoundedMovementInstruction::Draw { count }];
+    execute_draws(state, count, &envelope, 0, player, &[], &[], None, turn_draw);
+    if choice_expected && !turn_draw {
+        if let Some(pending) = state.pending_movement.as_mut() {
+            pending.draw_resume_deferred = prior_deferred;
+        } else {
+            state.trigger_placement_deferred = prior_deferred;
+        }
+    }
+}
+
+fn execute_draws(state: &mut GameState, count: u32, envelope: &[BoundedMovementInstruction], index: usize,
+    controller: PlayerIndex, targets: &[Target], generations: &[Option<u32>], source: Option<ObjectId>, turn_draw: bool) {
+    for completed in 0..count {
+        if state.gameplay_stopped() { return; }
+        let top = state.first_library_card(controller).map(|i| state.players[controller].library[i]);
+        if let Some(id) = top.filter(|id| state.is_commander(*id)) {
+            let effect = envelope[index].effect();
+            let mut op = match prepare_operation(state, &effect, controller, targets, generations, source, true, false) {
+                Ok(op) => op, Err(error) => { super::aura::record_entry_failure(state, error); return; }
+            };
+            if op.proposals.len() != 1 || op.proposals[0].request.object.id != id {
+                super::aura::record_entry_failure(state, TransitionError::UnsupportedPath); return;
+            }
+            let Some(window) = state.next_movement_window.checked_add(1) else {
+                super::aura::record_entry_failure(state, TransitionError::CapacityExhausted); return;
+            };
+            op.envelope = envelope.to_vec(); op.instruction_index = index;
+            op.instruction = envelope[index].clone(); op.draws_remaining = count - completed - 1;
+            let BoundedMovementInstruction::Draw { count: original_count } = &op.instruction else { unreachable!() };
+            let completed_in_instruction = *original_count - op.draws_remaining - 1;
+            op.draw_start_library_count = state.card_count(&state.players[controller].library)
+                + completed_in_instruction as usize;
+            op.turn_draw = turn_draw;
+            normalize(&mut op, state.players.len());
+            let Some(chooser) = op.chooser(state.players.len()) else {
+                super::aura::record_entry_failure(state, TransitionError::UnsupportedPath); return;
+            };
+            state.priority_player = chooser;
+            state.pending_movement = Some(op);
+            state.next_movement_window = window;
+            return;
+        }
+        // Existing ordinary and failed-draw behavior remains authoritative for
+        // each non-Commander individual draw.
+        super::draw_cards(state, controller, 1);
+        if state.sba_failure.is_some() { return; }
+    }
+    if !turn_draw {
+        execute(state, envelope.to_vec(), controller, targets, generations, source, true, index + 1);
     }
 }
 
@@ -291,6 +436,12 @@ pub(crate) fn prepare_operation(state: &GameState, effect: &Effect, controller: 
                     ZoneType::Battlefield, ZoneType::Graveyard, MovementKind::Sacrifice { player })); }
             }
         }
+        Effect::DrawCards { .. } => {
+            let index = state.first_library_card(controller).ok_or(TransitionError::UnsupportedPath)?;
+            let id = state.players[controller].library[index];
+            selected.push((state.exact_object(id).ok_or(TransitionError::MissingObject(id))?,
+                ZoneType::Library, ZoneType::Hand, MovementKind::Draw { player: controller }));
+        }
         _ => return Err(TransitionError::UnsupportedPath),
     }
     let mut shuffle_owners: Vec<_> = if placement == LibraryPlacement::Shuffle {
@@ -323,11 +474,13 @@ pub(crate) fn prepare_operation(state: &GameState, effect: &Effect, controller: 
         resume_priority: state.priority_player, proposals: requests, catalog: catalog(state, contains_death(effect))?, history: Vec::new(),
         library_order: Vec::new(), shuffle_owners, envelope: vec![BoundedMovementInstruction::from_effect(effect).ok_or(TransitionError::UnsupportedPath)?], instruction_index: 0, targets: targets.to_vec(), target_generations: generations.to_vec(),
         source, instruction: BoundedMovementInstruction::from_effect(effect).ok_or(TransitionError::UnsupportedPath)?,
-        resolving_entry: None, resolving_source: None, resolution_owned: false };
+        resolving_entry: None, resolving_source: None, resolution_owned: false, draws_remaining: 0,
+        draw_start_library_count: 0, turn_draw: false, draw_resume_deferred: false };
     // Nominal movement capacity and generation are checked before any offer.
     if preflight {
         let requests: Vec<_> = op.proposals.iter().map(|p| p.request).collect();
         if *effect == Effect::ChitteringRats { transitions::preflight_chittering_batch(state, &requests)?; }
+        else if matches!(effect, Effect::DrawCards { .. }) { transitions::preflight_draw_batch(state, &requests)?; }
         else { transitions::preflight_movement_batch(state, &requests)?; }
     }
     Ok(op)
@@ -438,12 +591,34 @@ pub(crate) fn choose(state: &mut GameState, action: &Action) -> bool {
     if commit(state, &next).is_err() { return false; }
     state.pending_movement = None;
     state.priority_player = next.resume_priority;
-    execute(state, next.envelope, next.instruction_controller, &next.targets, &next.target_generations, next.source, true, next.instruction_index + 1);
-    if let Some(pending) = state.pending_movement.as_mut() { pending.resolving_entry = next.resolving_entry; pending.resolving_source = next.resolving_source; pending.resolution_owned = next.resolution_owned; }
+    let draw = matches!(next.instruction, BoundedMovementInstruction::Draw { .. });
+    if draw && next.proposals[0].proposed == ZoneType::Hand {
+        super::triggers::fire_card_draw_triggers(state, next.instruction_controller);
+    }
+    if draw {
+        execute_draws(state, next.draws_remaining, &next.envelope, next.instruction_index,
+            next.instruction_controller, &next.targets, &next.target_generations, next.source, next.turn_draw);
+    } else {
+        execute(state, next.envelope.clone(), next.instruction_controller, &next.targets, &next.target_generations, next.source, true, next.instruction_index + 1);
+    }
+    if let Some(pending) = state.pending_movement.as_mut() {
+        pending.resolving_entry = next.resolving_entry;
+        pending.resolving_source = next.resolving_source;
+        pending.resolution_owned = next.resolution_owned;
+        pending.draw_resume_deferred = next.draw_resume_deferred;
+    }
     else if state.gameplay_stopped() {
         if let Some(entry) = next.resolving_entry { super::resolution::retain_failed_movement_entry(state, *entry); }
     } else {
         if let Some(entry) = next.resolving_entry { super::resolution::finish_deferred_resolution(state, &entry); super::complete_stack_resolution(state); }
+        else if next.turn_draw && draw { super::phases::finish_turn_draw(state, next.draw_resume_deferred); }
+        else if draw {
+            state.trigger_placement_deferred = next.draw_resume_deferred;
+            super::sba::check_state_based_actions(state);
+            if !state.gameplay_stopped() && state.pending_commander_sba.is_none() {
+                let _ = super::triggers::flush_triggers(state);
+            }
+        }
     }
     true
 }
@@ -465,6 +640,8 @@ fn commit_with_rng<R: rand::Rng + ?Sized>(state: &mut GameState, op: &PendingMov
         if super::chittering::private_operation(op) {
             super::chittering::validate_child(state, op).map_err(|_| TransitionError::UnsupportedPath)?;
             transitions::chittering_batch(state, &requests, op)?;
+        } else if matches!(op.instruction, BoundedMovementInstruction::Draw { .. }) {
+            transitions::draw_batch(state, &requests)?;
         } else { transitions::movement_batch(state, &requests)?; }
     }
     if matches!(op.instruction, BoundedMovementInstruction::LinkedHand) {
@@ -508,6 +685,32 @@ fn prepare_library_completion(op: &PendingMovement) -> Result<Vec<(usize, Librar
 
 pub(crate) fn validate_operation(state: &GameState, op: &PendingMovement) -> Result<(), &'static str> {
     if super::chittering::private_operation(op) { super::chittering::validate_child(state, op)?; }
+    let drawing = matches!(op.instruction, BoundedMovementInstruction::Draw { .. });
+    if drawing {
+        let BoundedMovementInstruction::Draw { count } = &op.instruction else { unreachable!() };
+        if !state.trigger_placement_deferred || op.instruction_controller >= state.players.len()
+            || *count == 0 || op.draws_remaining >= *count || op.proposals.len() != 1
+            || Some(op.draw_start_library_count) != state.card_count(&state.players[op.instruction_controller].library)
+                .checked_add((*count - op.draws_remaining - 1) as usize)
+            || !op.catalog.is_empty() || !op.shuffle_owners.is_empty() || !op.library_order.is_empty()
+            || op.proposals[0].owner != op.instruction_controller
+            || op.proposals[0].commander.is_none()
+            || op.proposals[0].request.object.id != state.first_library_card(op.instruction_controller)
+                .and_then(|i| state.players[op.instruction_controller].library.get(i).copied()).unwrap_or(0)
+            || op.turn_draw && (op.resolution_owned || op.resolving_entry.is_some()
+                || op.source.is_some() || !op.targets.is_empty() || !op.target_generations.is_empty()
+                || op.instruction_controller != state.active_player || state.phase != crate::game::Phase::Draw
+                || op.envelope.as_slice() != [BoundedMovementInstruction::Draw { count: 1 }]
+                || op.draws_remaining != 0)
+            || op.resolution_owned && op.draw_resume_deferred
+            || !op.turn_draw && op.resolving_entry.is_none() &&
+                (op.envelope.as_slice() != [op.instruction.clone()] || op.source.is_some()
+                    || !op.targets.is_empty() || !op.target_generations.is_empty()) {
+            return Err("invalid pending draw continuation");
+        }
+    } else if op.draws_remaining != 0 || op.draw_start_library_count != 0 || op.turn_draw || op.draw_resume_deferred {
+        return Err("draw continuation on movement operation");
+    }
     if op.window >= state.next_movement_window || op.version != 1 || op.active_player != state.active_player || op.active_player >= state.players.len()
         || op.shuffle_owners.iter().any(|owner| *owner >= state.players.len())
         || op.shuffle_owners.windows(2).any(|pair| pair[0] >= pair[1])
@@ -524,7 +727,13 @@ pub(crate) fn validate_operation(state: &GameState, op: &PendingMovement) -> Res
             || entry.source.physical_object() != op.resolving_source.map(|s| s.id))
         || op.resolving_source.is_some_and(|source| state.exact_object(source.id) != Some(source))
         || op.envelope.get(op.instruction_index) != Some(&op.instruction)
-        || op.envelope.iter().any(|e| !movement_leaf(&e.effect()) && !synchronous(&e.effect())) { return Err("invalid movement operation structure"); }
+        || op.envelope.iter().any(|e| !movement_leaf(&e.effect()) && !synchronous(&e.effect())
+            && !matches!(e, BoundedMovementInstruction::Draw { .. } | BoundedMovementInstruction::ExpediteHaste))
+        || {
+            let envelope_effect = if op.envelope.len() == 1 { op.envelope[0].effect() }
+                else { Effect::Multiple(op.envelope.iter().map(|e| e.effect()).collect()) };
+            contains_draw(&envelope_effect) && !draw_envelope(&envelope_effect)
+        } { return Err("invalid movement operation structure"); }
     if state.card_db.is_some() {
         if let Some(entry) = &op.resolving_entry {
             let effect = match &entry.source {
@@ -550,12 +759,14 @@ pub(crate) fn validate_operation(state: &GameState, op: &PendingMovement) -> Res
         BoundedMovementInstruction::LinkedHand => (ZoneType::Exile, ZoneType::Hand, 0),
         BoundedMovementInstruction::Destroy { .. } | BoundedMovementInstruction::DestroyAll => (ZoneType::Battlefield, ZoneType::Graveyard, 1),
         BoundedMovementInstruction::Sacrifice { .. } | BoundedMovementInstruction::OpponentSacrifice { .. } => (ZoneType::Battlefield, ZoneType::Graveyard, 2),
+        BoundedMovementInstruction::Draw { .. } => (ZoneType::Library, ZoneType::Hand, 3),
         _ => return Err("invalid reached movement instruction"),
     };
     let mut seen = std::collections::HashSet::new();
     for p in &op.proposals {
         if p.request.from != expected.0 || p.request.to != expected.1
             || !matches!((expected.2, p.request.kind), (0, MovementKind::Put) | (1, MovementKind::Destroy) | (2, MovementKind::Sacrifice { .. }))
+                && !(expected.2 == 3 && p.request.kind == MovementKind::Draw { player: op.instruction_controller })
             || !seen.insert(p.request.object.id) || !resident(state, p.request.object, p.request.from)
             || state.objects[&p.request.object.id].owner != p.owner
             || state.objects[&p.request.object.id].is_token != p.is_token
@@ -685,5 +896,24 @@ mod bounded_shuffle_tests {
         commit_with_rng(&mut state, &operation, &mut StdRng::seed_from_u64(0x9039_b)).unwrap();
         assert_eq!(state.players[0].library, expected); assert!(state.players[0].hand.contains(&target));
         assert_eq!(state.next_zone_event_group_id, group);
+    }
+
+    #[test]
+    fn direct_draw_restores_its_caller_trigger_deferral() {
+        let mut state = GameState::new_commander(2);
+        let mut db = CardDatabase::new();
+        db.insert(CardDef { id: 998_399, card_types: vec![CardType::Creature],
+            power: Some(1), toughness: Some(1), ..Default::default() });
+        state.card_db = Some(std::sync::Arc::new(db));
+        let commander = state.create_card_in_zone(998_399, 0, ZoneType::Library).unwrap();
+        state.designate_commander(commander, 0).unwrap();
+        state.trigger_placement_deferred = true;
+        begin_direct_draw(&mut state, 0, 1, false);
+        assert!(state.pending_movement.as_ref().is_some_and(|op| op.draw_resume_deferred));
+        let answer = actions(&state).into_iter().find(|action| matches!(action,
+            Action::ChooseCommanderMovement { to_command: false, .. })).unwrap();
+        assert!(choose(&mut state, &answer));
+        assert!(state.players[0].hand.contains(&commander));
+        assert!(state.trigger_placement_deferred);
     }
 }

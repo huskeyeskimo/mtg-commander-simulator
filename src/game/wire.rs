@@ -106,7 +106,11 @@ struct GameStateWire {
 impl<'de> Deserialize<'de> for GameState {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut state = GameStateWire::deserialize(deserializer)?;
-        if crate::rules::chittering::resolving_entry(&state).is_some() { state.trigger_placement_deferred = true; }
+        if crate::rules::chittering::resolving_entry(&state).is_some()
+            || state.pending_movement.as_ref().is_some_and(|op| op.resolution_owned
+                || crate::rules::movement_choice::private_draw_operation(op)) {
+            state.trigger_placement_deferred = true;
+        }
         state.validate_commanders().map_err(serde::de::Error::custom)?;
         state.validate_commander_choices().map_err(serde::de::Error::custom)?;
         state.validate_movement_choices().map_err(serde::de::Error::custom)?;

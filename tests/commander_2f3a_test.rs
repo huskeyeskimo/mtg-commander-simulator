@@ -716,13 +716,15 @@ fn exhausted_operation_window_rejects_before_offers_and_owner_reply() {
 }
 
 #[test]
-fn unsupported_direct_draw_and_tutor_reject_before_mutation() {
+fn direct_draw_uses_owner_choice_and_tutor_still_rejects_before_mutation() {
     let (mut s, commander) = fixture(Effect::GainLife { amount: 0 });
     s.move_object(commander, ZoneType::Battlefield, ZoneType::Library); s.drain_events();
     let library = s.players[0].library.clone(); let generation = s.objects[&commander].zone_change_count;
     rules::draw_cards(&mut s, 0, 1);
-    assert!(s.gameplay_stopped()); assert_eq!(s.players[0].library, library); assert!(s.players[0].hand.is_empty());
+    assert!(!s.gameplay_stopped()); assert!(s.pending_movement.is_some()); assert_eq!(s.players[0].library, library); assert!(s.players[0].hand.is_empty());
     assert_eq!(s.objects[&commander].zone_change_count, generation); assert!(s.drain_events().is_empty());
+    commander_answer(&mut s, false);
+    assert!(s.pending_movement.is_none()); assert!(s.players[0].hand.contains(&commander));
     let (mut tutor, commander) = fixture(Effect::GainLife { amount: 0 });
     tutor.move_object(commander, ZoneType::Battlefield, ZoneType::Library); tutor.drain_events();
     tutor.priority_player = 0;

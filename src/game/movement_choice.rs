@@ -22,6 +22,8 @@ pub enum BoundedMovementInstruction {
     GainLife { amount: u32 }, LoseLife { amount: u32, target: crate::card::TargetSpec },
     AddMana { color: Option<crate::mana::Color>, amount: u32 }, Untap { target: crate::card::TargetSpec },
     ChitteringHandTop,
+    Draw { count: u32 },
+    ExpediteHaste,
 }
 impl BoundedMovementInstruction {
     pub(crate) fn from_effect(effect: &Effect) -> Option<Self> {
@@ -42,6 +44,9 @@ impl BoundedMovementInstruction {
             Effect::LoseLife { amount, target } => Self::LoseLife { amount: *amount, target: target.clone() },
             Effect::AddMana { color, amount } => Self::AddMana { color: *color, amount: *amount },
             Effect::UntapTarget { target } => Self::Untap { target: target.clone() },
+            Effect::DrawCards { count } => Self::Draw { count: *count },
+            Effect::GainKeywordUntilEOT { keyword: crate::card::KeywordAbility::Haste,
+                target: crate::card::TargetSpec::AnyCreature } => Self::ExpediteHaste,
             _ => return None,
         })
     }
@@ -63,6 +68,9 @@ impl BoundedMovementInstruction {
             Self::LoseLife { amount, target } => Effect::LoseLife { amount: *amount, target: target.clone() },
             Self::AddMana { color, amount } => Effect::AddMana { color: *color, amount: *amount },
             Self::Untap { target } => Effect::UntapTarget { target: target.clone() },
+            Self::Draw { count } => Effect::DrawCards { count: *count },
+            Self::ExpediteHaste => Effect::GainKeywordUntilEOT {
+                keyword: crate::card::KeywordAbility::Haste, target: crate::card::TargetSpec::AnyCreature },
         }
     }
 }
@@ -117,6 +125,14 @@ pub struct PendingMovement {
     pub resolving_entry: Option<Box<StackEntry>>,
     pub resolving_source: Option<ExactObjectRef>,
     pub resolution_owned: bool,
+    /// Number of individual draws left after the proposed current draw.
+    pub draws_remaining: u32,
+    /// Drawable library cards at the start of this Draw instruction.
+    pub draw_start_library_count: usize,
+    /// A draw-step action has no resolving stack entry but still owes settlement.
+    pub turn_draw: bool,
+    /// Original trigger-placement deferral for a draw caller.
+    pub draw_resume_deferred: bool,
 }
 impl PendingMovement {
     pub fn candidates(&self, p: &MovementProposal) -> Vec<MovementReplacementCandidate> {

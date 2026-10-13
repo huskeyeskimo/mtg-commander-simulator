@@ -1301,9 +1301,8 @@ fn has_static_ability_on_battlefield(
 /// If none apply, normal draw.
 pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
     if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() || state.pending_commander_sba.is_some() { return; }
-    if state.players.get(player).is_some_and(|p| p.library.iter().filter(|id| state.is_card(**id))
-        .take(count).any(|id| state.is_commander(*id)))
-        || count != 0 && state.replacement_effects.iter().any(|e| matches!(e.applies_to, crate::replacement::ReplacementEventKind::WouldMoveTo { .. })) {
+    if player >= state.players.len() { return; }
+    if count != 0 && state.replacement_effects.iter().any(|e| matches!(e.applies_to, crate::replacement::ReplacementEventKind::WouldMoveTo { .. })) {
         aura::record_entry_failure(state, transitions::TransitionError::UnsupportedPath); return;
     }
     // Check for draw replacement effects on the battlefield
@@ -1323,6 +1322,17 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
     if count != 0 && (has_renfield || has_abundance || has_phial || other_draw_replacement)
         && state.players[player].library.iter().any(|id| state.is_commander(*id)) {
         aura::record_entry_failure(state, transitions::TransitionError::UnsupportedPath); return;
+    }
+    if state.players[player].library.iter().filter(|id| state.is_card(**id))
+        .take(count).any(|id| state.is_commander(*id)) {
+        if state.trigger_placement_deferred && state.trigger_order_resume == Some(TriggerOrderResume::AfterResolution) {
+            aura::record_entry_failure(state, transitions::TransitionError::UnsupportedPath); return;
+        }
+        let Ok(count) = u32::try_from(count) else {
+            aura::record_entry_failure(state, transitions::TransitionError::CapacityExhausted); return;
+        };
+        movement_choice::begin_direct_draw(state, player, count, false);
+        return;
     }
 
     for _ in 0..count {

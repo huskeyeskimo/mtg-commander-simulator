@@ -78,6 +78,27 @@ pub(super) fn execute_phase_entry_public(state: &mut GameState) {
     execute_phase_entry(state);
 }
 
+/// Settle the draw-step action once its last individual draw and any owner
+/// replacement decision have completed.
+pub(super) fn finish_turn_draw(state: &mut GameState, caller_deferred: bool) {
+    state.trigger_placement_deferred = caller_deferred;
+    finish_turn_draw_with_deferred(state, caller_deferred);
+}
+
+fn finish_turn_draw_with_deferred(state: &mut GameState, caller_deferred: bool) {
+    let active = state.active_player;
+    if !caller_deferred {
+        state.invalidate_characteristics_cache();
+        super::sba::check_state_based_actions(state);
+        if state.gameplay_stopped() || state.pending_commander_sba.is_some() { return; }
+    }
+    if state.pending_triggers.is_empty() && state.pending_commander_sba.is_none() {
+        state.priority_player = if state.players[active].has_lost {
+            state.next_player(active)
+        } else { active };
+    }
+}
+
 /// Execute actions when entering a new phase.
 pub(super) fn execute_phase_entry(state: &mut GameState) {
     if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some() || state.pending_commander_sba.is_some() { return; }
@@ -116,21 +137,14 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
             let caller_deferred = std::mem::replace(&mut state.trigger_placement_deferred, true);
             // Active player draws a card (skip on turn 1 for first player in standard rules)
             if !(state.turn_number == 1 && active == 0) {
-                super::draw_cards(state, active, 1);
+                super::movement_choice::begin_direct_draw(state, active, 1, true);
+            }
+            if let Some(pending) = state.pending_movement.as_mut() {
+                pending.draw_resume_deferred = caller_deferred;
+                return;
             }
             state.trigger_placement_deferred = caller_deferred;
-            if !caller_deferred {
-                state.invalidate_characteristics_cache();
-                super::sba::check_state_based_actions(state);
-                if state.gameplay_stopped() || state.pending_commander_sba.is_some() { return; }
-            }
-            // A draw trigger may require another controller's mandatory order
-            // choice. That choice restores active-player priority afterward.
-            if state.pending_triggers.is_empty() && state.pending_commander_sba.is_none() {
-                state.priority_player = if state.players[active].has_lost {
-                    state.next_player(active)
-                } else { active };
-            }
+            finish_turn_draw_with_deferred(state, caller_deferred);
         }
 
         Phase::Upkeep => {
@@ -145,6 +159,8 @@ pub(super) fn execute_phase_entry(state: &mut GameState) {
                 super::sba::check_state_based_actions(state);
                 if state.gameplay_stopped() || state.pending_commander_sba.is_some() { return; }
             }
+            // A trigger may require another controller's mandatory order
+            // choice. That choice restores active-player priority afterward.
             if state.pending_triggers.is_empty() && state.pending_commander_sba.is_none() {
                 state.priority_player = if state.players[active].has_lost {
                     state.next_player(active)

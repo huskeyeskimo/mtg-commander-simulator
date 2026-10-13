@@ -51,7 +51,14 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
                 }
             }
             match super::movement_choice::admission(state, effect) {
-                Ok(admitted) => bounded_movement_resolution = admitted || synchronous_destroy_draw,
+                Ok(admitted) => {
+                    if admitted {
+                        if let Err(error) = super::movement_choice::preflight_draw_envelope(state, effect, entry.controller) {
+                            super::aura::record_entry_failure(state, error); return;
+                        }
+                    }
+                    bounded_movement_resolution = admitted || synchronous_destroy_draw;
+                },
                 Err(error) => { super::aura::record_entry_failure(state, error); return; }
             }
         }

@@ -466,12 +466,14 @@ fn three_player_acquired_source_uses_actor_graveyard_and_commander_owner_window(
 #[test]
 fn required_new_semantic_formats_reject_the_immediate_prior_serialized_contract() {
     let (s, _, _) = fixture(true);
-    let value = serde_json::to_value(&s).unwrap(); assert_eq!(value["state_format"], serde_json::json!(0x3246_3343u32));
+    let value = serde_json::to_value(&s).unwrap(); assert_eq!(value["state_format"], serde_json::json!(0x3246_3344u32));
     let mut old = value; old["state_format"] = serde_json::json!(0x3246_3341u32); assert!(serde_json::from_value::<GameState>(old).is_err());
     let mut bytes = bincode::serialize(&s).unwrap(); bytes[..4].copy_from_slice(&0x3246_3341u32.to_le_bytes()); assert!(bincode::deserialize::<GameState>(&bytes).is_err());
     let mut immediate = serde_json::to_value(&s).unwrap(); immediate["state_format"] = serde_json::json!(0x3246_3342u32); assert!(serde_json::from_value::<GameState>(immediate).is_err());
     let mut immediate = bincode::serialize(&s).unwrap(); immediate[..4].copy_from_slice(&0x3246_3342u32.to_le_bytes()); assert!(bincode::deserialize::<GameState>(&immediate).is_err());
-    assert_eq!(mtg_gto::public_projection::PROJECTION_SCHEMA, 7); assert_eq!(mtg_gto::solver::SEMANTIC_FORMAT, "mtg-joint-public-2f3a-v3");
+    let mut immediate = serde_json::to_value(&s).unwrap(); immediate["state_format"] = serde_json::json!(0x3246_3343u32); assert!(serde_json::from_value::<GameState>(immediate).is_err());
+    let mut immediate = bincode::serialize(&s).unwrap(); immediate[..4].copy_from_slice(&0x3246_3343u32.to_le_bytes()); assert!(bincode::deserialize::<GameState>(&immediate).is_err());
+    assert_eq!(mtg_gto::public_projection::PROJECTION_SCHEMA, 8); assert_eq!(mtg_gto::solver::SEMANTIC_FORMAT, "mtg-joint-public-2f3b1-v1");
 }
 #[test]
 fn empty_commander_registry_still_owns_the_transaction_and_later_failed_resolution() {

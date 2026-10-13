@@ -430,6 +430,9 @@ pub(super) fn resolve_effect(
     if resolve_synchronous_destroy_draw(state, effect, controller, targets, target_generations, source_id) { return; }
     match super::movement_choice::admission(state, effect) {
         Ok(true) => {
+            if let Err(error) = super::movement_choice::preflight_draw_envelope(state, effect, controller) {
+                super::aura::record_entry_failure(state, error); return;
+            }
             let leaves = match effect { Effect::Multiple(children) => children.clone(), leaf => vec![leaf.clone()] };
             let instructions = leaves.iter().map(|e| crate::game::BoundedMovementInstruction::from_effect(e).expect("admitted movement envelope")).collect();
             super::movement_choice::execute(state, instructions, controller, targets, target_generations, source_id, false, 0);

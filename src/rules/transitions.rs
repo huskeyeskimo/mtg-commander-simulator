@@ -1371,14 +1371,14 @@ pub(super) fn prepare_sba_movements(
 }
 
 #[derive(Clone, Copy)]
-enum PreparedKind { Put, Destroy, ResolvedSacrifice, Sba, Movement, ChitteringHand }
+enum PreparedKind { Put, Destroy, ResolvedSacrifice, Sba, Movement, ChitteringHand, Draw }
 
 fn validate(
     state: &GameState,
     requests: &[TransitionRequest],
     prepared: PreparedKind,
 ) -> Result<Vec<LinkedExileFollowup>, TransitionError> {
-    if !matches!(prepared, PreparedKind::Movement | PreparedKind::ChitteringHand) && requests.iter().any(|request| super::movement_choice::requires_choice(state, request)) {
+    if !matches!(prepared, PreparedKind::Movement | PreparedKind::ChitteringHand | PreparedKind::Draw) && requests.iter().any(|request| super::movement_choice::requires_choice(state, request)) {
         return Err(TransitionError::UnsupportedPath);
     }
     let battlefield: Vec<_> = requests.iter().filter(|r| r.from == ZoneType::Battlefield).map(|r| r.object).collect();
@@ -1395,7 +1395,18 @@ fn validate(
                 && request.kind == MovementKind::Put
                 && super::movement_choice::resident(state, request.object, request.from)
                 && !state.objects.get(&id).is_some_and(|inst| inst.is_token);
-            let valid = movement_valid || matches!(prepared, PreparedKind::Sba)
+            let draw_valid = matches!(prepared, PreparedKind::Draw) && requests.len() == 1
+                && request.from == ZoneType::Library
+                && matches!(request.to, ZoneType::Hand | ZoneType::Command)
+                && request.kind == MovementKind::Draw { player: state.objects.get(&id)
+                    .map(|inst| inst.owner).unwrap_or(usize::MAX) }
+                && super::movement_choice::resident(state, request.object, ZoneType::Library)
+                && !state.objects.get(&id).is_some_and(|inst| inst.is_token)
+                && state.objects.get(&id).is_some_and(|inst| state.players.get(inst.owner)
+                    .and_then(|player| state.first_library_card(inst.owner)
+                        .map(|index| player.library[index] == id)).unwrap_or(false))
+                && (request.to != ZoneType::Command || state.is_commander(id));
+            let valid = movement_valid || draw_valid || matches!(prepared, PreparedKind::Sba)
                 && matches!(request.from, ZoneType::Graveyard | ZoneType::Exile)
                 && request.to == ZoneType::Command && request.kind == MovementKind::Put
                 && state.is_commander(id)
@@ -1775,6 +1786,12 @@ pub(crate) fn chittering_batch(state: &mut GameState, requests: &[TransitionRequ
 pub(crate) fn movement_batch(state: &mut GameState, requests: &[TransitionRequest]) -> Result<CommittedTransitionBatch, TransitionError> {
     commit_batch(state, requests, PreparedKind::Movement)
 }
+pub(crate) fn preflight_draw_batch(state: &GameState, requests: &[TransitionRequest]) -> Result<(), TransitionError> {
+    validate(state, requests, PreparedKind::Draw).map(|_| ())
+}
+pub(crate) fn draw_batch(state: &mut GameState, requests: &[TransitionRequest]) -> Result<CommittedTransitionBatch, TransitionError> {
+    commit_batch(state, requests, PreparedKind::Draw)
+}
 
 /// capture finish before any mutation. Occurrences enter 2A's pending queue;
 /// this function never places triggers, grants priority, or advances time.
@@ -1807,7 +1824,7 @@ fn commit_batch_with_causes(
         }
         match projection.refresh(state) {
             Ok(refresh) => refresh,
-            Err(error) => { if !matches!(prepared, PreparedKind::Movement) { state.sba_failure = Some(error); } return Err(TransitionError::CapacityExhausted); }
+            Err(error) => { if !matches!(prepared, PreparedKind::Movement | PreparedKind::Draw) { state.sba_failure = Some(error); } return Err(TransitionError::CapacityExhausted); }
         }
     };
     let group_id = state.next_zone_event_group_id;
@@ -1858,6 +1875,11 @@ fn commit_batch_with_causes(
 
     // The complete post-event view exists before any notification/matching.
     for transition in &batch.transitions {
+        if let MovementKind::Draw { player } = transition.kind {
+            if transition.destination.zone == ZoneType::Hand {
+                state.emit_event(GameEvent::CardDrawn { player, object: transition.before.object.id });
+            }
+        }
         state.emit_event(GameEvent::ZoneChange {
             object: transition.before.object.id,
             from: crate::events::Zone::from(transition.before.location.zone),
