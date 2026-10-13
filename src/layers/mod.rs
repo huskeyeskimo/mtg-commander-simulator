@@ -448,7 +448,7 @@ fn compute_characteristics_through_layer(
 }
 
 /// Check if a continuous effect applies to a specific object.
-fn effect_applies_to(
+pub(crate) fn effect_applies_to(
     effect: &ContinuousEffect,
     obj_id: ObjectId,
     inst: &crate::card::CardInstance,

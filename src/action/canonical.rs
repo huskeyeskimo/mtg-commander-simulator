@@ -45,6 +45,9 @@ pub enum CanonicalTarget {
 /// to the same `CanonicalAction`. MCCFR regret tables key on this type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CanonicalAction {
+    ChooseMovementReplacement { object: crate::public_projection::SemanticCoordinate, candidate: crate::public_projection::SemanticCoordinate, stage: usize },
+    ChooseCommanderMovement { object: crate::public_projection::SemanticCoordinate, stage: usize, to_command: bool },
+    ChooseLibraryPlacement { object: crate::public_projection::SemanticCoordinate, stage: usize },
     ChooseNextTrigger { occurrence: crate::rules::transitions::ZoneOccurrenceInfo },
     ChooseNextCopy { item_index: usize },
     PassPriority,
@@ -179,6 +182,9 @@ pub enum CanonicalAction {
         occurrences: Vec<crate::rules::transitions::ZoneOccurrenceInfo>,
     },
     ChooseCommanderSba { designation: crate::game::CommanderDesignation, to_command: bool },
+    ActivateReclamation { source: crate::public_projection::SemanticCoordinate, target: crate::public_projection::SemanticCoordinate },
+    PlaceChitteringTrigger { occurrence: crate::public_projection::SemanticCoordinate, opponent: PlayerIndex },
+    ChooseChitteringCard { card: crate::public_projection::SemanticCoordinate },
 }
 
 /// Convert a concrete `Action` (with ObjectIds) into a `CanonicalAction`
@@ -209,7 +215,34 @@ fn canonicalize_with_normalization(
     normalized: &crate::public_projection::JointPublicNormalization,
 ) -> Result<CanonicalAction, crate::simulation::TerminationReason> {
     validate_action_references(action, state, normalized)?;
+    if crate::rules::chittering::public_wait(state).is_some() && !crate::action::legal_actions(state).contains(action) { return Err(crate::simulation::TerminationReason::StateEncoding); }
     Ok(match action {
+        Action::PlaceChitteringTrigger { handle, opponent } => {
+            if !crate::rules::chittering::placement_actions(state).contains(action) { return Err(crate::simulation::TerminationReason::StateEncoding); }
+            let slot = state.pending_triggers.iter().position(|t| t.placement == Some(*handle)).ok_or(crate::simulation::TerminationReason::StateEncoding)?;
+            CanonicalAction::PlaceChitteringTrigger { occurrence: *normalized.occurrence_coordinates.get(slot).ok_or(crate::simulation::TerminationReason::StateEncoding)?, opponent: *opponent }
+        }
+        Action::ChooseChitteringCard { card, .. } => {
+            if !crate::rules::chittering::selection_actions(state).contains(action) { return Err(crate::simulation::TerminationReason::StateEncoding); }
+            CanonicalAction::ChooseChitteringCard { card: *normalized.exact_to_coordinate.get(card).ok_or(crate::simulation::TerminationReason::StateEncoding)? }
+        }
+        Action::ActivateReclamation { source, target } => {
+            if crate::rules::reclamation::prepare(state, action).is_none() { return Err(crate::simulation::TerminationReason::StateEncoding); }
+            CanonicalAction::ActivateReclamation { source: *normalized.exact_to_coordinate.get(source).ok_or(crate::simulation::TerminationReason::StateEncoding)?, target: *normalized.exact_to_coordinate.get(target).ok_or(crate::simulation::TerminationReason::StateEncoding)? }
+        }
+        Action::ChooseMovementReplacement { object, candidate, stage, .. } => {
+            if !crate::rules::movement_choice::actions(state).contains(action) { return Err(crate::simulation::TerminationReason::StateEncoding); }
+            CanonicalAction::ChooseMovementReplacement { object: *normalized.exact_to_coordinate.get(object).ok_or(crate::simulation::TerminationReason::StateEncoding)?,
+                candidate: *normalized.movement_candidates.get(candidate).ok_or(crate::simulation::TerminationReason::StateEncoding)?, stage: *stage }
+        }
+        Action::ChooseCommanderMovement { object, stage, to_command, .. } => {
+            if !crate::rules::movement_choice::actions(state).contains(action) { return Err(crate::simulation::TerminationReason::StateEncoding); }
+            CanonicalAction::ChooseCommanderMovement { object: *normalized.exact_to_coordinate.get(object).ok_or(crate::simulation::TerminationReason::StateEncoding)?, stage: *stage, to_command: *to_command }
+        }
+        Action::ChooseLibraryPlacement { object, stage, .. } => {
+            if !crate::rules::movement_choice::actions(state).contains(action) { return Err(crate::simulation::TerminationReason::StateEncoding); }
+            CanonicalAction::ChooseLibraryPlacement { object: *normalized.exact_to_coordinate.get(object).ok_or(crate::simulation::TerminationReason::StateEncoding)?, stage: *stage }
+        }
         Action::ChooseCommanderSba { designation, to_command } => {
             if !state.pending_commander_sba.as_ref().is_some_and(|operation|
                 operation.chooser() == Some(state.priority_player)
@@ -488,8 +521,30 @@ pub fn resolve_with_normalization(
     player: PlayerIndex,
     normalized: &crate::public_projection::JointPublicNormalization,
 ) -> Result<Option<Action>, crate::simulation::TerminationReason> {
+    if matches!(canonical, CanonicalAction::ChooseMovementReplacement { .. } | CanonicalAction::ChooseCommanderMovement { .. } | CanonicalAction::ChooseLibraryPlacement { .. }) {
+        if state.priority_player != player { return Ok(None); }
+        for concrete in crate::rules::movement_choice::actions(state) {
+            if canonicalize_with_normalization(&concrete, state, normalized)? == *canonical { return Ok(Some(concrete)); }
+        }
+        return Ok(None);
+    }
+    if matches!(canonical, CanonicalAction::PlaceChitteringTrigger { .. } | CanonicalAction::ChooseChitteringCard { .. }) {
+        if state.priority_player != player { return Ok(None); }
+        for action in crate::rules::chittering::placement_actions(state).into_iter().chain(crate::rules::chittering::selection_actions(state)) {
+            if canonicalize_with_normalization(&action, state, normalized)? == *canonical { return Ok(Some(action)); }
+        }
+        return Ok(None);
+    }
+    if crate::rules::chittering::public_wait(state).is_some() && !matches!(canonical, CanonicalAction::Concede) { return Ok(None); }
     Ok((|| -> Option<Action> {
     match canonical {
+        CanonicalAction::PlaceChitteringTrigger { .. } | CanonicalAction::ChooseChitteringCard { .. } => unreachable!("handled closed Chittering choice"),
+        CanonicalAction::ActivateReclamation { source, target } => {
+            if state.priority_player != player { return None; }
+            let action = Action::ActivateReclamation { source: *normalized.coordinate_to_exact.get(source)?, target: *normalized.coordinate_to_exact.get(target)? };
+            crate::rules::reclamation::prepare(state, &action).map(|_| action)
+        }
+        CanonicalAction::ChooseMovementReplacement { .. } | CanonicalAction::ChooseCommanderMovement { .. } | CanonicalAction::ChooseLibraryPlacement { .. } => unreachable!("handled bounded movement reconstruction"),
         CanonicalAction::ChooseCommanderSba { designation, to_command } =>
             state.pending_commander_sba.as_ref().and_then(|operation|
                 (operation.chooser() == Some(player)

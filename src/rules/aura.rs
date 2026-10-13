@@ -68,7 +68,7 @@ pub(super) fn preflight_action(
     }
     if (matches!(action, Action::PassPriority)
         && state.pending_tutor.is_none()
-        && state.pending_copy_order.is_none()
+        && state.pending_copy_order.is_none() && !state.movement_or_hand_pending()
         && !super::cleanup_discard_required(state)
         && super::mandatory_trigger_order_chooser(state).is_none()
         && state.consecutive_passes.saturating_add(1) >= state.players.len() as u32)
@@ -112,7 +112,7 @@ pub(super) fn preflight_action(
     }
     if let Action::ChooseTutorTarget { card_id } = action {
         if let Some(pending) = state.pending_tutor.as_ref().filter(|pending| {
-            pending.controller == state.priority_player && state.pending_copy_order.is_none()
+            pending.controller == state.priority_player && state.pending_copy_order.is_none() && !state.movement_or_hand_pending()
         }) {
             if let Some(&id) = state.players[pending.controller]
                 .library

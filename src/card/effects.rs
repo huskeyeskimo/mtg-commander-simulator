@@ -490,6 +490,8 @@ pub enum Effect {
     /// historical eligibility are supplied by the trigger's transition context.
     /// Appended to preserve the binary tags of existing production effects.
     ReturnWithDeathKeyword { keyword: KeywordAbility },
+    /// Closed printed Chittering Rats ETB instruction; never a generic hand effect.
+    ChitteringRats,
 }
 
 /// Conditions that can be checked at runtime for conditional effects.
@@ -672,6 +674,8 @@ pub enum TargetSpec {
     CardInHand,
     /// A card in exile that was exiled by the source permanent.
     CardInExileBySource,
+    /// Only the closed printed Reclamation activation admits this selector.
+    CreatureCardInOwnGraveyard,
 }
 
 /// Token creature definition.

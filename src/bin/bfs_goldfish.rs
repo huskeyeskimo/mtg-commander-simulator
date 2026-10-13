@@ -285,6 +285,8 @@ fn prune_actions(
     actions: &[Action],
     config: &DeckConfig,
 ) -> Result<Vec<Action>, TerminationReason> {
+    if state.movement_or_hand_pending() { return Ok(actions.to_vec()); }
+
     mtg_gto::public_projection::JointPublicNormalization::for_state(state, state.priority_player)?;
     // 0. Phase-based auto-pass: during non-strategic phases on our turn, just pass.
     // For combo decks: only Upkeep + PreCombatMain matter.
@@ -450,6 +452,10 @@ fn prune_actions(
             // Engine auto-taps; manual mana abilities waste branching.
             Action::ActivateManaAbility { .. } => continue,
             // Filter abilities handled by combo macros.
+            Action::ActivateReclamation { source, .. } => {
+                if state.objects.get(&source.id).is_some_and(|i| config.filtered_abilities.contains(&i.card_def_id)) { continue; }
+                result.push(action.clone());
+            }
             Action::ActivateAbility { object_id, .. } => {
                 if let Some(inst) = state.objects.get(object_id) {
                     if config.filtered_abilities.contains(&inst.card_def_id) {
@@ -483,7 +489,7 @@ fn prune_actions(
             Action::PlayLand { .. }
                 | Action::CastSpell { .. }
                 | Action::CastCommander { .. }
-                | Action::ActivateAbility { .. }
+                | Action::ActivateAbility { .. } | Action::ActivateReclamation { .. }
                 | Action::ActivateMacro { .. }
                 | Action::Equip { .. }
                 | Action::ActivateLoyalty { .. }
@@ -511,7 +517,7 @@ fn prune_actions(
         Action::CastCommander { .. } => 1,
         Action::CastSpell { .. } => 2,
         Action::PlayLand { .. } => 3,
-        Action::ActivateAbility { .. } => 4,
+        Action::ActivateAbility { .. } | Action::ActivateReclamation { .. } => 4,
         Action::PassPriority => 6,
         _ => 5,
     });
@@ -694,6 +700,22 @@ fn dfs_search(
                     break;
                 }
             }
+            continue;
+        }
+
+        // A closed Chittering placement window remains mandatory even after
+        // its targeted occurrence is placed and an ordinary mixed tail remains.
+        let chittering_placement = work.trigger_placement.as_ref().is_some_and(|op|
+            op.occurrences.iter().any(|t| t.ability_index == 0
+                && t.context.source_card_id == ids::CHITTERING_RATS
+                && t.context.effect == mtg_gto::card::Effect::ChitteringRats));
+        if work.priority_player != 0 && (work.movement_or_hand_pending() || chittering_placement) {
+            let legal = legal_actions(&work);
+            let action = match mtg_gto::strategy::Strategy::choose_action(&mtg_gto::strategy::GoldfishStrategy, &work, work.priority_player) {
+                Ok(action) => action,
+                Err(_) => { stats.invalid = true; stats.invalid_branches += 1; stats.invalid_reason = "state_encoding"; break; }
+            };
+            if !search_action_advanced(stats, apply_counted_action(&mut work, &action, &legal)) { break; }
             continue;
         }
 
@@ -1250,3 +1272,11 @@ mod common_pass_bfs_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/support/bfs_movement_2f3a.rs"]
+mod movement_2f3a_search_tests;
+
+#[cfg(test)]
+#[path = "../../tests/support/bfs_chittering_compatibility.rs"]
+mod chittering_search_tests;

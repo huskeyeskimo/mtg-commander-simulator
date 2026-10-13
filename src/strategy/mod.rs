@@ -20,6 +20,12 @@ pub struct RandomStrategy;
 
 impl Strategy for RandomStrategy {
     fn choose_action(&self, state: &GameState, _player: PlayerIndex) -> Result<Action, crate::simulation::TerminationReason> {
+        crate::rules::reclamation::validate_play(state).map_err(|_| crate::simulation::TerminationReason::StateEncoding)?;
+        crate::rules::chittering::validate_play(state).map_err(|_| crate::simulation::TerminationReason::StateEncoding)?;
+        if state.movement_or_hand_pending() {
+            state.validate_movement_play().map_err(|_| crate::simulation::TerminationReason::StateEncoding)?;
+            return legal_actions(state).choose(&mut rand::thread_rng()).cloned().ok_or(crate::simulation::TerminationReason::StateEncoding);
+        }
         Ok((|| -> Action {
         let mut rng = rand::thread_rng();
         let actions = legal_actions(state);
@@ -130,6 +136,12 @@ fn spell_target_value(state: &GameState, controller: PlayerIndex, effect: &Effec
 
 impl Strategy for GreedyStrategy {
     fn choose_action(&self, state: &GameState, _player: PlayerIndex) -> Result<Action, crate::simulation::TerminationReason> {
+        crate::rules::reclamation::validate_play(state).map_err(|_| crate::simulation::TerminationReason::StateEncoding)?;
+        crate::rules::chittering::validate_play(state).map_err(|_| crate::simulation::TerminationReason::StateEncoding)?;
+        if state.movement_or_hand_pending() {
+            state.validate_movement_play().map_err(|_| crate::simulation::TerminationReason::StateEncoding)?;
+            return legal_actions(state).into_iter().next().ok_or(crate::simulation::TerminationReason::StateEncoding);
+        }
         Ok((|| -> Action {
         let actions = legal_actions(state);
         if state.pending_copy_order.is_some() || state.pending_commander_sba.is_some() { return actions[0].clone(); }
@@ -193,7 +205,7 @@ impl Strategy for GreedyStrategy {
         // the first ordering (FIFO). A real MCCFR solver would evaluate all
         // orderings; greedy just uses FIFO.
         for action in &actions {
-            if matches!(action, Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }
+            if matches!(action, Action::PlaceChitteringTrigger { .. } | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }
                 | Action::ChooseReplacementOrder { .. }) {
                 return action.clone();
             }
@@ -318,6 +330,9 @@ impl Strategy for GreedyStrategy {
             let mut best_ability: Option<&Action> = None;
             let mut best_cost = 0u32;
             for action in &actions {
+                if matches!(action, Action::ActivateReclamation { .. }) {
+                    if best_cost <= 2 || best_ability.is_none() { best_cost = 2; best_ability = Some(action); }
+                }
                 if let Action::ActivateAbility { object_id, ability_index, .. } = action {
                     let inst = &state.objects[object_id];
                     if let Some(def) = db.get(inst.card_def_id) {
@@ -570,6 +585,12 @@ pub struct GoldfishStrategy;
 
 impl Strategy for GoldfishStrategy {
     fn choose_action(&self, state: &GameState, player: PlayerIndex) -> Result<Action, crate::simulation::TerminationReason> {
+        crate::rules::reclamation::validate_play(state).map_err(|_| crate::simulation::TerminationReason::StateEncoding)?;
+        crate::rules::chittering::validate_play(state).map_err(|_| crate::simulation::TerminationReason::StateEncoding)?;
+        if state.movement_or_hand_pending() {
+            state.validate_movement_play().map_err(|_| crate::simulation::TerminationReason::StateEncoding)?;
+            return legal_actions(state).into_iter().next().ok_or(crate::simulation::TerminationReason::StateEncoding);
+        }
         Ok((|| -> Action {
         let actions = legal_actions(state);
         if state.pending_copy_order.is_some() || state.pending_commander_sba.is_some() { return actions[0].clone(); }
@@ -593,7 +614,7 @@ impl Strategy for GoldfishStrategy {
         for action in &actions {
             if matches!(
                 action,
-                Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
+                Action::PlaceChitteringTrigger { .. } | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
                     | Action::OrderTriggerOccurrences { .. }
                     | Action::ChooseReplacementOrder { .. }
                     | Action::OrderDamageAssignment { .. }

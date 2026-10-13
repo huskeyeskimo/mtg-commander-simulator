@@ -3,12 +3,13 @@ use crate::game::{GameState, PlayerIndex, StackSource, Target};
 
 /// Resolve the top entry on the stack.
 pub(super) fn resolve_top_of_stack(state: &mut GameState) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.trigger_placement.is_some()
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() || state.trigger_placement.is_some()
         || state.pending_commander_sba.is_some() { return; }
     if crate::targeting::validate_pending_equips(state).is_err() {
         state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding);
         return;
     }
+    if super::reclamation::validate_play(state).is_err() || super::chittering::validate_play(state).is_err() { state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return; }
     let aura_prepared = if let Some(entry) = state.stack.last().filter(|e| matches!(e.source, StackSource::AuraSpell { .. })) {
         match super::aura::prepare_resolution(state, entry) {
             Ok(plan) => Some(plan), Err(reason) => { state.sba_failure = Some(reason); return; }
@@ -25,6 +26,36 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
             }
         }
     }
+    if let Some(entry) = state.stack.last().filter(|e| matches!(&e.source,
+        StackSource::TriggeredAbility { context, .. } if context.effect == crate::card::Effect::ChitteringRats)) {
+        if let Err(error) = super::chittering::preflight_resolution(state, entry) { super::aura::record_entry_failure(state, error); return; }
+        let entry = state.stack.pop().unwrap();
+        state.trigger_order_resume = Some(crate::game::TriggerOrderResume::AfterResolution); state.trigger_placement_deferred = true;
+        super::chittering::begin(state, entry); return;
+    }
+    let mut bounded_movement_resolution = false;
+    if let Some(entry) = state.stack.last() {
+        let effect = match &entry.source {
+            StackSource::Spell(id) => state.objects.get(id).and_then(|i| state.card_db().get(i.card_def_id)).and_then(|d| d.spell_effect.as_ref()),
+            StackSource::SpellCopy { definition } => definition.spell_effect.as_ref(),
+            StackSource::ActivatedAbility { source_id, ability_index } => state.objects.get(source_id).and_then(|i| state.card_db().get(i.card_def_id)).and_then(|d| d.activated_abilities.get(*ability_index).map(|a| &a.effect).or_else(|| d.loyalty_abilities.get(*ability_index).map(|a| &a.effect))),
+            StackSource::ReclamationAbility { .. } => if super::reclamation::entry_target(entry).is_ok_and(|target| super::reclamation::target_legal(state, entry.controller, target)) { Some(&super::reclamation::EFFECT) } else { None },
+            StackSource::TriggeredAbility { context, .. } => Some(&context.effect), _ => None,
+        };
+        if let Some(effect) = effect {
+            let synchronous_destroy_draw = super::movement_choice::synchronous_destroy_draw(state, effect);
+            if synchronous_destroy_draw {
+                if let Err(error) = super::movement_choice::preflight_synchronous_destroy_draw(state, effect,
+                    entry.controller, &entry.targets, &entry.target_generations, entry.source.physical_object()) {
+                    super::aura::record_entry_failure(state, error); return;
+                }
+            }
+            match super::movement_choice::admission(state, effect) {
+                Ok(admitted) => bounded_movement_resolution = admitted || synchronous_destroy_draw,
+                Err(error) => { super::aura::record_entry_failure(state, error); return; }
+            }
+        }
+    }
     let entry = match state.stack.pop() {
         Some(e) => e,
         None => return,
@@ -33,6 +64,14 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
     state.trigger_placement_deferred = true;
 
     match &entry.source {
+        StackSource::ReclamationAbility { .. } => {
+            let target = super::reclamation::entry_target(&entry).expect("validated Reclamation frame");
+            if super::reclamation::target_legal(state, entry.controller, target) {
+                super::movement_choice::execute(state, vec![crate::game::BoundedMovementInstruction::GraveHand {
+                    target: crate::card::TargetSpec::CreatureCardInOwnGraveyard }], entry.controller,
+                    &entry.targets, &entry.target_generations, None, false, 0);
+            }
+        }
         StackSource::AuraSpell { .. } => super::aura::commit_resolution(state, aura_prepared.unwrap()),
         StackSource::Spell(obj_id) => {
             resolve_spell(state, *obj_id, &entry.targets, &entry.target_generations, entry.controller);
@@ -80,6 +119,10 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
         }
     }
 
+    if bounded_movement_resolution && state.sba_failure.is_some() && state.pending_copy_order.is_none() && !state.movement_or_hand_pending() {
+        retain_failed_movement_entry(state, entry);
+        return;
+    }
     // Check state-based actions after resolution
     if let Some(pending) = state.pending_copy_order.as_mut() {
         pending.resolving_source_generation = match entry.source {
@@ -87,9 +130,22 @@ pub(super) fn resolve_top_of_stack(state: &mut GameState) {
             _ => None,
         };
         pending.resolving_entry = Some(Box::new(entry));
+    } else if state.pending_movement.is_some() {
+        let resolving_source = entry.source.physical_object().and_then(|id| state.exact_object(id));
+        let pending = state.pending_movement.as_mut().unwrap();
+        pending.resolving_source = resolving_source;
+        pending.resolution_owned = true;
+        pending.resolving_entry = Some(Box::new(entry));
     } else {
         super::complete_stack_resolution(state);
     }
+}
+
+pub(super) fn retain_failed_movement_entry(state: &mut GameState, entry: crate::game::StackEntry) {
+    let has_resident_physical_source = entry.source.physical_object().is_some_and(|id|
+        state.battlefield.contains(&id) || state.players.iter().any(|player|
+            [&player.hand, &player.library, &player.graveyard, &player.exile, &player.command_zone].iter().any(|zone| zone.contains(&id))));
+    if !has_resident_physical_source { state.stack.push(entry); }
 }
 
 /// Resolve a spell.
@@ -143,7 +199,7 @@ fn resolve_spell(
         // CR 608.2b: an illegal sole target stops the whole spell, including
         // untargeted instructions such as drawing. Check only before execution.
         resolve_spell_effect(state, &def, targets, generations, controller, Some(obj_id));
-        if state.pending_copy_order.is_some() || state.gameplay_stopped() { return; }
+        if state.pending_copy_order.is_some() || state.movement_or_hand_pending() || state.gameplay_stopped() { return; }
         finish_physical_spell(state, obj_id, &def);
     }
 }

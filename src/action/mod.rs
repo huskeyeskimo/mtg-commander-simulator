@@ -22,6 +22,9 @@ pub enum CombatAbstraction {
 /// An action a player can take when they have priority.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Action {
+    ChooseMovementReplacement { window: u64, stage: usize, object: crate::card::ExactObjectRef, candidate: crate::game::MovementReplacementCandidate },
+    ChooseCommanderMovement { window: u64, stage: usize, object: crate::card::ExactObjectRef, to_command: bool },
+    ChooseLibraryPlacement { window: u64, stage: usize, object: crate::card::ExactObjectRef },
     /// Append this prepared copy to the bottom-to-top stack order. The last
     /// remaining copy is appended automatically, so two copies need one choice.
     ChooseNextCopy { item_index: usize },
@@ -155,11 +158,21 @@ pub enum Action {
     ChooseNextTrigger { handle: crate::game::TriggerOccurrenceHandle },
     /// Owner's CR 903.9a decision for a frozen graveyard/exile arrival.
     ChooseCommanderSba { designation: crate::game::CommanderDesignation, to_command: bool },
+    /// Printed Reclamation activation with exact public endpoints.
+    ActivateReclamation { source: crate::card::ExactObjectRef, target: crate::card::ExactObjectRef },
+    PlaceChitteringTrigger { handle: crate::game::TriggerOccurrenceHandle, opponent: PlayerIndex },
+    ChooseChitteringCard { window: crate::game::StackId, card: crate::card::ExactObjectRef },
 }
 
 impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Action::PlaceChitteringTrigger { opponent, .. } => write!(f, "Chittering Rats targets player {opponent}"),
+            Action::ChooseChitteringCard { .. } => write!(f, "Resolve Chittering Rats privately"),
+            Action::ActivateReclamation { source, target } => write!(f, "Reclamation (obj {} -> obj {})", source.id, target.id),
+            Action::ChooseMovementReplacement { .. } => write!(f, "Choose movement replacement"),
+            Action::ChooseCommanderMovement { to_command, .. } => write!(f, "Commander to command: {to_command}"),
+            Action::ChooseLibraryPlacement { .. } => write!(f, "Choose next library card"),
             Action::ChooseCommanderSba { designation, to_command } => write!(f,
                 "{} for Commander {}", if *to_command { "Move to command zone" } else { "Decline command-zone move" }, designation.role),
             Action::ChooseNextTrigger { handle } => write!(f, "Place trigger {} next", handle.occurrence),            Action::ChooseNextCopy { item_index } => write!(f, "Place copy {} next (bottom to top)", item_index),
@@ -239,11 +252,17 @@ pub const MAX_MULLIGANS: u32 = 4;
 /// Core action enumeration with configurable combat abstraction level.
 fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<Action> {
     if state.gameplay_stopped() || state.validate_commanders().is_err()
-        || state.validate_commander_choices().is_err() || state.validate_trigger_placement().is_err() { return Vec::new(); }
+        || state.validate_commander_choices().is_err() || state.validate_movement_play().is_err() || crate::rules::chittering::validate_play(state).is_err() || crate::rules::reclamation::validate_play(state).is_err() || state.validate_trigger_placement().is_err() { return Vec::new(); }
     use crate::game::Phase;
 
     let player = state.priority_player;
     let mut actions = Vec::new();
+    if state.pending_chittering.is_some() {
+        let mut actions = crate::rules::chittering::selection_actions(state); actions.push(Action::Concede); return actions;
+    }
+    if state.pending_movement.is_some() {
+        let mut actions = crate::rules::movement_choice::actions(state); actions.push(Action::Concede); return actions;
+    }
     if let Some(operation) = &state.pending_commander_sba {
         for (offer, answer) in operation.offers.iter().zip(&operation.answers) {
             if offer.designation.owner == player && answer.is_none() {
@@ -311,7 +330,9 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
     if let Some(op) = &state.trigger_placement {
         if state.validate_trigger_placement().is_err() { return actions; }
         actions.extend(state.pending_triggers.iter().filter(|t|t.controller == op.controller)
+            .filter(|t| !crate::rules::chittering::trigger(t))
             .filter_map(|t|t.placement.map(|handle|Action::ChooseNextTrigger { handle })));
+        actions.extend(crate::rules::chittering::placement_actions(state));
         actions.push(Action::Concede);
         return actions;
     }
@@ -671,6 +692,8 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                 }
             }
 
+            actions.extend(crate::rules::reclamation::actions(state));
+
             // Activated abilities and mana abilities from permanents
             let permanents = state.permanents_controlled_by(player);
             for &obj_id in &permanents {
@@ -681,6 +704,7 @@ fn legal_actions_with(state: &GameState, abstraction: CombatAbstraction) -> Vec<
                 };
 
                 for (i, ability) in def.activated_abilities.iter().enumerate() {
+                    if def.id == crate::card::sample::ids::PHYREXIAN_RECLAMATION || crate::rules::reclamation::uses_selector(&ability.effect) { continue; }
                     if ability.requires_tap && !state.can_pay_tap_cost(obj_id) {
                         continue;
                     }

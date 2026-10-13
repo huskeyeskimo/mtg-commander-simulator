@@ -76,7 +76,7 @@ pub struct LastKnownObject {
     pub attachment: AttachmentLki,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransitionRequest {
     pub object: ExactObjectRef,
     pub from: ZoneType,
@@ -87,7 +87,7 @@ pub struct TransitionRequest {
 /// Semantic actions whose rules differ beyond endpoints. Destruction uses a
 /// bounded preparation adapter, as does resolved sacrifice; raw batches accept
 /// only Put.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MovementKind {
     Put,
     Destroy,
@@ -1142,6 +1142,12 @@ pub fn destroy_batch(
     state: &mut GameState,
     subjects: &[ExactObjectRef],
 ) -> Result<Option<CommittedTransitionBatch>, TransitionError> {
+    let requests = destroy_requests(state, subjects)?;
+    if requests.is_empty() { return Ok(None); }
+    commit_batch(state, &requests, PreparedKind::Destroy).map(Some)
+}
+
+fn destroy_requests(state: &GameState, subjects: &[ExactObjectRef]) -> Result<Vec<TransitionRequest>, TransitionError> {
     validate_subjects(state, subjects)?;
     let requests: Vec<_> = subjects.iter().filter_map(|&object| {
         if state.has_keyword(object.id, KeywordAbility::Indestructible) {
@@ -1158,8 +1164,22 @@ pub fn destroy_batch(
             object, from: ZoneType::Battlefield, to, kind: MovementKind::Destroy,
         })
     }).collect();
-    if requests.is_empty() { return Ok(None); }
-    commit_batch(state, &requests, PreparedKind::Destroy).map(Some)
+    Ok(requests)
+}
+
+/// Immutable preparation for the exact synchronous destroy/draw compatibility
+/// route. Use the same destruction, linked resources and refresh as commit.
+pub(crate) fn preflight_destroy_batch(state: &GameState, subjects: &[ExactObjectRef]) -> Result<(), TransitionError> {
+    let requests = destroy_requests(state, subjects)?;
+    if requests.is_empty() { return Ok(()); }
+    validate(state, &requests, PreparedKind::Destroy)?;
+    let mut projection = crate::game::RefreshProjection::new(state);
+    for request in &requests {
+        projection.depart(state, request.object.id, actual_destination(state, request.object.id, request.to))
+            .map_err(|_| TransitionError::CapacityExhausted)?;
+    }
+    projection.refresh(state).map_err(|_| TransitionError::CapacityExhausted)?;
+    Ok(())
 }
 
 /// A selected creature in a resolving sacrifice effect, never a cost payment.
@@ -1351,13 +1371,16 @@ pub(super) fn prepare_sba_movements(
 }
 
 #[derive(Clone, Copy)]
-enum PreparedKind { Put, Destroy, ResolvedSacrifice, Sba }
+enum PreparedKind { Put, Destroy, ResolvedSacrifice, Sba, Movement, ChitteringHand }
 
 fn validate(
     state: &GameState,
     requests: &[TransitionRequest],
     prepared: PreparedKind,
 ) -> Result<Vec<LinkedExileFollowup>, TransitionError> {
+    if !matches!(prepared, PreparedKind::Movement | PreparedKind::ChitteringHand) && requests.iter().any(|request| super::movement_choice::requires_choice(state, request)) {
+        return Err(TransitionError::UnsupportedPath);
+    }
     let battlefield: Vec<_> = requests.iter().filter(|r| r.from == ZoneType::Battlefield).map(|r| r.object).collect();
     validate_subjects(state, &battlefield)?;
     if matches!(prepared, PreparedKind::Sba) { validate_sba_subjects(state, &battlefield)?; }
@@ -1366,7 +1389,13 @@ fn validate(
         let id = request.object.id;
         if !all.insert(id) { return Err(TransitionError::DuplicateSubject(id)); }
         if request.from != ZoneType::Battlefield {
-            let valid = matches!(prepared, PreparedKind::Sba)
+            let movement_valid = (matches!(prepared, PreparedKind::Movement) && matches!(request.from, ZoneType::Graveyard | ZoneType::Exile)
+                || matches!(prepared, PreparedKind::ChitteringHand) && request.from == ZoneType::Hand && requests.len() == 1)
+                && !matches!(request.to, ZoneType::Battlefield | ZoneType::Stack)
+                && request.kind == MovementKind::Put
+                && super::movement_choice::resident(state, request.object, request.from)
+                && !state.objects.get(&id).is_some_and(|inst| inst.is_token);
+            let valid = movement_valid || matches!(prepared, PreparedKind::Sba)
                 && matches!(request.from, ZoneType::Graveyard | ZoneType::Exile)
                 && request.to == ZoneType::Command && request.kind == MovementKind::Put
                 && state.is_commander(id)
@@ -1375,14 +1404,25 @@ fn validate(
                     object: request.object, zone: request.from,
                 });
             if !valid { return Err(TransitionError::UnsupportedPath); }
+            let inst = state.objects.get(&id).ok_or(TransitionError::MissingObject(id))?;
+            if inst.owner >= state.players.len() || inst.controller >= state.players.len() { return Err(TransitionError::InvalidPlayer(id)); }
+            if state.card_db.as_ref().ok_or(TransitionError::MissingDatabase)?.get(inst.card_def_id).is_none() {
+                return Err(TransitionError::MissingDefinition(inst.card_def_id));
+            }
             if request.object.generation == u32::MAX { return Err(TransitionError::GenerationExhausted(id)); }
         } else if matches!(request.to, ZoneType::Battlefield | ZoneType::Stack)
             || (request.kind != MovementKind::Put
                 && !matches!((prepared, request.kind),
-                    (PreparedKind::Destroy, MovementKind::Destroy)
+                    (PreparedKind::Movement, MovementKind::Destroy)
+                    | (PreparedKind::Movement, MovementKind::Sacrifice { .. })
+                    | (PreparedKind::Destroy, MovementKind::Destroy)
                     | (PreparedKind::Sba, MovementKind::Destroy)
                     | (PreparedKind::ResolvedSacrifice, MovementKind::Sacrifice { .. })))
         { return Err(TransitionError::UnsupportedPath); }
+    }
+    if matches!(prepared, PreparedKind::Movement) && requests.iter().any(|request|
+        request.from == request.to && matches!(request.to, ZoneType::Exile | ZoneType::Command)) {
+        return Err(TransitionError::UnsupportedPath);
     }
     // Linked exiles are still a legacy secondary movement (2B.5). Capture
     // exactly those already in exile before the primary event; a batch member
@@ -1717,6 +1757,25 @@ pub fn return_death_keyword(
 }
 
 /// Commit one simultaneous departure event. All validation and pre-event
+pub(crate) fn preflight_movement_batch(state: &GameState, requests: &[TransitionRequest]) -> Result<(), TransitionError> {
+    if requests.is_empty() { return Ok(()); }
+    validate(state, requests, PreparedKind::Movement).map(|_| ())
+}
+/// Sealed closed-instruction adapter; never exposed as a generic hand move.
+pub(crate) fn preflight_chittering_batch(state: &GameState, requests: &[TransitionRequest]) -> Result<(), TransitionError> {
+    if requests.len() != 1 || requests[0].from != ZoneType::Hand
+        || !super::chittering::request_context(state, &requests[0]) { return Err(TransitionError::UnsupportedPath); }
+    validate(state, requests, PreparedKind::ChitteringHand).map(|_| ())
+}
+pub(crate) fn chittering_batch(state: &mut GameState, requests: &[TransitionRequest], op: &crate::game::PendingMovement) -> Result<CommittedTransitionBatch, TransitionError> {
+    if requests.len() != 1 || requests[0].from != ZoneType::Hand
+        || !super::chittering::committed_context(state, requests, op) { return Err(TransitionError::UnsupportedPath); }
+    commit_batch(state, requests, PreparedKind::ChitteringHand)
+}
+pub(crate) fn movement_batch(state: &mut GameState, requests: &[TransitionRequest]) -> Result<CommittedTransitionBatch, TransitionError> {
+    commit_batch(state, requests, PreparedKind::Movement)
+}
+
 /// capture finish before any mutation. Occurrences enter 2A's pending queue;
 /// this function never places triggers, grants priority, or advances time.
 pub fn transition_batch(
@@ -1748,7 +1807,7 @@ fn commit_batch_with_causes(
         }
         match projection.refresh(state) {
             Ok(refresh) => refresh,
-            Err(error) => { state.sba_failure = Some(error); return Err(TransitionError::CapacityExhausted); }
+            Err(error) => { if !matches!(prepared, PreparedKind::Movement) { state.sba_failure = Some(error); } return Err(TransitionError::CapacityExhausted); }
         }
     };
     let group_id = state.next_zone_event_group_id;

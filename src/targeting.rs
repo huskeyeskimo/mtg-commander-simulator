@@ -25,6 +25,7 @@ pub fn spell_targeting(def: &CardDef) -> SpellTargeting {
 pub(crate) fn effect_targeting(effect: &Effect) -> SpellTargeting {
     use Effect::*;
     match effect {
+        ChitteringRats => SpellTargeting::Unsupported,
         #[cfg(test)]
         TestCopyBatch { copies: _ } => SpellTargeting::Untargeted,
         Multiple(effects) => {
@@ -85,6 +86,7 @@ pub(crate) fn effect_recipients(effect: &Effect) -> EffectRecipients<'_> {
     use Effect::*;
     use EffectRecipients::*;
     match effect {
+        ChitteringRats => SelectedObjects,
         #[cfg(test)]
         TestCopyBatch { copies: _ } => Independent,
         DealDamage { amount: _, target }
@@ -257,7 +259,7 @@ pub(crate) fn equip_activation_context(state: &GameState) -> bool {
     player < state.players.len() && !state.players[player].has_lost
         && player == state.active_player && state.phase.is_main_phase()
         && state.stack.is_empty() && state.pending_tutor.is_none()
-        && state.pending_copy_order.is_none() && !state.cleanup_discard_in_progress
+        && state.pending_copy_order.is_none() && !state.movement_or_hand_pending() && !state.cleanup_discard_in_progress
         && state.pending_triggers.is_empty()
 }
 
@@ -293,7 +295,7 @@ fn validate_equip_endpoint_membership(state: &GameState, id: crate::card::Object
         }
     }
     residents += state.stack.iter().filter(|entry| entry.source.physical_object() == Some(id)).count();
-    if state.pending_copy_order.as_ref().and_then(crate::game::PendingCopyOrder::resolving_entry)
+    if state.resolving_entry()
         .is_some_and(|entry| entry.source.physical_object() == Some(id)) { residents += 1; }
     if residents != usize::from(state.objects.contains_key(&id)) { return Err(StateEncoding); }
     Ok(())
@@ -721,7 +723,7 @@ pub(crate) fn validate_pending_auras(state: &GameState) -> Result<(), crate::sim
 pub(crate) fn aura_cast_context(state: &GameState, source: crate::card::ObjectId) -> bool {
     let player = state.priority_player;
     if player >= state.players.len() || state.players[player].has_lost || state.pending_tutor.is_some()
-        || state.pending_copy_order.is_some() || state.cleanup_discard_in_progress
+        || state.pending_copy_order.is_some() || state.movement_or_hand_pending() || state.cleanup_discard_in_progress
         || !state.pending_triggers.is_empty() || state.trigger_order_resume.is_some() { return false; }
     state.get_characteristics(source).is_some_and(|chars|
         chars.subtypes.iter().any(|s| s.0 == "Aura") && chars.card_types.contains(&CardType::Enchantment)

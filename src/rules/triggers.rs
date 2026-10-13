@@ -15,7 +15,7 @@ fn captured_context(inst: &CardInstance, ability: &TriggeredAbility, cast_spell:
 /// Check all permanents on the battlefield for triggered abilities matching
 /// the given condition, and queue any that trigger.
 pub(super) fn check_triggers(state: &mut GameState, condition: TriggerCondition, source_hint: Option<ObjectId>) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let triggers = collect_triggers(state, condition, source_hint, false);
     state.pending_triggers.extend(triggers);
 }
@@ -23,7 +23,7 @@ pub(super) fn check_triggers(state: &mut GameState, condition: TriggerCondition,
 /// Prepared Aura entry has already refreshed its attached effects. Reuse the
 /// ordinary collector with those computed observation facts before settlement.
 pub(super) fn check_aura_entry_triggers(state: &mut GameState, source: ObjectId) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let mut triggers = collect_triggers(state, TriggerCondition::EntersBattlefield, Some(source), true);
     if state.is_creature(source) {
         triggers.extend(collect_triggers(state, TriggerCondition::ACreatureEnters, None, true));
@@ -55,11 +55,13 @@ fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint:
         };
 
         for (obj_id, mut controller) in objects_to_check {
-            if computed {
-                let chars = state.get_characteristics(obj_id).unwrap();
+            if computed || state.objects.get(&obj_id).is_some_and(|i| i.card_def_id == crate::card::sample::ids::CHITTERING_RATS) {
+                let Some(chars) = state.get_characteristics(obj_id) else { continue; };
                 if chars.abilities_removed { continue; }
                 controller = chars.controller;
             }
+            if state.objects[&obj_id].card_def_id == crate::card::sample::ids::CHITTERING_RATS
+                && !super::reclamation::printed_abilities_available(state, obj_id) { continue; }
             let inst = &state.objects[&obj_id];
             let def = match db.get(inst.card_def_id) {
                 Some(d) => d,
@@ -94,9 +96,9 @@ fn collect_triggers(state: &GameState, condition: TriggerCondition, source_hint:
 /// `false` if paused waiting for a player's ordering decision.
 #[must_use]
 pub(super) fn flush_triggers(state: &mut GameState) -> bool {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.pending_commander_sba.is_some()
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() || state.pending_commander_sba.is_some()
         || state.trigger_placement_deferred || state.cleanup_discard_in_progress { return false; }
-    if state.validate_trigger_placement().is_err() {
+    if state.validate_trigger_placement().is_err() || super::chittering::validate_play(state).is_err() {
         state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return false;
     }
     if state.trigger_placement.is_some() { return false; }
@@ -104,10 +106,16 @@ pub(super) fn flush_triggers(state: &mut GameState) -> bool {
     if state.players.is_empty() || state.active_player >= state.players.len()
         || state.pending_triggers.iter().any(|t| t.controller >= state.players.len() || state.players[t.controller].has_lost)
     { state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return false; }
+    // CR 603.3d follows structural/controller validation and precedes a new window.
+    let placeable: std::collections::HashSet<_> = (0..state.players.len()).filter(|&controller|
+        (0..state.players.len()).any(|p| super::chittering::opponent_legal(state, controller, p))).collect();
+    state.pending_triggers.retain(|t| !super::chittering::trigger(t) || placeable.contains(&t.controller));
+    if state.pending_triggers.is_empty() { return true; }
     loop {
         let Some(controller) = state.pending_triggers.iter().map(|t|t.controller)
             .min_by_key(|p| (p + state.players.len() - state.active_player) % state.players.len()) else { return true; };
-        if state.pending_triggers.iter().filter(|t|t.controller == controller).count() != 1 { break; }
+        if state.pending_triggers.iter().filter(|t|t.controller == controller).count() != 1
+            || state.pending_triggers.iter().any(|t| t.controller == controller && super::chittering::trigger(t)) { break; }
         if state.next_stack_id.checked_add(1).is_none() {
             state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return false;
         }
@@ -138,15 +146,25 @@ pub(super) fn flush_triggers(state: &mut GameState) -> bool {
 
 /// Commit exactly one represented occurrence; no priority or SBA within a window.
 pub(super) fn choose_next_trigger(state: &mut GameState, handle: crate::game::TriggerOccurrenceHandle) {
+    place_next_trigger(state, handle, None);
+}
+pub(super) fn place_chittering_trigger(state: &mut GameState, handle: crate::game::TriggerOccurrenceHandle, opponent: usize) {
+    place_next_trigger(state, handle, Some(opponent));
+}
+fn place_next_trigger(state: &mut GameState, handle: crate::game::TriggerOccurrenceHandle, opponent: Option<usize>) {
     if state.validate_trigger_placement().is_err() { return; }
     let Some(op) = &state.trigger_placement else { return; };
     if op.window != handle.window { return; }
     let Some(slot) = state.pending_triggers.iter().position(|t|
         t.placement == Some(handle) && t.controller == op.controller) else { return; };
+    let t = &state.pending_triggers[slot];
+    if super::chittering::trigger(t) != opponent.is_some()
+        || opponent.is_some_and(|p| !super::chittering::opponent_legal(state, t.controller, p)) { return; }
     if state.next_stack_id.checked_add(1).is_none() {
         state.sba_failure = Some(super::sba::PreparedPassFailure::StateEncoding); return;
     }
-    let trigger = state.pending_triggers.remove(slot);
+    let mut trigger = state.pending_triggers.remove(slot);
+    if let Some(opponent) = opponent { trigger.targets = vec![crate::game::Target::Player(opponent)]; }
     push_trigger_to_stack(state, &trigger);
     state.trigger_placement.as_mut().unwrap().placed.push(handle.occurrence);
     let controller = state.pending_triggers.iter().filter(|t|t.placement.is_some())
@@ -166,7 +184,7 @@ pub(super) fn choose_next_trigger(state: &mut GameState, handle: crate::game::Tr
 
 /// Push a single trigger onto the stack as a TriggeredAbility entry.
 pub(super) fn push_trigger_to_stack(state: &mut GameState, trigger: &PendingTrigger) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let stack_id = state.new_stack_id();
     state.stack.push(StackEntry {
         id: stack_id,
@@ -190,7 +208,7 @@ pub(super) fn push_trigger_to_stack(state: &mut GameState, trigger: &PendingTrig
 /// for a player's ordering decision (i.e. pending_triggers is non-empty).
 #[must_use]
 pub fn fire_triggers(state: &mut GameState, condition: TriggerCondition, source_hint: Option<ObjectId>) -> bool {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return false; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return false; }
     check_triggers(state, condition, source_hint);
     flush_triggers(state)
 }
@@ -241,7 +259,7 @@ pub(super) fn mana_from_swamp_bonus_count(state: &GameState, player: PlayerIndex
 /// `caster` is the player who cast the spell. `is_creature` indicates whether
 /// the spell is a creature spell (relevant for OpponentCastsNoncreatureSpell).
 pub(super) fn fire_spell_cast_triggers(state: &mut GameState, caster: PlayerIndex, is_creature: bool, spell_stack_id: StackId) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let triggers: Vec<PendingTrigger> = {
         let db = state.card_db();
         let mut found = Vec::new();
@@ -257,6 +275,8 @@ pub(super) fn fire_spell_cast_triggers(state: &mut GameState, caster: PlayerInde
         });
 
         for &obj_id in &state.battlefield {
+            if state.objects[&obj_id].card_def_id == crate::card::sample::ids::CHITTERING_RATS
+                && !super::reclamation::printed_abilities_available(state, obj_id) { continue; }
             let inst = &state.objects[&obj_id];
             let def = match db.get(inst.card_def_id) {
                 Some(d) => d,
@@ -360,7 +380,7 @@ fn apply_prowess(state: &mut GameState, caster: PlayerIndex) {
 /// `drawing_player` is the player who drew. This fires `OpponentDrawsCard`
 /// on permanents controlled by each opponent of the drawing player.
 pub(super) fn fire_card_draw_triggers(state: &mut GameState, drawing_player: PlayerIndex) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let triggers: Vec<PendingTrigger> = {
         let db = state.card_db();
         let mut found = Vec::new();
@@ -397,7 +417,7 @@ pub(super) fn fire_card_draw_triggers(state: &mut GameState, drawing_player: Pla
 /// Apply Exalted: when exactly one creature attacks, each permanent you control
 /// with Exalted gives the attacker +1/+1 until end of turn.
 pub(super) fn apply_exalted(state: &mut GameState, attacker_id: ObjectId) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     use crate::card::KeywordAbility;
     use crate::layers::{AffectedObjects, ContinuousEffect, Duration, LayerModification};
 
@@ -435,7 +455,7 @@ pub(super) fn apply_exalted(state: &mut GameState, attacker_id: ObjectId) {
 /// Apply Annihilator: when a creature with Annihilator N attacks, the defending
 /// player sacrifices N permanents (simplified: random permanents).
 pub(super) fn apply_annihilator(state: &mut GameState, attackers: &[ObjectId]) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
 
     let defending_player = state.next_player(state.active_player);
 
@@ -500,7 +520,7 @@ pub(super) fn apply_annihilator(state: &mut GameState, attackers: &[ObjectId]) {
 /// Apply Extort: when a spell is cast, each permanent with Extort drains 1 life
 /// from each opponent (simplified: auto-extort without optional payment).
 pub(super) fn apply_extort(state: &mut GameState, caster: PlayerIndex) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     use crate::card::KeywordAbility;
 
     let extort_count = {

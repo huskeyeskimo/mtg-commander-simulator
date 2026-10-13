@@ -88,7 +88,7 @@ pub(super) fn build_dynamic_context(state: &GameState, controller: PlayerIndex) 
 /// which clones only if needed) and creates a CardInstance marked as a token.
 /// Fires ETB triggers for the token.
 pub(super) fn create_token(state: &mut GameState, token_def: &TokenDef, controller: PlayerIndex) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     if token_def.subtypes.iter().any(|s| s.0 == "Aura") {
         super::aura::record_entry_failure(state, super::transitions::TransitionError::UnsupportedPath); return;
     }
@@ -143,7 +143,7 @@ pub(crate) fn create_token_from_combo(
     token_def: &TokenDef,
     controller: PlayerIndex,
 ) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     if token_def.subtypes.iter().any(|s| s.0 == "Aura") {
         super::aura::record_entry_failure(state, super::transitions::TransitionError::UnsupportedPath); return;
     }

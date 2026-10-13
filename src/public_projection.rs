@@ -12,7 +12,7 @@ use crate::card::{ExactObjectRef, ObjectId, ZoneType};
 use crate::game::{GameState, PlayerView, StackSource, Target, TriggerContext};
 use crate::simulation::TerminationReason;
 
-pub const PROJECTION_SCHEMA: u16 = 4;
+pub const PROJECTION_SCHEMA: u16 = 7;
 type EncodingResult<T> = Result<T, TerminationReason>;
 
 pub fn encode<T: Serialize>(value: &T) -> EncodingResult<Vec<u8>> {
@@ -776,6 +776,7 @@ pub struct JointPublicNormalization<'a> {
 
 #[derive(Debug, Clone)]
 pub struct JointPublicData {
+    pub movement_candidates: HashMap<crate::game::MovementReplacementCandidate, SemanticCoordinate>,
     pub encoding: Vec<u8>,
     pub current_ids: HashSet<ObjectId>,
     pub exact_to_coordinate: HashMap<ExactObjectRef, SemanticCoordinate>,
@@ -822,6 +823,7 @@ struct Inventory<'v, 'a> {
     pending_vertices: Vec<usize>,
     stack_vertices: Vec<usize>,
     resolving_entry_vertex: Option<usize>,
+    movement_candidate_vertices: HashMap<crate::game::MovementReplacementCandidate, usize>,
     stack_occurrence_vertices: Vec<Option<usize>>,
     resolving_occurrence_vertex: Option<usize>,
 }
@@ -947,7 +949,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                 (_, None) => {}
             }
         }
-        let resolving = self.view.pending_copy_order.and_then(|op| op.resolving_entry());
+        let resolving = self.view.resolving_entry();
         if resolving.is_some() != self.resolving_entry_vertex.is_some() {
             return Err(fail);
         }
@@ -985,8 +987,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                 _ => None,
             }))
             .chain(
-                view.pending_copy_order
-                    .and_then(|operation| operation.resolving_entry())
+                view.resolving_entry()
                     .and_then(|entry| match &entry.source {
                         StackSource::TriggeredAbility { context, .. } => Some(context.as_ref()),
                         _ => None,
@@ -1016,6 +1017,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
             pending_vertices: Vec::new(),
             stack_vertices: Vec::new(),
             resolving_entry_vertex: None,
+            movement_candidate_vertices: HashMap::new(),
             stack_occurrence_vertices: Vec::new(),
             resolving_occurrence_vertex: None,
         }
@@ -1314,9 +1316,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                     }),
             )
             .chain(
-                self.view
-                    .pending_copy_order
-                    .and_then(|operation| operation.resolving_entry())
+                self.view.resolving_entry()
                     .and_then(|entry| match &entry.source {
                         StackSource::TriggeredAbility { context, .. } => Some(context.as_ref()),
                         _ => None,
@@ -1713,12 +1713,17 @@ impl<'v, 'a> Inventory<'v, 'a> {
                 VertexKind::Replacement,
                 &(
                     replacement.controller,
-                    &replacement.applies_to,
+                    &crate::replacement::public_predicate(&replacement.applies_to),
                     &replacement.action,
                     replacement.is_self_replacement,
                 ),
             )?;
-            let source = self.raw(replacement.source_id)?;
+            let source = match replacement.applies_to {
+                crate::replacement::ReplacementEventKind::WouldMoveTo { source_generation, .. } => {
+                    self.legacy_exact(ExactObjectRef { id: replacement.source_id, generation: source_generation })?
+                }
+                _ => self.raw(replacement.source_id)?,
+            };
             self.graph
                 .edge(record, source, EdgeKind::ReplacementSource, &())?;
         }
@@ -1786,6 +1791,17 @@ impl<'v, 'a> Inventory<'v, 'a> {
         Ok((source, target))
     }
 
+    fn reclamation_endpoints(&mut self, entry: &crate::game::StackEntry) -> EncodingResult<(usize, usize)> {
+        let StackSource::ReclamationAbility { source, source_owner, target_card_id } = entry.source else { unreachable!() };
+        let target = crate::rules::reclamation::entry_target(entry).map_err(|_| TerminationReason::StateEncoding)?;
+        if source_owner >= self.view.player_count || entry.controller >= self.view.player_count || source.id == target.id
+            || self.view.card_db.get(crate::card::sample::ids::PHYREXIAN_RECLAMATION).is_none()
+            || self.view.card_db.get(target_card_id).is_none_or(|d| !d.is_creature()) { return Err(TerminationReason::StateEncoding); }
+        let source = self.exact(source, StableIdentityFacts { definition: Some(crate::card::sample::ids::PHYREXIAN_RECLAMATION), owner: Some(source_owner), token: Some(false) })?;
+        let target = self.exact(target, StableIdentityFacts { definition: Some(target_card_id), owner: Some(entry.controller), token: Some(false) })?;
+        Ok((source, target))
+    }
+
     fn aura_endpoints(&mut self, entry: &crate::game::StackEntry) -> EncodingResult<(usize, usize)> {
         let Some((source, target)) = crate::targeting::aura_entry_endpoints(entry, self.view.card_db,
             self.view.player_count, |id| self.view.objects.get(&id).copied())? else { return Err(TerminationReason::StateEncoding); };
@@ -1793,6 +1809,20 @@ impl<'v, 'a> Inventory<'v, 'a> {
         let source = self.exact(source, StableIdentityFacts { definition: Some(source_card_id), owner: Some(source_owner), token: Some(false) })?;
         let target = self.exact(target, StableIdentityFacts { definition: Some(target_card_id), owner: Some(target_owner), token: Some(target_is_token) })?;
         Ok((source, target))
+    }
+
+    fn movement_candidate(&mut self, candidate: &crate::game::MovementReplacementCandidate) -> EncodingResult<usize> {
+        use crate::game::MovementReplacementCandidate;
+        match candidate {
+            MovementReplacementCandidate::Commander(designation) => self.graph.vertex(VertexKind::Replacement, &(1u8, designation)),
+            MovementReplacementCandidate::Ordinary { source, controller, predicate, action, self_replacement, occurrence } => {
+                let record = self.graph.vertex(VertexKind::Replacement,
+                    &(2u8, controller, crate::replacement::public_predicate(predicate), action, self_replacement, occurrence))?;
+                let source = self.legacy_exact(*source)?;
+                self.graph.edge(record, source, EdgeKind::ReplacementSource, &())?;
+                Ok(record)
+            }
+        }
     }
 
     fn operations(&mut self) -> EncodingResult<()> {
@@ -1816,6 +1846,71 @@ impl<'v, 'a> Inventory<'v, 'a> {
         if let Some(summary) = &self.view.pending_commander_sba {
             self.graph.vertex(VertexKind::StackOrOperation, &(5u8, summary))?;
         }
+        if let Some(op) = self.view.pending_movement {
+            let operation = self.graph.vertex(VertexKind::StackOrOperation,
+                &(6u8, op.active_player, op.instruction_controller, op.resume_priority, &op.instruction, &op.envelope, op.instruction_index, &op.shuffle_owners))?;
+            for candidate in &op.catalog {
+                let vertex = self.movement_candidate(candidate)?;
+                self.movement_candidate_vertices.insert(candidate.clone(), vertex);
+                self.graph.edge(operation, vertex, EdgeKind::ContinuationMember, &0u8)?;
+            }
+            for p in &op.proposals {
+                let subject = self.exact(p.request.object, StableIdentityFacts {
+                    definition: None, owner: Some(p.owner), token: None })?;
+                let proposal = self.graph.vertex(VertexKind::StackOrOperation,
+                    &(7u8, p.request.from, p.request.to, p.request.kind, p.owner, p.affected_controller,
+                        p.commander, p.placement, p.proposed, p.revision, p.declined_revision, p.commander_selected, p.canceled, p.is_token))?;
+                self.graph.edge(operation, proposal, EdgeKind::ContinuationMember, &1u8)?;
+                self.graph.edge(proposal, subject, EdgeKind::ContinuationTarget, &())?;
+                for candidate in &p.consumed {
+                    let vertex = *self.movement_candidate_vertices.get(candidate).ok_or(TerminationReason::StateEncoding)?;
+                    self.graph.edge(proposal, vertex, EdgeKind::ReplacementSource, &())?;
+                }
+                if let Some(designation) = p.commander {
+                    let candidate = crate::game::MovementReplacementCandidate::Commander(designation);
+                    let vertex = self.movement_candidate(&candidate)?;
+                    self.movement_candidate_vertices.insert(candidate, vertex);
+                    self.graph.edge(proposal, vertex, EdgeKind::ContinuationMember, &2u8)?;
+                }
+            }
+            let mut decision_position = 0usize;
+            for h in &op.history {
+                let position = if h.automatic { None } else { let position = decision_position; decision_position += 1; Some(position) };
+                let answer = match h.decision { crate::game::MovementDecision::Select(_) => (0u8, None),
+                    crate::game::MovementDecision::Commander(answer) => (1u8, Some(answer)), crate::game::MovementDecision::LibraryNext => (2u8, None) };
+                let private_order = matches!(h.decision, crate::game::MovementDecision::LibraryNext) && h.chooser != self.view.viewer;
+                let result = (!private_order).then_some((h.resulting_destination, h.resulting_revision));
+                let history = self.graph.vertex(VertexKind::StackOrOperation,
+                    &(8u8, position, h.chooser, answer, result))?;
+                self.graph.edge(operation, history, EdgeKind::ContinuationMember, &3u8)?;
+                if !matches!(h.decision, crate::game::MovementDecision::LibraryNext) || h.chooser == self.view.viewer {
+                    let subject = self.legacy_exact(h.object)?;
+                    self.graph.edge(history, subject, EdgeKind::ContinuationTarget, &())?;
+                }
+                if let crate::game::MovementDecision::Select(candidate) = &h.decision {
+                    let vertex = *self.movement_candidate_vertices.get(candidate).ok_or(TerminationReason::StateEncoding)?;
+                    self.graph.edge(history, vertex, EdgeKind::ReplacementSource, &())?;
+                }
+            }
+        }
+        // The public resolver and wait are identical throughout every private
+        // selection/replacement prefix. Only its owner sees the child operation.
+        if let Some(wait) = self.view.chittering_wait {
+            let record = self.graph.vertex(VertexKind::StackOrOperation, &(10u8, wait))?;
+            let entry = self.view.chittering_entry.ok_or(TerminationReason::StateEncoding)?;
+            crate::rules::chittering::entry_opponent(entry, self.view.player_count).map_err(|_| TerminationReason::StateEncoding)?;
+            let StackSource::TriggeredAbility { source_id, ability_index, context } = &entry.source else { return Err(TerminationReason::StateEncoding); };
+            let member = self.graph.vertex(VertexKind::StackOrOperation, &(11u8, entry.controller))?;
+            self.resolving_entry_vertex = Some(member);
+            self.graph.edge(record, member, EdgeKind::ContinuationMember, &())?;
+            let occurrence = self.occurrence(*source_id, *ability_index, entry.controller, context, None)?;
+            self.resolving_occurrence_vertex = Some(occurrence);
+            self.graph.edge(member, occurrence, EdgeKind::StackSource, &())?;
+            self.targets(member, &entry.targets, &entry.target_generations, EdgeKind::ContinuationTarget, &HashMap::new())?;
+            if self.view.pending_chittering.is_some() {
+                self.graph.vertex(VertexKind::StackOrOperation, &(12u8, wait.2))?;
+            }
+        }
         let mut records = HashMap::new();
         for (position, entry) in self.view.stack.iter().enumerate() {
             if let StackSource::AuraSpell { source, .. } = entry.source {
@@ -1833,6 +1928,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                 }
                 StackSource::SpellCopy { definition } => encode(&(3u8, definition))?,
                 StackSource::EquipAbility { source_card_id, target_card_id, .. } => encode(&(4u8, source_card_id, target_card_id))?,
+                StackSource::ReclamationAbility { source_owner, target_card_id, .. } => encode(&(6u8, source_owner, target_card_id))?,
                 StackSource::AuraSpell { source_card_id, source_owner, target_card_id, target_owner, target_controller, target_is_token, restriction, .. } => encode(&(5u8, source_card_id, source_owner, target_card_id, target_owner, target_controller, target_is_token, restriction))?,
             };
             let record = self.graph.vertex(
@@ -1876,6 +1972,11 @@ impl<'v, 'a> Inventory<'v, 'a> {
                     self.graph.edge(record, target, EdgeKind::StackTarget, &(0usize, 0u8, true))?;
                     (Some(source), None)
                 }
+                StackSource::ReclamationAbility { .. } => {
+                    let (source, target) = self.reclamation_endpoints(entry)?;
+                    self.graph.edge(record, target, EdgeKind::StackTarget, &(0usize, 0u8, true))?;
+                    (Some(source), None)
+                }
                 StackSource::EquipAbility { .. } => {
                     let (source, target) = self.equip_endpoints(entry)?;
                     self.graph.edge(record, target, EdgeKind::StackTarget, &(0usize, 0u8, true))?;
@@ -1887,7 +1988,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                 self.graph
                     .edge(record, source, EdgeKind::StackSource, &())?;
             }
-            if !matches!(entry.source, StackSource::EquipAbility { .. } | StackSource::AuraSpell { .. }) {
+            if !matches!(entry.source, StackSource::EquipAbility { .. } | StackSource::AuraSpell { .. } | StackSource::ReclamationAbility { .. }) {
                 self.targets(record, &entry.targets, &entry.target_generations, EdgeKind::StackTarget, &records)?;
             }
         }
@@ -1932,6 +2033,7 @@ impl<'v, 'a> Inventory<'v, 'a> {
                     }
                     StackSource::SpellCopy { definition } => encode(&(3u8, definition))?,
                     StackSource::EquipAbility { source_card_id, target_card_id, .. } => encode(&(4u8, source_card_id, target_card_id))?,
+                StackSource::ReclamationAbility { source_owner, target_card_id, .. } => encode(&(6u8, source_owner, target_card_id))?,
                 StackSource::AuraSpell { source_card_id, source_owner, target_card_id, target_owner, target_controller, target_is_token, restriction, .. } => encode(&(5u8, source_card_id, source_owner, target_card_id, target_owner, target_controller, target_is_token, restriction))?,
                 };
                 let member = self.graph.vertex(
@@ -1969,6 +2071,11 @@ impl<'v, 'a> Inventory<'v, 'a> {
                         Some(occurrence)
                     }
                     StackSource::AuraSpell { .. } => return Err(TerminationReason::StateEncoding),
+                    StackSource::ReclamationAbility { .. } => {
+                        let (source, target) = self.reclamation_endpoints(entry)?;
+                        self.graph.edge(member, target, EdgeKind::ContinuationTarget, &(0usize, 0u8, true))?;
+                        Some(source)
+                    }
                     StackSource::EquipAbility { .. } => {
                         let (source, target) = self.equip_endpoints(entry)?;
                         self.graph.edge(member, target, EdgeKind::ContinuationTarget, &(0usize, 0u8, true))?;
@@ -1983,7 +2090,82 @@ impl<'v, 'a> Inventory<'v, 'a> {
                     self.graph
                         .edge(member, source, EdgeKind::StackSource, &())?;
                 }
-                if !matches!(entry.source, StackSource::EquipAbility { .. } | StackSource::AuraSpell { .. }) {
+                if !matches!(entry.source, StackSource::EquipAbility { .. } | StackSource::AuraSpell { .. } | StackSource::ReclamationAbility { .. }) {
+                    self.targets(member, &entry.targets, &entry.target_generations, EdgeKind::ContinuationTarget, &records)?;
+                }
+            }
+        }
+        if let Some(operation) = self.view.pending_movement.filter(|op| !crate::rules::chittering::private_operation(op)) {
+            let record = self.graph.vertex(VertexKind::StackOrOperation, &(9u8, operation.instruction_controller))?;
+            if let Some(entry) = operation.resolving_entry.as_deref() {
+                let source_facts = match &entry.source {
+                    StackSource::Spell(_) => encode(&(0u8,))?,
+                    StackSource::ActivatedAbility { ability_index, .. } => {
+                        encode(&(1u8, ability_index))?
+                    }
+                    StackSource::TriggeredAbility { ability_index, .. } => {
+                        encode(&(2u8, ability_index))?
+                    }
+                    StackSource::SpellCopy { definition } => encode(&(3u8, definition))?,
+                    StackSource::EquipAbility { source_card_id, target_card_id, .. } => encode(&(4u8, source_card_id, target_card_id))?,
+                StackSource::ReclamationAbility { source_owner, target_card_id, .. } => encode(&(6u8, source_owner, target_card_id))?,
+                StackSource::AuraSpell { source_card_id, source_owner, target_card_id, target_owner, target_controller, target_is_token, restriction, .. } => encode(&(5u8, source_card_id, source_owner, target_card_id, target_owner, target_controller, target_is_token, restriction))?,
+                };
+                let member = self.graph.vertex(
+                    VertexKind::StackOrOperation,
+                    &(3u8, entry.controller, source_facts),
+                )?;
+                self.resolving_entry_vertex = Some(member);
+                self.graph
+                    .edge(record, member, EdgeKind::ContinuationMember, &())?;
+                let source = match &entry.source {
+                    StackSource::Spell(id) => Some(
+                        if let Some(generation) = self.view.visible_current_generation(*id) {
+                            self.legacy_exact(ExactObjectRef {
+                                id: *id,
+                                generation,
+                            })?
+                        } else {
+                            self.opaque(LegacyHandle::Object(*id), 0)?
+                        },
+                    ),
+                    StackSource::ActivatedAbility { source_id: id, .. } => Some(self.raw(*id)?),
+                    StackSource::TriggeredAbility {
+                        source_id,
+                        ability_index,
+                        context,
+                    } => {
+                        let occurrence = self.occurrence(
+                            *source_id,
+                            *ability_index,
+                            entry.controller,
+                            context,
+                            None,
+                        )?;
+                        self.resolving_occurrence_vertex = Some(occurrence);
+                        Some(occurrence)
+                    }
+                    StackSource::AuraSpell { .. } => return Err(TerminationReason::StateEncoding),
+                    StackSource::ReclamationAbility { .. } => {
+                        let (source, target) = self.reclamation_endpoints(entry)?;
+                        self.graph.edge(member, target, EdgeKind::ContinuationTarget, &(0usize, 0u8, true))?;
+                        Some(source)
+                    }
+                    StackSource::EquipAbility { .. } => {
+                        let (source, target) = self.equip_endpoints(entry)?;
+                        self.graph.edge(member, target, EdgeKind::ContinuationTarget, &(0usize, 0u8, true))?;
+                        Some(source)
+                    }
+                    StackSource::SpellCopy { definition } => Some(
+                        self.graph
+                            .vertex(VertexKind::StackOrOperation, &(4u8, definition))?,
+                    ),
+                };
+                if let Some(source) = source {
+                    self.graph
+                        .edge(member, source, EdgeKind::StackSource, &())?;
+                }
+                if !matches!(entry.source, StackSource::EquipAbility { .. } | StackSource::AuraSpell { .. } | StackSource::ReclamationAbility { .. }) {
                     self.targets(member, &entry.targets, &entry.target_generations, EdgeKind::ContinuationTarget, &records)?;
                 }
             }
@@ -2061,6 +2243,7 @@ impl<'v, 'a> PreparedPublicNormalization<'v, 'a> {
     }
 
     pub(crate) fn validate_state(state: &GameState, player: usize) -> EncodingResult<()> {
+        if state.validate_movement_play().is_err() || crate::rules::reclamation::validate_play(state).is_err() || crate::rules::chittering::validate_play(state).is_err() { return Err(TerminationReason::StateEncoding); }
         if player >= state.players.len() || state.players.len() < 2 {
             return Err(TerminationReason::StateEncoding);
         }
@@ -2134,8 +2317,7 @@ impl<'v, 'a> PreparedPublicNormalization<'v, 'a> {
                 _ => None,
             }))
             .chain(
-                view.pending_copy_order
-                    .and_then(|operation| operation.resolving_entry())
+                view.resolving_entry()
                     .and_then(|entry| match &entry.source {
                         StackSource::TriggeredAbility { context, .. } => Some(context.as_ref()),
                         _ => None,
@@ -2195,9 +2377,7 @@ impl<'v, 'a> PreparedPublicNormalization<'v, 'a> {
                 _ => Ok(None),
             })
             .collect::<EncodingResult<_>>()?;
-        let resolving_occurrence = match view
-            .pending_copy_order
-            .and_then(|operation| operation.resolving_entry())
+        let resolving_occurrence = match view.resolving_entry()
         {
             Some(crate::game::StackEntry {
                 controller,
@@ -2247,6 +2427,7 @@ impl<'v, 'a> PreparedPublicNormalization<'v, 'a> {
         crate::rules::transitions::NORMALIZATION_CALLS.with(|calls| calls.set(calls.get() + 1));
         Ok(JointPublicNormalization {
             data: JointPublicData {
+                movement_candidates: inventory.movement_candidate_vertices.iter().map(|(candidate, vertex)| (candidate.clone(), vertex_coordinates[vertex])).collect(),
                 encoding,
                 current_ids: view.objects.keys().copied().collect(),
                 exact_to_coordinate,
@@ -2264,6 +2445,7 @@ impl<'v, 'a> PreparedPublicNormalization<'v, 'a> {
 
 impl<'a> JointPublicNormalization<'a> {
     pub fn for_state(state: &'a GameState, player: usize) -> EncodingResult<Self> {
+        if state.validate_movement_play().is_err() || crate::rules::reclamation::validate_play(state).is_err() || crate::rules::chittering::validate_play(state).is_err() { return Err(TerminationReason::StateEncoding); }
         if player >= state.players.len() || state.players.len() < 2 {
             return Err(TerminationReason::StateEncoding);
         }

@@ -118,7 +118,7 @@ fn isolated_twins(state: &GameState, candidates: &[ObjectId]) -> bool {
     let ids: HashSet<_> = candidates.iter().copied().collect();
     let generation = state.objects[&candidates[0]].zone_change_count;
     let stored_controller = state.objects[&candidates[0]].controller;
-    if state.pending_copy_order.is_some() || state.pending_tutor.is_some() {
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() || state.pending_tutor.is_some() {
         return false;
     }
     if candidates.iter().any(|id| {
@@ -205,7 +205,7 @@ fn isolated_twins(state: &GameState, candidates: &[ObjectId]) -> bool {
                     source_id, context, ..
                 } => ids.contains(source_id) || context_mentions(context, &ids),
                 StackSource::SpellCopy { .. } => false,
-                StackSource::EquipAbility { source, .. } | StackSource::AuraSpell { source, .. } => ids.contains(&source.id),
+                StackSource::EquipAbility { source, .. } | StackSource::AuraSpell { source, .. } | StackSource::ReclamationAbility { source, .. } => ids.contains(&source.id),
             }
     })
 }
@@ -258,10 +258,7 @@ fn prepare_token_cessations(
     }
     // A physical spell may be temporarily owned by the existing copy-order
     // continuation. Normal SBA entry is deferred there; keep preflight exact.
-    if let Some(entry) = state
-        .pending_copy_order
-        .as_ref()
-        .and_then(|pending| pending.resolving_entry())
+    if let Some(entry) = state.resolving_entry()
     {
         if let Some(id) = entry.source.physical_object() {
             physical_stack.entry(id).or_default().push(entry.controller);
@@ -564,11 +561,11 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
     if state.unsupported_continuing_elimination() {
         return super::loss::adjudicate(state, None);
     }
-    if state.validate_commanders().is_err() || state.validate_commander_choices().is_err()
-        || state.validate_trigger_placement().is_err() {
+    if state.validate_commanders().is_err() || state.validate_commander_choices().is_err() || state.validate_movement_choices().is_err()
+        || super::chittering::validate_play(state).is_err() || state.validate_trigger_placement().is_err() {
         state.sba_failure = Some(PreparedPassFailure::StateEncoding); return false;
     }
-    if state.pending_copy_order.is_some() || state.trigger_placement.is_some()
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() || state.trigger_placement.is_some()
         || state.pending_commander_sba.is_some() {
         return false;
     }
@@ -641,7 +638,7 @@ pub fn check_state_based_actions(state: &mut GameState) -> bool {
 pub(super) fn choose_commander_sba(state: &mut GameState,
     designation: crate::game::CommanderDesignation, to_command: bool) -> bool {
     let Some(op) = &state.pending_commander_sba else { return false; };
-    if state.validate_commander_choices().is_err() || op.chooser() != Some(state.priority_player) {
+    if state.validate_commander_choices().is_err() || state.validate_movement_choices().is_err() || op.chooser() != Some(state.priority_player) {
         return false;
     }
     let Some(index) = op.offers.iter().enumerate().find_map(|(i, offer)|

@@ -151,7 +151,7 @@ impl App {
         let encoding_error = if state.gameplay_stopped() { None } else {
             crate::public_projection::JointPublicNormalization::for_state(&state, state.priority_player).err()
         };
-        let cached_actions = if encoding_error.is_some() { Vec::new() } else { legal_actions(&state) };
+        let cached_actions = if state.chittering_waits_for_other(0) || encoding_error.is_some() { Vec::new() } else { legal_actions(&state) };
         let mut zone_cursors = HashMap::new();
         for &z in ZONE_ORDER {
             zone_cursors.insert(z, 0);
@@ -214,7 +214,7 @@ impl App {
 
     pub fn refresh_actions(&mut self) {
         if !self.encoding_is_valid() { return; }
-        self.cached_actions = legal_actions(&self.state);
+        self.cached_actions = if self.state.chittering_waits_for_other(0) { Vec::new() } else { legal_actions(&self.state) };
         let len = self.cached_actions.len();
         if len > 0 {
             let cur = *self.zone_cursors.get(&Zone::Actions).unwrap_or(&0);
@@ -233,8 +233,8 @@ impl App {
             return true;
         }
         legal_actions(&self.state).iter().any(|action| matches!(action,
-            Action::ChooseCommanderSba { .. } | Action::ChooseNextCopy { .. }
-                | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
+            Action::ChooseCommanderSba { .. } | Action::ChooseNextCopy { .. } | Action::ChooseMovementReplacement { .. } | Action::ChooseCommanderMovement { .. } | Action::ChooseLibraryPlacement { .. }
+                | Action::PlaceChitteringTrigger { .. } | Action::ChooseChitteringCard { .. } | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
                 | Action::OrderTriggerOccurrences { .. }
                 | Action::ChooseTutorTarget { .. }
                 | Action::ChooseReplacementOrder { .. }
@@ -399,6 +399,8 @@ pub fn action_involves_object(action: &Action, oid: ObjectId) -> bool {
         | Action::CastFromGraveyard { object_id, .. }
         | Action::Discard { object_id }
         | Action::MulliganBottomCard { object_id } => *object_id == oid,
+        Action::ChooseChitteringCard { card, .. } => card.id == oid,
+        Action::ActivateReclamation { source, target } => source.id == oid || target.id == oid,
         Action::DeclareAttackers { attackers } => attackers.contains(&oid),
         Action::Equip { equipment_id, target_id } => {
             *equipment_id == oid || *target_id == oid
@@ -505,13 +507,12 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let opp_life = app.state.players[1].life;
 
     let header_text = format!(
-        " Turn {} | Phase: {} | Life: {} | Opp Life: {} | Mana: {} | Actions: {} ",
+        " Turn {} | Phase: {} | Life: {} | Opp Life: {} | Mana: {} ",
         app.state.turn_number,
         phase_str,
         app.state.players[0].life,
         opp_life,
         if mana_str.is_empty() { "empty".into() } else { mana_str },
-        app.actions_taken,
     );
 
     let mode_str = match &app.mode {
@@ -960,6 +961,7 @@ pub fn format_stack_entry(state: &GameState, entry: &crate::game::StackEntry, db
         crate::game::StackSource::SpellCopy { definition } => {
             format!("Spell copy: {} (stack #{})", definition.name, entry.id)
         }
+        crate::game::StackSource::ReclamationAbility { target_card_id, .. } => format!("Reclamation -> {}", db.get(*target_card_id).map(|d| d.name.as_str()).unwrap_or("?")),
         crate::game::StackSource::ActivatedAbility { source_id, ability_index } => {
             let name = card_name(state, *source_id, db);
             format!("Ability: {} #{}", name, ability_index)
@@ -994,7 +996,15 @@ pub fn format_mana_pool(pool: &crate::mana::ManaPool) -> String {
 }
 
 pub fn format_action_short(state: &GameState, action: &Action, db: &CardDatabase) -> String {
+    if state.chittering_waits_for_other(0) { return "Waiting for opponent's private choice".into(); }
     match action {
+        Action::PlaceChitteringTrigger { handle, opponent } => format!("{} -> Player {}", crate::action::trigger_choice_label(state, *handle), opponent),
+        Action::ChooseChitteringCard { card, .. } => format!("Put {} on top of your library", card_name(state, card.id, db)),
+        Action::ChooseMovementReplacement { .. } => "Choose movement replacement".into(),
+        Action::ChooseCommanderMovement { to_command, .. } => if *to_command { "Put commander in command zone".into() } else { "Keep proposed destination".into() },
+        Action::ChooseLibraryPlacement { object, .. } => if state.priority_player == 0 {
+            format!("Place {} next", state.objects.get(&object.id).and_then(|i| state.card_db().get(i.card_def_id)).map(|d| d.name.as_str()).unwrap_or("card"))
+        } else { "Choose private library order".into() },
         Action::ChooseCommanderSba { designation, to_command } => format!(
             "{} for Commander {}",
             if *to_command { "Move to command zone" } else { "Decline command-zone move" }, designation.role),
@@ -1035,6 +1045,7 @@ pub fn format_action_short(state: &GameState, action: &Action, db: &CardDatabase
                 .unwrap_or_else(|| "?".into());
             format!("Tap: {} ({})", name, mana_desc)
         }
+        Action::ActivateReclamation { target, .. } => format!("Activate Phyrexian Reclamation -> {}", card_name(state, target.id, db)),
         Action::ActivateAbility { object_id, ability_index, targets } => {
             let name = card_name(state, *object_id, db);
             let tgt = format_targets(state, targets, db);

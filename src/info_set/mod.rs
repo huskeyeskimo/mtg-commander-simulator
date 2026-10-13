@@ -404,11 +404,12 @@ fn stack_entry_to_info(
             .unwrap_or(0),
         StackSource::TriggeredAbility { context, .. } => context.source_card_id,
         StackSource::SpellCopy { definition } => definition.id,
+        StackSource::ReclamationAbility { .. } => crate::card::sample::ids::PHYREXIAN_RECLAMATION,
         StackSource::EquipAbility { source_card_id, .. } | StackSource::AuraSpell { source_card_id, .. } => *source_card_id,
     };
 
     let target_summary = match &entry.source {
-        StackSource::EquipAbility { target_card_id, .. } | StackSource::AuraSpell { target_card_id, .. } => {
+        StackSource::EquipAbility { target_card_id, .. } | StackSource::AuraSpell { target_card_id, .. } | StackSource::ReclamationAbility { target_card_id, .. } => {
             // The joint witness carries endpoint incidence. This owned summary
             // never falls back to a raw missing ID or a newer current object.
             let mut h = DefaultHasher::new();

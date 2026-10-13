@@ -87,7 +87,7 @@ pub(crate) fn classify_outcome(state: &GameState, max_turns: u32, max_actions: u
 /// Detect contradictory mandatory-cleanup ownership without advancing rules.
 /// A pending copy choice owns the action while its resolution is suspended.
 pub fn invalid_cleanup_state(state: &GameState) -> bool {
-    if state.pending_copy_order.is_some() { return false; }
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return false; }
     let hand = state.card_count(&state.players[state.active_player].hand);
     if state.cleanup_discard_in_progress {
         state.phase != crate::game::Phase::Cleanup
@@ -335,6 +335,7 @@ fn run_game_loop(
     verbose: bool,
 ) -> GameResult {
     let mut actions_taken: u32 = 0;
+    let mut public_trace_records = 0u32;
     let mut rejected_actions: u32 = 0;
     let mut rejected_in_row: u32 = 0;
     let mut interrupted = None;
@@ -381,8 +382,9 @@ fn run_game_loop(
             Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
         };
 
-        if verbose && actions_taken < 200 {
+        if verbose && public_trace_records < 200 && crate::rules::chittering::public_wait(state).is_none() {
             log_action(state, &action, player);
+            public_trace_records += 1;
         }
 
         let accepted_before = state.loss_boundary.accepted_actions;
@@ -703,6 +705,7 @@ pub(crate) fn run_goldfish_loop(
     verbose: bool,
 ) -> GameResult {
     let mut actions_taken: u32 = 0;
+    let mut public_trace_records = 0u32;
     let mut rejected_actions: u32 = 0;
     let mut rejected_in_row: u32 = 0;
     let mut interrupted = None;
@@ -780,8 +783,9 @@ pub(crate) fn run_goldfish_loop(
             Err(reason) => { interrupted = Some(GameOutcome::Invalid(reason)); break; }
         };
 
-        if verbose && actions_taken < 200 {
+        if verbose && public_trace_records < 200 && crate::rules::chittering::public_wait(state).is_none() {
             log_action(state, &action, player);
+            public_trace_records += 1;
         }
 
         let accepted_before = state.loss_boundary.accepted_actions;
@@ -1243,6 +1247,7 @@ mod mcts_outcome_tests {
 /// Shared by `log_action` (simulation verbose tracing) and MCTS decision
 /// logging so that card-name resolution isn't duplicated.
 pub fn format_action_name(state: &GameState, action: &crate::action::Action) -> String {
+    if crate::rules::chittering::public_wait(state).is_some() { return "Private hand decision".into(); }
     let db = state.card_db();
     match action {
         crate::action::Action::CastSpell { object_id, .. }
@@ -1279,6 +1284,7 @@ pub fn format_action_name(state: &GameState, action: &crate::action::Action) -> 
                 format!("Attack: {}", names.join(", "))
             }
         }
+        crate::action::Action::ActivateReclamation { target, .. } => format!("Activate Phyrexian Reclamation -> {}", state.objects.get(&target.id).and_then(|i| db.get(i.card_def_id)).map(|d| d.name.as_str()).unwrap_or("?")),
         crate::action::Action::ActivateAbility { object_id, ability_index, .. } => {
             let inst = &state.objects[object_id];
             format!(
@@ -1292,6 +1298,8 @@ pub fn format_action_name(state: &GameState, action: &crate::action::Action) -> 
         crate::action::Action::ActivateMacro { combo_id } => {
             format!("Activate combo #{}", combo_id)
         }
+        crate::action::Action::PlaceChitteringTrigger { handle, opponent } => format!("{} -> Player {}", crate::action::trigger_choice_label(state, *handle), opponent),
+        crate::action::Action::ChooseChitteringCard { .. } => "Private hand decision".into(),
         crate::action::Action::ChooseNextTrigger { handle } => crate::action::trigger_choice_label(state, *handle),
         crate::action::Action::OrderTriggers { ordering } => {
             format!("Order {} triggers", ordering.len())
@@ -1321,6 +1329,7 @@ pub fn format_hand(state: &GameState, player: PlayerIndex) -> Vec<String> {
 
 /// Log a game action to stderr for verbose tracing.
 fn log_action(state: &GameState, action: &crate::action::Action, player: PlayerIndex) {
+    if crate::rules::chittering::public_wait(state).is_some() { return; }
     let action_name = format_action_name(state, action);
     eprintln!(
         "T{} {:?} P{}: {} (life: {}/{})",

@@ -4302,7 +4302,7 @@ pub fn build_sample_db() -> CardDatabase {
         triggered_abilities: vec![
             TriggeredAbility {
                 trigger: TriggerCondition::EntersBattlefield,
-                effect: Effect::ReturnToTopOfLibrary { target: TargetSpec::Opponent },
+                effect: Effect::ChitteringRats,
                 description: "When Chittering Rats enters the battlefield, target opponent puts a card from their hand on top of their library.".into(),
             },
         ],
@@ -5518,7 +5518,7 @@ pub fn build_sample_db() -> CardDatabase {
                 cost: ManaCost::new(1, 0, 0, 1, 0, 0),
                 requires_tap: false,
                 sacrifice_cost: None, life_cost: 2,
-                effect: Effect::ReturnFromGraveyardToHand { target: TargetSpec::Controller },
+                effect: Effect::ReturnFromGraveyardToHand { target: TargetSpec::CreatureCardInOwnGraveyard },
                 description: "{1}{B}, Pay 2 life: Return target creature card from your graveyard to your hand.".into(),
             },
         ],

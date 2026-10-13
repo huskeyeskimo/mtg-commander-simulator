@@ -83,7 +83,7 @@ impl GameState {
                 return Err("invalid commander identity or ledger");
             }
             let residence = self.battlefield.iter().filter(|&&id| id == c.object).count()
-                + usize::from(self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry)
+                + usize::from(self.resolving_entry()
                     .is_some_and(|entry| entry.source.physical_object() == Some(c.object)))
                 + self.stack.iter().filter(|entry| entry.source.physical_object() == Some(c.object)).count()
                 + self.players.iter().map(|p| [&p.library, &p.hand, &p.graveyard, &p.exile, &p.command_zone]
@@ -105,7 +105,7 @@ impl GameState {
             .chain(self.stack.iter().filter_map(|entry| match &entry.source {
                 StackSource::TriggeredAbility { context, .. } => Some(context.as_ref()), _ => None,
             }))
-            .chain(self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry)
+            .chain(self.resolving_entry()
                 .and_then(|entry| match &entry.source {
                     StackSource::TriggeredAbility { context, .. } => Some(context.as_ref()), _ => None,
                 }));

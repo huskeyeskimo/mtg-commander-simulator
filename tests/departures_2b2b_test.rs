@@ -483,6 +483,13 @@ fn commander_hand_and_library_compatibility_records_actual_destination() {
         state.designate_commander(commander, 0).unwrap();
         state.objects.get_mut(&commander).unwrap().controller = 0;
         move_subject(&mut state, source, commander);
+        // Phase 3A requires the owner to decline before the existing endpoint assertions.
+        assert!(state.battlefield.contains(&commander));
+        assert_eq!(state.priority_player, 1);
+        let decline = legal_actions(&state).into_iter().find(|action| matches!(action,
+            Action::ChooseCommanderMovement { object, to_command: false, .. } if object.id == commander))
+            .expect("Commander owner must receive an explicit decline action");
+        apply_action(&mut state, &decline);
         assert!(state.is_commander(commander));
         assert!(state.players[1].command_zone.is_empty());
         let to = if index == 0 { ZoneType::Hand } else { ZoneType::Library };
@@ -497,6 +504,12 @@ fn commander_hand_and_library_compatibility_records_actual_destination() {
     state.designate_commander(commander, 0).unwrap();
     activate(&mut state, source, vec![]);
     pass_round(&mut state);
+    assert!(state.battlefield.contains(&commander));
+    assert_eq!(state.priority_player, 2);
+    let decline = legal_actions(&state).into_iter().find(|action| matches!(action,
+        Action::ChooseCommanderMovement { object, to_command: false, .. } if object.id == commander))
+        .expect("Commander owner must receive an explicit decline action");
+    apply_action(&mut state, &decline);
     assert!(state.players[2].hand.contains(&commander));
     assert!(state.players[2].command_zone.is_empty());
 }

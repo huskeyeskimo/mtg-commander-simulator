@@ -27,9 +27,20 @@ use serde::{Deserialize, Serialize};
 use crate::card::ObjectId;
 use crate::game::PlayerIndex;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MovementDestination { Hand, Library, Command }
+impl MovementDestination {
+    pub fn zone(self) -> crate::card::ZoneType {
+        match self { Self::Hand => crate::card::ZoneType::Hand, Self::Library => crate::card::ZoneType::Library,
+            Self::Command => crate::card::ZoneType::Command }
+    }
+}
+
 /// Identifies what kind of game event a replacement effect can modify.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ReplacementEventKind {
+    /// The current proposed destination of a bounded movement event.
+    WouldMoveTo { destination: MovementDestination, source_generation: u32 },
     /// A permanent would enter the battlefield.
     EntersBattlefield,
     /// Damage would be dealt to a player or permanent.
@@ -249,4 +260,12 @@ mod tests {
         let deserialized: ReplacementEffect = serde_json::from_str(&json).unwrap();
         assert_eq!(effect, deserialized);
     }
+}
+
+/// Public predicate facts exclude incarnation counters, represented by exact source edges.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PublicReplacementPredicate { Movement(MovementDestination), Other(ReplacementEventKind) }
+pub(crate) fn public_predicate(predicate: &ReplacementEventKind) -> PublicReplacementPredicate {
+    match predicate { ReplacementEventKind::WouldMoveTo { destination, .. } => PublicReplacementPredicate::Movement(*destination),
+        other => PublicReplacementPredicate::Other(other.clone()) }
 }

@@ -1,6 +1,8 @@
 mod wire;
 mod commander;
 pub use commander::{CommanderDesignation, CommanderRecord, PublicCommander};
+mod movement_choice;
+pub use movement_choice::{LibraryPlacement, MovementReplacementCandidate, MovementProposal, MovementDecision, MovementDecisionRecord, PendingMovement, PendingChittering, BoundedMovementInstruction};
 mod commander_choice;
 pub use commander_choice::{CommanderArrival, CommanderSbaChoice, PublicCommanderSbaChoice};
 mod refresh;
@@ -193,6 +195,8 @@ pub enum StackSource {
     },
     /// A spell without a physical card on the stack. Owns its spell data.
     SpellCopy { definition: Box<CardDef> },
+    /// Closed printed ability; owns historical public endpoint facts.
+    ReclamationAbility { source: crate::card::ExactObjectRef, source_owner: PlayerIndex, target_card_id: CardId },
 }
 
 impl StackSource {
@@ -370,6 +374,9 @@ pub struct GameState {
     pub commander_arrivals: Vec<CommanderArrival>,
     pub consumed_commander_arrivals: Vec<CommanderArrival>,
     pub pending_commander_sba: Option<CommanderSbaChoice>,
+    pub pending_movement: Option<PendingMovement>,
+    pub pending_chittering: Option<PendingChittering>,
+    pub next_movement_window: u64,
 
     /// Whose turn is it?
     pub active_player: PlayerIndex,
@@ -781,6 +788,9 @@ pub struct GameStateSnapshot {
     commander_arrivals: Vec<CommanderArrival>,
     consumed_commander_arrivals: Vec<CommanderArrival>,
     pending_commander_sba: Option<CommanderSbaChoice>,
+    pending_movement: Option<PendingMovement>,
+    pending_chittering: Option<PendingChittering>,
+    next_movement_window: u64,
     active_player: PlayerIndex,
     phase: Phase,
     priority_player: PlayerIndex,
@@ -827,6 +837,7 @@ pub struct GameStateSnapshot {
 /// needs updating.
 pub struct PlayerView<'a> {
     pub(crate) player_count: usize,
+    pub(crate) viewer: PlayerIndex,
     // --- Public information (both players can see) ---
     /// Current game phase/step.
     pub phase: Phase,
@@ -889,6 +900,11 @@ pub struct PlayerView<'a> {
     pub my_commander_tax: u32,
     pub commanders: Vec<PublicCommander>,
     pub pending_commander_sba: Option<PublicCommanderSbaChoice>,
+    pub(crate) pending_movement: Option<&'a PendingMovement>,
+    pub(crate) pending_chittering: Option<&'a PendingChittering>,
+    /// Identical public waiting facts across every private resolution prefix.
+    pub chittering_wait: Option<(u32, PlayerIndex, PlayerIndex)>,
+    pub(crate) chittering_entry: Option<&'a StackEntry>,
     /// The game format (Standard or Commander).
     pub format: GameFormat,
 
@@ -914,7 +930,7 @@ pub struct PlayerView<'a> {
     pub commander_objects: HashSet<ObjectId>,
     pub commander_roles: HashMap<ObjectId, (usize, u8, u32)>,
     pub continuous_effects: &'a [crate::layers::ContinuousEffect],
-    pub replacement_effects: &'a [crate::replacement::ReplacementEffect],
+    pub(crate) replacement_effects: &'a [crate::replacement::ReplacementEffect],
     /// Observable nonbattlefield token residents: (zone tag, seat, definition).
     /// No ObjectIds, generations or hidden-zone identity are disclosed.
     pub visible_zone_tokens: Vec<(u8, usize, CardId)>,
@@ -969,7 +985,7 @@ impl GameState {
                 StackSource::Spell(id) => Some(id),
                 StackSource::AuraSpell { source, .. } => Some(source.id),
                 StackSource::ActivatedAbility { .. } | StackSource::TriggeredAbility { .. }
-                    | StackSource::EquipAbility { .. } => None,
+                    | StackSource::EquipAbility { .. } | StackSource::ReclamationAbility { .. } => None,
                 StackSource::SpellCopy { .. } => None,
             };
             if let Some(source_id) = source_id {
@@ -979,13 +995,14 @@ impl GameState {
                 }
             }
         }
-        if let Some(entry) = self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry) {
+        if let Some(entry) = self.resolving_entry() {
             if let StackSource::Spell(source_id) = &entry.source {
                 if !self.players.iter().any(|seat| seat.hand.contains(source_id) || seat.library.contains(source_id)) {
                     if let Some(inst) = self.objects.get(source_id) { visible.insert(*source_id, inst); }
                 }
             }
         }
+
         // All graveyards — public
         for p in &self.players {
             for &id in &p.graveyard {
@@ -1030,7 +1047,7 @@ impl GameState {
             .chain(self.stack.iter().filter_map(|entry| match &entry.source {
                 StackSource::TriggeredAbility { context, .. } => Some(context.as_ref()),
                 _ => None,
-            })).chain(self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry).and_then(|entry| match &entry.source {
+            })).chain(self.resolving_entry().and_then(|entry| match &entry.source {
                 StackSource::TriggeredAbility { context, .. } => Some(context.as_ref()), _ => None,
             })) {
             if let Some(zone) = &context.zone_transition {
@@ -1075,13 +1092,14 @@ impl GameState {
         for entry in &self.stack {
             if let Some(id) = entry.source.physical_object() { visible_locations.push((id, ZoneType::Stack, entry.controller)); }
         }
-        if let Some(entry) = self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry) {
+        if let Some(entry) = self.resolving_entry() {
             if let Some(id) = entry.source.physical_object() {
                 if visible.contains_key(&id) && !visible_locations.iter().any(|&(current, _, _)| current == id) {
                     visible_locations.push((id, ZoneType::Stack, entry.controller));
                 }
             }
         }
+
         let represented_characteristics = visible.keys().filter_map(|&id|
             self.card_db.as_ref().and_then(|_| self.get_characteristics(id)).map(|chars| (id, chars))).collect();
         let commander_objects = self.commanders.iter().map(|c| c.object)
@@ -1091,6 +1109,7 @@ impl GameState {
                 c.casts_by_player.get(c.designation.owner).copied().unwrap_or(0)))).collect();
         PlayerView {
             player_count: self.players.len(),
+            viewer: player,
             phase: self.phase,
             active_player: self.active_player,
             turn_number: self.turn_number,
@@ -1126,6 +1145,11 @@ impl GameState {
             my_commander_tax: self.commander_casts(player, 0, player),
             commanders: self.public_commanders(),
             pending_commander_sba: self.pending_commander_sba.as_ref().map(PublicCommanderSbaChoice::from),
+            pending_movement: self.pending_movement.as_ref().filter(|op|
+                !crate::rules::chittering::private_operation(op) || op.chooser(self.players.len()) == Some(player)),
+            pending_chittering: self.pending_chittering.as_ref().filter(|op| op.opponent == player),
+            chittering_wait: crate::rules::chittering::public_wait(self),
+            chittering_entry: crate::rules::chittering::resolving_entry(self),
             format: self.format,
 
             my_mulligan_count: self.players[player].mulligan_count,
@@ -1133,7 +1157,7 @@ impl GameState {
             pending_tutor: self.pending_tutor.clone(),
 
             objects: visible,
-            state_encoding_failed: self.validate_commanders().is_err() || self.validate_commander_choices().is_err() || self.validate_trigger_placement().is_err() || matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)),
+            state_encoding_failed: self.validate_commanders().is_err() || self.validate_commander_choices().is_err() || self.validate_movement_choices().is_err() || crate::rules::chittering::validate_structure(self).is_err() || crate::rules::reclamation::validate_structure(self).is_err() || self.validate_trigger_placement().is_err() || matches!(self.sba_failure, Some(crate::rules::sba::PreparedPassFailure::StateEncoding)),
             visible_locations,
             represented_characteristics,
             commander_objects,
@@ -1168,6 +1192,9 @@ impl GameState {
             commander_arrivals: Vec::new(),
             consumed_commander_arrivals: Vec::new(),
             pending_commander_sba: None,
+            pending_movement: None,
+            pending_chittering: None,
+            next_movement_window: 1,
             active_player: 0,
             phase: Phase::Untap,
             priority_player: 0,
@@ -1220,6 +1247,9 @@ impl GameState {
             commander_arrivals: Vec::new(),
             consumed_commander_arrivals: Vec::new(),
             pending_commander_sba: None,
+            pending_movement: None,
+            pending_chittering: None,
+            next_movement_window: 1,
             active_player: 0,
             phase: Phase::Untap,
             priority_player: 0,
@@ -1314,6 +1344,9 @@ impl GameState {
             commander_arrivals: self.commander_arrivals.clone(),
             consumed_commander_arrivals: self.consumed_commander_arrivals.clone(),
             pending_commander_sba: self.pending_commander_sba.clone(),
+            pending_movement: self.pending_movement.clone(),
+            pending_chittering: self.pending_chittering.clone(),
+            next_movement_window: self.next_movement_window,
             active_player: self.active_player,
             phase: self.phase,
             priority_player: self.priority_player,
@@ -1356,6 +1389,9 @@ impl GameState {
         self.commander_arrivals = snap.commander_arrivals;
         self.consumed_commander_arrivals = snap.consumed_commander_arrivals;
         self.pending_commander_sba = snap.pending_commander_sba;
+        self.pending_movement = snap.pending_movement;
+        self.pending_chittering = snap.pending_chittering;
+        self.next_movement_window = snap.next_movement_window;
         self.active_player = snap.active_player;
         self.phase = snap.phase;
         self.priority_player = snap.priority_player;
@@ -1372,7 +1408,7 @@ impl GameState {
         self.cleanup_needs_repeat = snap.cleanup_needs_repeat;
         self.cleanup_discard_in_progress = snap.cleanup_discard_in_progress;
         self.pending_copy_order = snap.pending_copy_order;
-        self.trigger_placement_deferred = false;
+        self.trigger_placement_deferred = crate::rules::chittering::resolving_entry(self).is_some();
         self.effect_terminal_position = None;
         self.continuous_effects = snap.continuous_effects;
         self.next_timestamp = snap.next_timestamp;
@@ -1389,7 +1425,7 @@ impl GameState {
         self.pending_events.clear();
         self.invalidate_characteristics_cache();
 
-        if self.validate_commanders().is_err() || self.validate_commander_choices().is_err() || self.validate_trigger_placement().is_err() {
+        if self.validate_commanders().is_err() || self.validate_commander_choices().is_err() || self.validate_movement_choices().is_err() || crate::rules::chittering::validate_structure(self).is_err() || crate::rules::reclamation::validate_structure(self).is_err() || self.validate_trigger_placement().is_err() {
             self.sba_failure = Some(crate::rules::sba::PreparedPassFailure::StateEncoding);
             return Err(crate::card::AttachmentError::Source);
         }
@@ -1634,7 +1670,7 @@ impl GameState {
         let was_resident = match from {
             ZoneType::Battlefield => self.battlefield.contains(&obj_id),
             ZoneType::Stack => self.stack.iter().any(|entry| entry.source.physical_object() == Some(obj_id))
-                || self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry)
+                || self.resolving_entry()
                     .is_some_and(|entry| entry.source.physical_object() == Some(obj_id))
                 || (self.trigger_placement_deferred
                     && self.trigger_order_resume == Some(TriggerOrderResume::AfterResolution)
@@ -2182,12 +2218,26 @@ impl GameState {
         }
     }
 
+    /// Both stages belong to the same unfinished movement boundary.
+    /// Whether the viewer must wait for another player's private Chittering choice.
+    pub fn chittering_waits_for_other(&self, viewer: PlayerIndex) -> bool {
+        crate::rules::chittering::public_wait(self).is_some_and(|(_, _, owner)| owner != viewer)
+    }
+
+    pub fn movement_or_hand_pending(&self) -> bool { self.pending_movement.is_some() || self.pending_chittering.is_some() }
+
+    pub(crate) fn resolving_entry(&self) -> Option<&StackEntry> {
+        self.pending_copy_order.as_ref().and_then(PendingCopyOrder::resolving_entry)
+            .or_else(|| self.pending_movement.as_ref().and_then(|op| op.resolving_entry.as_deref()))
+            .or_else(|| self.pending_chittering.as_ref().map(|op| op.resolving_entry.as_ref()))
+    }
+
     /// Refresh replacement effects based on the current battlefield.
     /// Removes effects whose source has left the battlefield.
     pub fn refresh_replacement_effects(&mut self) {
         let bf: HashSet<ObjectId> = self.battlefield.iter().copied().collect();
         self.replacement_effects
-            .retain(|e| bf.contains(&e.source_id));
+            .retain(|e| bf.contains(&e.source_id) && match e.applies_to { ReplacementEventKind::WouldMoveTo { source_generation, .. } => self.objects.get(&e.source_id).is_some_and(|inst| inst.zone_change_count == source_generation), _ => true });
     }
 
     /// Check if the given object is a player's commander.
@@ -2266,7 +2316,7 @@ impl GameState {
             || matches!(self.trigger_order_resume, Some(TriggerOrderResume::Player(p)) if p >= self.players.len() || (self.players[p].has_lost && !self.gameplay_stopped()))
             || matches!(self.trigger_order_resume, Some(TriggerOrderResume::AfterAttackers)) && self.phase != Phase::DeclareAttackers
             || op.occurrences.len() != op.initial_count
-            || self.pending_copy_order.is_some() || self.cleanup_discard_in_progress
+            || self.pending_copy_order.is_some() || self.movement_or_hand_pending() || self.cleanup_discard_in_progress
             || self.trigger_placement_deferred || self.phase == Phase::Mulligan || op.initial_count == 0
             || op.placed.len() >= op.initial_count
             || op.initial_stack_len.checked_add(op.placed.len()) != Some(self.stack.len())
@@ -2296,8 +2346,9 @@ impl GameState {
             let StackSource::TriggeredAbility { source_id, ability_index, context } = &entry.source else { return Err(StateEncoding); };
             if entry.id != op.initial_stack_id + offset as u64 || entry.controller != trigger.controller
                 || *source_id != trigger.source_id || *ability_index != trigger.ability_index
-                || !same_trigger_record(context.as_ref(), &trigger.context)? || entry.targets != trigger.targets
-                || entry.target_generations != crate::targeting::target_generations(self, &trigger.targets)
+                || !same_trigger_record(context.as_ref(), &trigger.context)?
+                || (if crate::rules::chittering::trigger(trigger) { crate::rules::chittering::entry_opponent(entry, self.players.len()).is_err() }
+                    else { entry.targets != trigger.targets || entry.target_generations != crate::targeting::target_generations(self, &trigger.targets) })
                 || rank < previous_rank || rank > chooser.unwrap().0 { return Err(StateEncoding); }
             previous_rank = rank;
         }
@@ -2316,9 +2367,11 @@ fn deserialize_trigger_placement<'de, D: serde::Deserializer<'de>>(d: D) -> Resu
 
 // The leading tag rejects historical positional bincode before interpreting any
 // changed layout. JSON must carry the same explicit version.
-const GAME_STATE_FORMAT: u32 = 0x3246_3254;
+const GAME_STATE_FORMAT: u32 = 0x3246_3343;
 fn deserialize_game_state_format<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let version = u32::deserialize(d)?;
     if version != GAME_STATE_FORMAT { return Err(serde::de::Error::custom("incompatible GameState Commander format")); }
     Ok(version)
 }
+
+impl PlayerView<'_> { pub(crate) fn resolving_entry(&self) -> Option<&StackEntry> { self.pending_copy_order.and_then(|op| op.resolving_entry()).or_else(|| self.pending_movement.and_then(|op| op.resolving_entry.as_deref())).or(self.chittering_entry) } }

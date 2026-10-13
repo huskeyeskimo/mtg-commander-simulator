@@ -37,8 +37,8 @@ fn human_mandatory_choice_pending(state: &GameState) -> bool {
         return true;
     }
     legal_actions(state).iter().any(|action| matches!(action,
-        Action::ChooseNextCopy { .. }
-            | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
+        Action::ChooseNextCopy { .. } | Action::ChooseMovementReplacement { .. } | Action::ChooseCommanderMovement { .. } | Action::ChooseLibraryPlacement { .. }
+            | Action::PlaceChitteringTrigger { .. } | Action::ChooseChitteringCard { .. } | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. }
             | Action::OrderTriggerOccurrences { .. }
             | Action::ChooseTutorTarget { .. }
             | Action::ChooseReplacementOrder { .. }
@@ -126,6 +126,14 @@ fn main() {
             continue;
         }
 
+        if state.chittering_waits_for_other(0) {
+            let action = match mtg_gto::strategy::Strategy::choose_action(&mtg_gto::strategy::GoldfishStrategy, &state, state.priority_player) {
+                Ok(action) => action, Err(reason) => { eprintln!("INVALID reason={}", reason.code()); return; }
+            };
+            rules::apply_action(&mut state, &action);
+            actions_taken += 1;
+            continue;
+        }
         let player = state.priority_player;
         let actions = legal_actions(&state);
 
@@ -251,7 +259,7 @@ fn main() {
         "Final life totals: You={} Goldfish={}",
         state.players[0].life, state.players[1].life
     );
-    println!("Total actions: {}", actions_taken);
+    // Trusted progress includes private decisions; do not publish its count.
     println!();
 
     print_action_log(&action_log);
@@ -449,6 +457,7 @@ fn display_game_state(state: &GameState, db: &CardDatabase) {
                 mtg_gto::game::StackSource::SpellCopy { definition } => {
                     format!("Spell copy: {} (stack #{})", definition.name, entry.id)
                 }
+                mtg_gto::game::StackSource::ReclamationAbility { target_card_id, .. } => format!("Reclamation -> {}", db.get(*target_card_id).map(|d| d.name.as_str()).unwrap_or("?")),
                 mtg_gto::game::StackSource::ActivatedAbility { source_id, ability_index } => {
                     db.get(state.objects[source_id].card_def_id)
                         .map(|d| format!("Ability of {} (#{}) ", d.name, ability_index))
@@ -506,7 +515,15 @@ fn display_game_state(state: &GameState, db: &CardDatabase) {
 
 /// Rich description of an action for the menu display.
 fn format_action_rich(state: &GameState, action: &Action, db: &CardDatabase) -> String {
+    if state.chittering_waits_for_other(0) { return "Waiting for opponent's private choice".into(); }
     match action {
+        Action::PlaceChitteringTrigger { handle, opponent } => format!("{} -> Player {}", mtg_gto::action::trigger_choice_label(state, *handle), opponent),
+        Action::ChooseChitteringCard { card, .. } => format!("Put {} on top of your library", card_name(state, card.id, db)),
+        Action::ChooseMovementReplacement { .. } => "Choose movement replacement".into(),
+        Action::ChooseCommanderMovement { to_command, .. } => if *to_command { "Put commander in command zone".into() } else { "Keep proposed destination".into() },
+        Action::ChooseLibraryPlacement { object, .. } => if state.priority_player == 0 {
+            format!("Place {} next", state.objects.get(&object.id).and_then(|i| state.card_db().get(i.card_def_id)).map(|d| d.name.as_str()).unwrap_or("card"))
+        } else { "Choose private library order".into() },
         Action::ChooseCommanderSba { designation, to_command } => format!(
             "{} for Commander {}",
             if *to_command { "Move to command zone" } else { "Decline command-zone move" }, designation.role),
@@ -550,6 +567,7 @@ fn format_action_rich(state: &GameState, action: &Action, db: &CardDatabase) -> 
                 .unwrap_or_else(|| "?".into());
             format!("Tap for mana: {} ({})", name, mana_desc)
         }
+        Action::ActivateReclamation { target, .. } => format!("Activate Phyrexian Reclamation -> {}", card_name(state, target.id, db)),
         Action::ActivateAbility { object_id, ability_index, targets } => {
             let name = card_name(state, *object_id, db);
             let tgt = format_targets(state, targets, db);

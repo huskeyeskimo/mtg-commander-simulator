@@ -3,6 +3,10 @@ use crate::events::GameEvent;
 use crate::game::{CastSpellSnapshot, GameState, PlayerIndex, Target, TriggerContext};
 
 #[cfg(test)]
+#[path = "../../tests/support/chain_compatibility_stop.rs"]
+mod chain_compatibility_stop;
+
+#[cfg(test)]
 mod destruction_migration_tests {
     use std::sync::Arc;
     use super::*;
@@ -422,9 +426,39 @@ pub(super) fn resolve_effect(
     target_generations: &[Option<u32>],
     source_id: Option<ObjectId>,
 ) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
+    if resolve_synchronous_destroy_draw(state, effect, controller, targets, target_generations, source_id) { return; }
+    match super::movement_choice::admission(state, effect) {
+        Ok(true) => {
+            let leaves = match effect { Effect::Multiple(children) => children.clone(), leaf => vec![leaf.clone()] };
+            let instructions = leaves.iter().map(|e| crate::game::BoundedMovementInstruction::from_effect(e).expect("admitted movement envelope")).collect();
+            super::movement_choice::execute(state, instructions, controller, targets, target_generations, source_id, false, 0);
+            return;
+        }
+        Err(error) => { super::aura::record_entry_failure(state, error); return; }
+        Ok(false) => {},
+    }
     resolve_effect_inner(state, effect, controller, targets, target_generations,
         source_id, None, None, true);
+}
+
+fn resolve_synchronous_destroy_draw(state: &mut GameState, effect: &Effect, controller: PlayerIndex,
+    targets: &[Target], generations: &[Option<u32>], source: Option<ObjectId>) -> bool {
+    if !super::movement_choice::synchronous_destroy_draw(state, effect) { return false; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending()
+        || state.pending_commander_sba.is_some() || state.trigger_placement.is_some() { return true; }
+    let object = match super::movement_choice::preflight_synchronous_destroy_draw(state, effect, controller, targets, generations, None) {
+        Ok(Some(object)) => object,
+        Ok(None) => return true,
+        Err(error) => { super::aura::record_entry_failure(state, error); return true; }
+    };
+    if let Err(error) = super::transitions::destroy_batch(state, &[object]) {
+        super::aura::record_entry_failure(state, error); return true;
+    }
+    if !state.gameplay_stopped() {
+        resolve_effect_inner(state, &Effect::DrawCards { count: 1 }, controller, &[], &[], source, None, None, true);
+    }
+    true
 }
 
 /// Entry legality belongs to the classified spell/ability envelope. Preserve
@@ -473,8 +507,19 @@ pub(super) fn resolve_trigger_effect(
     let cast_context = context.cast_spell.as_ref().map(|spell| CastEffectContext {
         spell, source_id: original_source_id, source_generation: context.source_generation,
     });
+    if resolve_synchronous_destroy_draw(state, &context.effect, controller, targets, target_generations, live_source_id) { return; }
+    match super::movement_choice::admission(state, &context.effect) {
+        Ok(true) => { resolve_effect(state, &context.effect, controller, targets, target_generations, live_source_id); return; }
+        Err(error) => { super::aura::record_entry_failure(state, error); return; }
+        Ok(false) => {},
+    }
     resolve_effect_inner(state, &context.effect, controller, targets, target_generations, live_source_id,
         Some(context.source_card_id), cast_context, true);
+}
+
+pub(super) fn resolve_synchronous_movement_companion(state: &mut GameState, effect: &Effect,
+    controller: PlayerIndex, targets: &[Target], generations: &[Option<u32>], source: Option<ObjectId>) {
+    resolve_effect_inner(state, effect, controller, targets, generations, source, None, None, true);
 }
 
 fn resolve_effect_inner(
@@ -510,6 +555,7 @@ fn resolve_effect_inner(
     let target_generations = recipient_generations.as_deref().unwrap_or(target_generations);
 
     match effect {
+        Effect::ChitteringRats => super::aura::record_entry_failure(state, super::transitions::TransitionError::UnsupportedPath),
         // Requires an owned death occurrence; generic effect execution cannot
         // reconstruct its exact graveyard incarnation or historical condition.
         Effect::ReturnWithDeathKeyword { .. } => {}

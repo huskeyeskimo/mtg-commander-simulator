@@ -24,7 +24,7 @@ macro_rules! setup_card {
 /// 2. If current player is done → advance to next player who hasn't decided
 /// 3. If all players are done deciding and bottoming → transition to Turn 1
 pub(super) fn advance_mulligan(state: &mut GameState) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let player = state.priority_player;
     let ps = &state.players[player];
 
@@ -66,7 +66,7 @@ pub fn setup_game(
     deck0: &[crate::card::CardId],
     deck1: &[crate::card::CardId],
 ) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let mut rng = rand::thread_rng();
 
     // Create card instances for player 0
@@ -109,7 +109,7 @@ pub fn setup_game_seeded(
     deck1: &[crate::card::CardId],
     seed: u64,
 ) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let mut rng = StdRng::seed_from_u64(seed);
 
     let mut lib0: Vec<ObjectId> = Vec::new();
@@ -145,7 +145,7 @@ pub fn setup_commander_game_seeded(
     commander1: crate::card::CardId,
     seed: u64,
 ) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let mut rng = StdRng::seed_from_u64(seed);
 
 
@@ -200,7 +200,7 @@ pub fn setup_commander_game(
     commander0: crate::card::CardId,
     commander1: crate::card::CardId,
 ) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let mut rng = rand::thread_rng();
 
     // Player 0: create all cards, put commander in command zone, rest in library
@@ -259,7 +259,7 @@ pub fn setup_commander_game_with_partners(
     commander1: crate::card::CardId,
     partner1: Option<crate::card::CardId>,
 ) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let mut rng = rand::thread_rng();
 
     // Player 0: create all cards, put commanders in command zone, rest in library
@@ -326,7 +326,7 @@ pub fn set_tutor_targets(
     player: crate::game::PlayerIndex,
     targets: &[crate::card::CardId],
 ) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     state.players[player].tutor_targets = targets.to_vec();
 }
 
@@ -336,7 +336,7 @@ pub fn set_tutor_targets(
 /// and redraws 7-card opening hands. Resets turn/phase/mana state so the
 /// game starts cleanly from Turn 1.
 pub fn reshuffle_opening_hand(state: &mut GameState) {
-    if state.pending_copy_order.is_some() { return; }
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() { return; }
     let mut rng = rand::thread_rng();
 
     for player in 0..state.players.len() {

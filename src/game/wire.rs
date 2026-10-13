@@ -25,6 +25,9 @@ struct GameStateWire {
     pub commander_arrivals: Vec<CommanderArrival>,
     pub consumed_commander_arrivals: Vec<CommanderArrival>,
     pub pending_commander_sba: Option<CommanderSbaChoice>,
+    pub pending_movement: Option<PendingMovement>,
+    pub pending_chittering: Option<PendingChittering>,
+    pub next_movement_window: u64,
 
     pub active_player: PlayerIndex,
 
@@ -102,9 +105,13 @@ struct GameStateWire {
 
 impl<'de> Deserialize<'de> for GameState {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let state = GameStateWire::deserialize(deserializer)?;
+        let mut state = GameStateWire::deserialize(deserializer)?;
+        if crate::rules::chittering::resolving_entry(&state).is_some() { state.trigger_placement_deferred = true; }
         state.validate_commanders().map_err(serde::de::Error::custom)?;
         state.validate_commander_choices().map_err(serde::de::Error::custom)?;
+        state.validate_movement_choices().map_err(serde::de::Error::custom)?;
+        crate::rules::chittering::validate_structure(&state).map_err(serde::de::Error::custom)?;
+        crate::rules::reclamation::validate_structure(&state).map_err(serde::de::Error::custom)?;
         Ok(state)
     }
 }

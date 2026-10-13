@@ -5,8 +5,11 @@ mod combat;
 mod loss;
 mod effects;
 mod mana;
+pub(crate) mod reclamation;
+pub(crate) mod chittering;
 mod phases;
 mod resolution;
+pub(crate) mod movement_choice;
 mod spell_copy;
 pub mod sba;
 mod setup;
@@ -49,7 +52,18 @@ fn mandatory_trigger_order_chooser(state: &GameState) -> Option<PlayerIndex> {
 /// Apply an action to the game state, advancing it.
 pub fn apply_action(state: &mut GameState, action: &Action) {
     if state.gameplay_stopped() { return; }
-    if state.validate_commanders().is_err() || state.validate_commander_choices().is_err() {
+    if matches!(action, Action::ActivateReclamation { .. }) && reclamation::prepare(state, action).is_none() { return; }
+    if let Action::ActivateAbility { object_id, ability_index, .. } = action {
+        if state.objects.get(object_id).is_some_and(|i| i.card_def_id == crate::card::sample::ids::PHYREXIAN_RECLAMATION
+            || state.card_db.as_ref().and_then(|db| db.get(i.card_def_id)).and_then(|d| d.activated_abilities.get(*ability_index))
+                .is_some_and(|a| reclamation::uses_selector(&a.effect))) { return; }
+    }
+    if state.movement_or_hand_pending() && state.card_db.is_none() { return; }
+    if reclamation::validate_play(state).is_err() || chittering::validate_play(state).is_err() { return; }
+    if matches!(action, Action::ChooseChitteringCard { .. }) && !chittering::selection_actions(state).contains(action) { return; }
+    if matches!(action, Action::PlaceChitteringTrigger { .. }) && !chittering::placement_actions(state).contains(action) { return; }
+    if state.pending_chittering.is_some() && !matches!(action, Action::ChooseChitteringCard { .. } | Action::Concede) { return; }
+    if state.validate_commanders().is_err() || state.validate_commander_choices().is_err() || state.validate_movement_choices().is_err() {
         state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding); return;
     }
     if let Action::CastCommander { object_id, .. } = action {
@@ -58,13 +72,22 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
     if state.validate_trigger_placement().is_err() {
         state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding); return;
     }
+    if state.pending_movement.is_some()
+        && !matches!(action, Action::ChooseMovementReplacement { .. } | Action::ChooseCommanderMovement { .. } | Action::ChooseLibraryPlacement { .. } | Action::Concede) { return; }
     if state.pending_commander_sba.is_some()
         && !matches!(action, Action::ChooseCommanderSba { .. } | Action::Concede) { return; }
     if state.trigger_placement.is_some()
-        && !matches!(action, Action::ChooseNextTrigger { .. } | Action::Concede) { return; }
+        && !matches!(action, Action::ChooseNextTrigger { .. } | Action::PlaceChitteringTrigger { .. } | Action::Concede) { return; }
     if let Action::ChooseNextTrigger { handle } = action {
         if state.trigger_placement.as_ref().is_none_or(|op| op.window != handle.window)
             || !state.pending_triggers.iter().any(|t| t.placement == Some(*handle) && t.controller == state.priority_player) { return; }
+    }
+    if let Action::ChooseTutorTarget { card_id } = action {
+        if state.pending_tutor.as_ref().is_some_and(|op| state.players.get(op.controller).is_some_and(|p|
+            p.library.iter().any(|id| state.is_commander(*id) && state.objects[id].card_def_id == *card_id)))
+            || state.replacement_effects.iter().any(|e| matches!(e.applies_to, crate::replacement::ReplacementEventKind::WouldMoveTo { .. })) {
+            aura::record_entry_failure(state, transitions::TransitionError::UnsupportedPath); return;
+        }
     }
     if let Err(reason) = aura::preflight_action(state, action) {
         state.sba_failure = Some(reason); return;
@@ -97,6 +120,7 @@ pub fn apply_action(state: &mut GameState, action: &Action) {
         Tap(ObjectId, Option<(bool, u32)>),
     }
     let checkpoint = match action {
+        Action::ActivateReclamation { .. } => Some(Checkpoint::Stack(state.next_stack_id)),
         Action::PassPriority if u32::try_from(state.players.len())
             .is_ok_and(|players| players >= 2) =>
             Some(Checkpoint::Pass(state.consecutive_passes, state.pending_tutor.is_some())),
@@ -151,14 +175,14 @@ fn apply_action_at_boundary(state: &mut GameState, action: &Action) {
     // These handlers complete synchronously. Defer their existing internal
     // flush attempts until costs, action consequences and SBA stabilization
     // have all finished. Continuation actions own their separate 2A boundaries.
-    let owns_boundary = state.pending_copy_order.is_none()
+    let owns_boundary = state.pending_copy_order.is_none() && !state.movement_or_hand_pending()
         && !cleanup_discard_required(state)
         && (mandatory_trigger_order_chooser(state).is_none() || matches!(action, Action::Concede))
         && matches!(action,
             Action::PlayLand { .. } | Action::PlayLandFromGraveyard { .. }
             | Action::CastSpell { .. } | Action::CastCommander { .. }
             | Action::CastFromGraveyard { .. } | Action::ActivateManaAbility { .. }
-            | Action::ActivateAbility { .. } | Action::ActivateLoyalty { .. }
+            | Action::ActivateAbility { .. } | Action::ActivateReclamation { .. } | Action::ActivateLoyalty { .. }
             | Action::Equip { .. } | Action::ActivateMacro { .. }
             | Action::ChooseTutorTarget { .. } | Action::Concede);
     if !owns_boundary {
@@ -477,6 +501,15 @@ mod settlement_2b3a_boundary_tests {
 }
 
 fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
+    if state.pending_chittering.is_some() {
+        if matches!(action, Action::Concede) { loss::adjudicate(state, Some(state.priority_player)); return true; }
+        return chittering::choose_card(state, action);
+    }
+    if state.pending_movement.is_some() {
+        if matches!(action, Action::Concede) { loss::adjudicate(state, Some(state.priority_player)); return true; }
+        return movement_choice::choose(state, action);
+    }
+    if matches!(action, Action::ChooseMovementReplacement { .. } | Action::ChooseCommanderMovement { .. } | Action::ChooseLibraryPlacement { .. }) { return false; }
     if state.pending_commander_sba.is_some() {
         return match action {
             Action::ChooseCommanderSba { designation, to_command } => {
@@ -493,13 +526,13 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         };
     }
     if matches!(action, Action::ChooseCommanderSba { .. }) { return false; }
-    if state.pending_copy_order.is_some() {
+    if state.pending_copy_order.is_some() || state.movement_or_hand_pending() {
         if let Action::ChooseNextCopy { item_index } = action {
             let _ = spell_copy::choose_next_copy(state, *item_index);
         }
         return false;
     }
-    if matches!(action, Action::ChooseNextCopy { .. }) { return false; }
+    if matches!(action, Action::ChooseNextCopy { .. } | Action::ChooseChitteringCard { .. }) { return false; }
     if cleanup_discard_required(state) {
         let Action::Discard { object_id } = action else { return false; };
         if state.phase != Phase::Cleanup
@@ -512,7 +545,7 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         }
     }
     if let Some(chooser) = mandatory_trigger_order_chooser(state) {
-        let valid_kind = matches!(action, Action::ChooseNextTrigger { .. } | Action::Concede);
+        let valid_kind = matches!(action, Action::ChooseNextTrigger { .. } | Action::PlaceChitteringTrigger { .. } | Action::Concede);
         if state.priority_player != chooser || !valid_kind { return false; }
     }
     // Validate supplied targets before costs, zone changes, or cast events.
@@ -540,7 +573,8 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         if !crate::targeting::valid_spell_targets(state, player, def, targets) { return false; }
     }
     match action {
-        Action::ChooseNextCopy { .. } | Action::ChooseCommanderSba { .. } => unreachable!(),
+        Action::ChooseNextCopy { .. } | Action::ChooseCommanderSba { .. } | Action::ChooseMovementReplacement { .. } | Action::ChooseCommanderMovement { .. } | Action::ChooseLibraryPlacement { .. } => unreachable!(),
+        Action::ActivateReclamation { .. } => reclamation::activate(state, action),
         Action::PassPriority => {
             // If there's a pending tutor, passing means "fail to find" —
             // clear it and return without advancing priority normally.
@@ -806,6 +840,16 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
                 if ability.requires_tap && !state.can_pay_tap_cost(obj_id) {
                     return false;
                 }
+                if !state.is_commander(obj_id) && matches!(ability.sacrifice_cost, Some(SacrificeCost::SelfSacrifice)) {
+                    if let Some(object) = state.exact_object(obj_id) {
+                        let nominal = transitions::TransitionRequest { object, from: ZoneType::Battlefield, to: ZoneType::Graveyard,
+                            kind: transitions::MovementKind::Sacrifice { player } };
+                        let actual = transitions::TransitionRequest { to: if state.is_creature(obj_id) { state.death_replacement_zone(obj_id) } else { ZoneType::Graveyard }, ..nominal };
+                        if movement_choice::requires_choice(state, &nominal) || movement_choice::requires_choice(state, &actual) {
+                            aura::record_entry_failure(state, transitions::TransitionError::UnsupportedPath); return false;
+                        }
+                    }
+                }
                 let self_sacrifice = if state.is_commander(obj_id)
                     && matches!(ability.sacrifice_cost, Some(SacrificeCost::SelfSacrifice)) {
                     let Some(object) = state.exact_object(obj_id) else { return false; };
@@ -955,6 +999,8 @@ fn apply_action_inner(state: &mut GameState, action: &Action) -> bool {
         }
 
         Action::ChooseNextTrigger { handle } => triggers::choose_next_trigger(state, *handle),
+        Action::PlaceChitteringTrigger { handle, opponent } => triggers::place_chittering_trigger(state, *handle, *opponent),
+        Action::ChooseChitteringCard { .. } => unreachable!("handled private selection"),
         // Legacy whole-order actions are no longer accepted. Never silently replay
         // an old policy against the incremental action semantics.
         Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. } => return false,
@@ -1254,7 +1300,12 @@ fn has_static_ability_on_battlefield(
 /// 3. Phial of Galadriel: draw 2 instead of 1 when hand is empty
 /// If none apply, normal draw.
 pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
-    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.pending_commander_sba.is_some() { return; }
+    if state.gameplay_stopped() || state.pending_copy_order.is_some() || state.movement_or_hand_pending() || state.pending_commander_sba.is_some() { return; }
+    if state.players.get(player).is_some_and(|p| p.library.iter().filter(|id| state.is_card(**id))
+        .take(count).any(|id| state.is_commander(*id)))
+        || count != 0 && state.replacement_effects.iter().any(|e| matches!(e.applies_to, crate::replacement::ReplacementEventKind::WouldMoveTo { .. })) {
+        aura::record_entry_failure(state, transitions::TransitionError::UnsupportedPath); return;
+    }
     // Check for draw replacement effects on the battlefield
     let has_renfield = has_static_ability_on_battlefield(
         state, player, &crate::layers::StaticAbility::RenfieldDrawReplacement,
@@ -1265,6 +1316,14 @@ pub fn draw_cards(state: &mut GameState, player: PlayerIndex, count: usize) {
     let has_phial = has_static_ability_on_battlefield(
         state, player, &crate::layers::StaticAbility::PhialDrawDoubler,
     );
+
+    // These represented replacements may expand or select beyond the nominal
+    // prefix. Slice A rejects their complete Commander interaction before drawing.
+    let other_draw_replacement = state.replacement_effects.iter().any(|effect| effect.applies_to == crate::replacement::ReplacementEventKind::CardDraw);
+    if count != 0 && (has_renfield || has_abundance || has_phial || other_draw_replacement)
+        && state.players[player].library.iter().any(|id| state.is_commander(*id)) {
+        aura::record_entry_failure(state, transitions::TransitionError::UnsupportedPath); return;
+    }
 
     for _ in 0..count {
         if state.first_library_card(player).is_none() && !has_renfield && !has_abundance {
@@ -1384,7 +1443,7 @@ fn restore_priority_after_resolution(state: &mut GameState) {
     clear_lost_tutor_choice(state);
     if let Some(tutor) = &state.pending_tutor {
         state.priority_player = tutor.controller;
-    } else if state.pending_copy_order.is_none() && state.pending_triggers.is_empty() {
+    } else if state.pending_copy_order.is_none() && !state.movement_or_hand_pending() && state.pending_triggers.is_empty() {
         state.priority_player = if state.players[state.active_player].has_lost {
             state.next_player(state.active_player)
         } else { state.active_player };
@@ -1421,7 +1480,7 @@ fn auto_place_pending_triggers(state: &mut GameState) -> bool {
     let order = crate::action::legal_actions(state)
         .into_iter()
         .find(|action| matches!(action,
-            Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }));
+            Action::PlaceChitteringTrigger { .. } | Action::ChooseNextTrigger { .. } | Action::OrderTriggers { .. } | Action::OrderTriggerOccurrences { .. }));
     if let Some(order) = order {
         apply_action(state, &order);
         true
@@ -1454,7 +1513,7 @@ fn fast_forward_end_of_turn(state: &mut GameState) {
 
         // EndTurn can be chosen by a human. A mandatory ordering choice ends
         // this shortcut so the normal action loop can present it.
-        if state.pending_copy_order.is_some() || state.pending_commander_sba.is_some() { break; }
+        if state.pending_copy_order.is_some() || state.movement_or_hand_pending() || state.pending_commander_sba.is_some() { break; }
 
         // Finish the current cleanup discard sequence before its queued
         // triggers can enter a placement window.
@@ -1545,6 +1604,9 @@ fn fast_forward_goldfish_turn_counted(state: &mut GameState, pause_for: Option<P
     if state.validate_trigger_placement().is_err() {
         state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding); return 0;
     }
+    if state.validate_commanders().is_err() || state.validate_commander_choices().is_err() || state.validate_movement_play().is_err() || chittering::validate_play(state).is_err() {
+        state.sba_failure = Some(sba::PreparedPassFailure::StateEncoding); return 0;
+    }
     if state.loss_action_in_progress { return fast_forward_goldfish_turn_inner(state, pause_for); }
     let active_before = state.active_player;
     let had_terminal = state.loss_boundary.terminal.is_some();
@@ -1582,6 +1644,18 @@ fn fast_forward_goldfish_turn_inner(state: &mut GameState, pause_for: Option<Pla
     while state.active_player == goldfish_player && !state.gameplay_stopped() && safety < MAX_SAFETY {
         safety += 1;
 
+        if state.pending_chittering.is_some() {
+            if pause_for == Some(state.priority_player) { break; }
+            let Some(action) = chittering::selection_actions(state).into_iter().next() else { break; };
+            if !chittering::choose_card(state, &action) { break; }
+            actions += 1; continue;
+        }
+        if state.pending_movement.is_some() {
+            if pause_for == Some(state.priority_player) { break; }
+            let Some(action) = movement_choice::actions(state).into_iter().next() else { break; };
+            if !movement_choice::choose(state, &action) { break; }
+            actions += 1; continue;
+        }
         if let Some(operation) = &state.pending_commander_sba {
             if pause_for == operation.chooser() { break; }
             let Some(designation) = operation.offers.iter().zip(&operation.answers)

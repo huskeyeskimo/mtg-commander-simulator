@@ -65,7 +65,7 @@ pub fn snapshot_stack_spell(state: &GameState, source_stack_id: StackId) -> Resu
             state.card_db().get(*source_card_id).ok_or(CopyError::MissingDefinition)?.clone()
         }
         StackSource::SpellCopy { definition } => (**definition).clone(),
-        StackSource::ActivatedAbility { .. } | StackSource::TriggeredAbility { .. } | StackSource::EquipAbility { .. } => {
+        StackSource::ActivatedAbility { .. } | StackSource::TriggeredAbility { .. } | StackSource::EquipAbility { .. } | StackSource::ReclamationAbility { .. } => {
             return Err(CopyError::SourceIsAbility);
         }
     };
@@ -593,7 +593,7 @@ fn copy_safe(effect: &Effect) -> bool {
     match effect {
         #[cfg(test)]
         TestCopyBatch { copies: _ } => false,
-        ExileFromHandLinked | ReturnLinkedExileToHand | CreateTokenCopyOfSource
+        ChitteringRats | ExileFromHandLinked | ReturnLinkedExileToHand | CreateTokenCopyOfSource
         | CopyCastSpellForOtherCreatures | ReturnWithDeathKeyword { keyword: _ } => false,
         DoublePowerUntilEOT { target: _ }
         | BuffOtherSubtype {
